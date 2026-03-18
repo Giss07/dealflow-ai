@@ -107,11 +107,52 @@
         .offer-form input, .offer-form select, .offer-form textarea { width: 100%; background: #1e293b; border: 1px solid #475569; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
         .offer-form textarea { height: 60px; resize: vertical; }
 
+        /* Mobile card view */
+        .deal-cards { display: none; }
+        .deal-card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 15px; margin-bottom: 12px; }
+        .deal-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+        .deal-card-address { font-size: 15px; font-weight: 600; color: #f8fafc; flex: 1; }
+        .deal-card-listed { font-size: 12px; white-space: nowrap; margin-left: 8px; }
+        .deal-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 13px; margin-bottom: 10px; }
+        .deal-card-grid .lbl { color: #94a3b8; }
+        .deal-card-grid .val { color: #f8fafc; font-weight: 500; text-align: right; }
+        .deal-card-actions { display: flex; gap: 8px; }
+        .deal-card-actions button { flex: 1; padding: 10px; font-size: 13px; }
+
         @media (max-width: 768px) {
-            .stats-bar { flex-direction: column; }
-            .filters { flex-direction: column; }
-            table { font-size: 12px; }
-            thead th, tbody td { padding: 8px; }
+            .header { padding: 15px; }
+            .header h1 { font-size: 20px; }
+            .stats-bar { flex-direction: column; gap: 10px; padding: 10px 15px; }
+            .stat-card { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; }
+            .stat-card .label { margin-bottom: 0; }
+            .stat-card .value { font-size: 20px; margin-top: 0; }
+            .tabs { padding: 0 10px; overflow-x: auto; }
+            .tab { padding: 10px 16px; font-size: 13px; white-space: nowrap; }
+            .filters { flex-direction: column; padding: 10px 15px; gap: 8px; }
+            .filters > div { width: 100%; }
+            .filters select, .filters input { width: 100%; }
+            .filters button { width: 100%; }
+            .container { padding: 10px 15px; }
+
+            /* Hide table, show cards on mobile */
+            #deals-table { display: none; }
+            .deal-cards { display: block; }
+
+            /* Modal */
+            .modal-overlay.active { padding: 10px; }
+            .modal { max-width: 100%; border-radius: 8px; }
+            .modal-header { padding: 15px; }
+            .modal-header h2 { font-size: 16px; }
+            .modal-body { padding: 15px; }
+            .modal-body .btn-privy, .modal-body .btn-zillow, .modal-body .btn-copy, .modal-body .btn-action { width: 100%; text-align: center; margin-bottom: 8px; margin-right: 0; display: block; }
+            .input-field { width: 100% !important; }
+            .analysis-row { font-size: 13px; }
+            .analysis-row .label { flex: 1; }
+            .analysis-row .value { text-align: right; }
+            .grades-grid { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+
+            /* Offer modal */
+            .offer-form input, .offer-form select, .offer-form textarea { font-size: 16px; }
         }
     </style>
 </head>
@@ -160,6 +201,7 @@
             </thead>
             <tbody id="deals-body"></tbody>
         </table>
+        <div class="deal-cards" id="deal-cards"></div>
         <div class="empty-state" id="empty-state" style="display:none;">
             <h3>No deals found</h3>
             <p>Run the pipeline to scrape and analyze listings, or adjust your filters.</p>
@@ -305,8 +347,9 @@
 
         function renderDeals(deals) {
             const tbody = document.getElementById('deals-body');
+            const cards = document.getElementById('deal-cards');
             const empty = document.getElementById('empty-state');
-            if (!deals.length) { tbody.innerHTML = ''; empty.style.display = 'block'; return; }
+            if (!deals.length) { tbody.innerHTML = ''; cards.innerHTML = ''; empty.style.display = 'block'; return; }
             empty.style.display = 'none';
 
             if (currentTab === 'offers') {
@@ -343,6 +386,30 @@
                     </tr>
                 `).join('');
             }
+
+            // Mobile cards
+            cards.innerHTML = deals.map(d => `
+                <div class="deal-card" onclick="showDeal(${d.id})">
+                    <div class="deal-card-header">
+                        <div class="deal-card-address">${d.address || '—'}, ${d.city || ''} ${d.zip_code || ''}</div>
+                        <span class="deal-card-listed" style="color:${daysColor(d.days_on_zillow)}">${daysAgo(d.days_on_zillow)}</span>
+                    </div>
+                    <div style="margin-bottom:8px;">
+                        <span class="score-badge ${scoreClass(d.score)}">${d.score ?? '—'}</span>
+                        ${d.offer_status ? `<span class="offer-status ${offerClass(d.offer_status)}" style="margin-left:6px;">${d.offer_status}</span>` : ''}
+                    </div>
+                    <div class="deal-card-grid">
+                        <span class="lbl">Price</span><span class="val">${fmt(d.price)}</span>
+                        <span class="lbl">ARV</span><span class="val">${fmt(d.arv)}</span>
+                        <span class="lbl">Max Offer</span><span class="val">${fmt(d.max_offer)}</span>
+                        <span class="lbl">Profit</span><span class="val" style="color:${d.estimated_profit > 0 ? '#4ade80' : '#fca5a5'}">${fmt(d.estimated_profit)}</span>
+                    </div>
+                    <div class="deal-card-actions">
+                        <button class="btn-action btn-offer" onclick="event.stopPropagation();openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',${d.offer_amount||0},'${d.offer_date||''}','${d.offer_status||'Pending'}','${(d.offer_notes||'').replace(/'/g,"\\'")}')">Offer</button>
+                        <button class="btn-action btn-archive" onclick="event.stopPropagation();archiveDeal(${d.id},${!d.is_archived})">${d.is_archived ? 'Restore' : 'Archive'}</button>
+                    </div>
+                </div>
+            `).join('');
         }
 
         // Sorting
