@@ -10,13 +10,17 @@ load_dotenv()
 from flask import Flask, render_template, jsonify, request
 from database import init_db, get_session, get_all_deals, deal_to_dict, Deal
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
+
+logger.info(f"Starting DealFlow app, PORT={os.getenv('PORT', 'not set')}")
 
 app = Flask(__name__, template_folder="dashboard", static_folder="dashboard/static")
 
 # Initialize database on startup
 try:
     init_db()
+    logger.info("Database initialized")
 except Exception as e:
     logger.warning(f"DB init on startup: {e}")
 
