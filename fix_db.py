@@ -14,12 +14,12 @@ BAD_ADDRESS_RE = re.compile(
     r'(\bspace\b|\bspc\b|\btrailer\b|\blot\b|\bunit\b|\bapt\b|#'
     r'|\bplan\b|\bresidence\b|\bat the\b|\bcollection\b|\breserve\b'
     r'|\bpaseo\b|\bvista\b|\bpointe\b'
-    r'|\bflora\b|\barboretum\b|\bmeadow\w*\b.*\bplan\b)',
+    r'|\bflora\b|\barboretum\b|\bnewman\b|\bmeadow\w*\b.*\bplan\b)',
     re.IGNORECASE
 )
 
 # Home types to EXCLUDE
-BAD_HOME_TYPES = ["mobile", "manufactured", "land", "lot"]
+BAD_HOME_TYPES = ["mobile", "manufactured", "land", "lot", "lot_land"]
 
 # Addresses starting with "0 " are vacant lots, "lot " are development lots
 LOT_ADDRESS_RE = re.compile(r'^(0\s|lot\s)', re.IGNORECASE)
