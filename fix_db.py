@@ -77,6 +77,8 @@ def is_new_construction(listing):
     # New listing + high price = likely new construction
     days = listing.get("days_on_zillow")
     price = listing.get("price") or 0
+    if days is not None and days <= 1 and price > 400000 and not yb:
+        return True
     if days is not None and days == 0 and price > 600000:
         return True
     return False

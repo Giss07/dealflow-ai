@@ -248,9 +248,14 @@ def scrape_and_normalize():
             if zpid:
                 seen_zpids.add(zpid)
             if listing["price"] and listing["address"] and not listing.get("is_new_construction"):
-                # Also skip 2024-2026 builds
+                # Skip 2024-2026 builds
                 yb = listing.get("year_built")
                 if yb and int(yb) >= 2024:
+                    continue
+                # Skip brand new listings with no year (likely new construction)
+                days = listing.get("days_on_zillow")
+                price = listing.get("price") or 0
+                if days is not None and days <= 1 and not yb and price > 400000:
                     continue
                 normalized.append(listing)
         except Exception as e:
