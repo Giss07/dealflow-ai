@@ -1,0 +1,303 @@
+"""
+DealFlow Flask App — Serves the dashboard and API endpoints.
+"""
+
+import os
+import json
+import logging
+from dotenv import load_dotenv
+load_dotenv()
+from flask import Flask, render_template, jsonify, request
+from database import init_db, get_session, get_all_deals, deal_to_dict, Deal
+
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__, template_folder="dashboard", static_folder="dashboard/static")
+
+# Initialize database on startup
+with app.app_context():
+    init_db()
+
+
+@app.route("/")
+def index():
+    """Serve the dashboard."""
+    return render_template("index.html")
+
+
+@app.route("/api/deals")
+def api_deals():
+    """Get all deals with optional filters."""
+    session = get_session()
+    try:
+        query = session.query(Deal)
+
+        # Tab filter: active, archived, offers
+        tab = request.args.get("tab", "active")
+        if tab == "archived":
+            query = query.filter(Deal.is_archived == True)
+        elif tab == "offers":
+            query = query.filter(Deal.offer_status != None)
+        else:
+            query = query.filter((Deal.is_archived == False) | (Deal.is_archived == None))
+
+        # Filters
+        zip_code = request.args.get("zip_code")
+        if zip_code:
+            query = query.filter(Deal.zip_code == zip_code)
+
+        score_min = request.args.get("score_min", type=int)
+        if score_min is not None:
+            query = query.filter(Deal.score >= score_min)
+
+        score_max = request.args.get("score_max", type=int)
+        if score_max is not None:
+            query = query.filter(Deal.score <= score_max)
+
+        price_min = request.args.get("price_min", type=float)
+        if price_min is not None:
+            query = query.filter(Deal.price >= price_min)
+
+        price_max = request.args.get("price_max", type=float)
+        if price_max is not None:
+            query = query.filter(Deal.price <= price_max)
+
+        # Sort
+        sort_by = request.args.get("sort", "score")
+        sort_dir = request.args.get("dir", "desc")
+
+        sort_column = getattr(Deal, sort_by, Deal.score)
+        if sort_dir == "asc":
+            query = query.order_by(sort_column.asc().nullslast())
+        else:
+            query = query.order_by(sort_column.desc().nullslast())
+
+        deals = query.all()
+        return jsonify([deal_to_dict(d) for d in deals])
+
+    finally:
+        session.close()
+
+
+@app.route("/api/deals/<int:deal_id>")
+def api_deal_detail(deal_id):
+    """Get a single deal with full details."""
+    session = get_session()
+    try:
+        deal = session.query(Deal).filter_by(id=deal_id).first()
+        if not deal:
+            return jsonify({"error": "Deal not found"}), 404
+        return jsonify(deal_to_dict(deal))
+    finally:
+        session.close()
+
+
+@app.route("/api/stats")
+def api_stats():
+    """Get dashboard statistics."""
+    session = get_session()
+    try:
+        total = session.query(Deal).count()
+        high_score = session.query(Deal).filter(Deal.score >= 80).count()
+        avg_score = session.query(Deal).with_entities(
+            Deal.score
+        ).all()
+        avg = sum(s[0] for s in avg_score if s[0]) / max(len([s for s in avg_score if s[0]]), 1)
+
+        return jsonify({
+            "total_deals": total,
+            "high_score_deals": high_score,
+            "average_score": round(avg, 1),
+        })
+    finally:
+        session.close()
+
+
+@app.route("/api/run-pipeline", methods=["POST"])
+def api_run_pipeline():
+    """Manually trigger the pipeline."""
+    try:
+        from main import run_full_pipeline
+        import threading
+        thread = threading.Thread(target=run_full_pipeline)
+        thread.start()
+        return jsonify({"status": "Pipeline started"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/deals/<int:deal_id>/analyze-photos", methods=["POST"])
+def api_analyze_photos(deal_id):
+    """Run photo analysis for a single deal."""
+    import threading
+    from analyze_deal import analyze_by_id
+
+    def run_analysis():
+        try:
+            analyze_by_id(deal_id)
+        except Exception as e:
+            logger.error(f"Photo analysis failed for deal {deal_id}: {e}")
+
+    thread = threading.Thread(target=run_analysis)
+    thread.start()
+    return jsonify({"status": "Photo analysis started", "deal_id": deal_id})
+
+
+@app.route("/api/deals/<int:deal_id>/archive", methods=["POST"])
+def api_archive_deal(deal_id):
+    """Toggle archive status."""
+    session = get_session()
+    try:
+        deal = session.query(Deal).filter_by(id=deal_id).first()
+        if not deal:
+            return jsonify({"error": "Deal not found"}), 404
+        data = request.get_json() or {}
+        deal.is_archived = data.get("archived", not deal.is_archived)
+        session.commit()
+        return jsonify(deal_to_dict(deal))
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+@app.route("/api/deals/<int:deal_id>/offer", methods=["POST"])
+def api_submit_offer(deal_id):
+    """Submit or update an offer."""
+    session = get_session()
+    try:
+        deal = session.query(Deal).filter_by(id=deal_id).first()
+        if not deal:
+            return jsonify({"error": "Deal not found"}), 404
+        data = request.get_json() or {}
+        if "amount" in data:
+            deal.offer_amount = float(data["amount"])
+        if "date" in data:
+            deal.offer_date = data["date"]
+        if "notes" in data:
+            deal.offer_notes = data["notes"]
+        deal.offer_status = data.get("status", deal.offer_status or "Pending")
+        session.commit()
+        return jsonify(deal_to_dict(deal))
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+@app.route("/api/deals/<int:deal_id>/update-repairs", methods=["POST"])
+def api_update_repairs(deal_id):
+    """Update repair estimate and recalculate offer."""
+    from offer_calculator import calculate_offer
+
+    data = request.get_json()
+    new_repairs = data.get("repairs")
+    if new_repairs is None:
+        return jsonify({"error": "Repairs value required"}), 400
+
+    try:
+        new_repairs = float(new_repairs)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid repairs value"}), 400
+
+    session = get_session()
+    try:
+        deal = session.query(Deal).filter_by(id=deal_id).first()
+        if not deal:
+            return jsonify({"error": "Deal not found"}), 404
+
+        deal.repairs_mid = new_repairs
+        deal.repairs_worst = new_repairs
+
+        listing = deal_to_dict(deal)
+        listing["arv"] = deal.arv
+        listing["repair_estimate"] = {"total_mid": new_repairs, "total_worst": new_repairs}
+
+        calculate_offer(listing)
+        offer = listing.get("offer_analysis", {})
+        if "error" not in offer:
+            deal.max_offer = offer.get("max_offer")
+            deal.max_offer_worst = offer.get("max_offer_worst")
+            deal.estimated_profit = offer.get("estimated_profit")
+            deal.roi_pct = offer.get("roi_pct")
+            deal.offer_analysis = json.dumps(offer)
+
+        session.commit()
+        return jsonify(deal_to_dict(deal))
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+@app.route("/api/deals/<int:deal_id>/update-arv", methods=["POST"])
+def api_update_arv(deal_id):
+    """Update ARV from Privy and recalculate offer."""
+    from offer_calculator import calculate_offer
+    from repair_estimator import estimate_repairs
+
+    data = request.get_json()
+    new_arv = data.get("arv")
+    if new_arv is None:
+        return jsonify({"error": "ARV value required"}), 400
+
+    try:
+        new_arv = float(new_arv)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid ARV value"}), 400
+
+    session = get_session()
+    try:
+        deal = session.query(Deal).filter_by(id=deal_id).first()
+        if not deal:
+            return jsonify({"error": "Deal not found"}), 404
+
+        # Update ARV
+        deal.arv = new_arv
+
+        # Rebuild listing dict for recalculation
+        listing = deal_to_dict(deal)
+        listing["arv"] = new_arv
+
+        # Ensure repairs exist
+        if not listing.get("repair_estimate") or not listing["repair_estimate"].get("total_mid"):
+            listing["photo_grades"] = listing.get("photo_grades") or {z: "Unknown" for z in ["Roof","HVAC","Plumbing","Interior","Kitchen","Bath","Foundation"]}
+            estimate_repairs(listing)
+            repair_est = listing.get("repair_estimate", {})
+            deal.repairs_mid = repair_est.get("total_mid")
+            deal.repairs_worst = repair_est.get("total_worst")
+            deal.repair_breakdown = json.dumps(repair_est.get("breakdown")) if repair_est.get("breakdown") else None
+        else:
+            listing["repair_estimate"] = {
+                "total_mid": deal.repairs_mid or 0,
+                "total_worst": deal.repairs_worst or 0,
+            }
+
+        # Recalculate offer
+        calculate_offer(listing)
+        offer = listing.get("offer_analysis", {})
+
+        if "error" not in offer:
+            deal.max_offer = offer.get("max_offer")
+            deal.max_offer_worst = offer.get("max_offer_worst")
+            deal.estimated_profit = offer.get("estimated_profit")
+            deal.roi_pct = offer.get("roi_pct")
+            deal.offer_analysis = json.dumps(offer)
+
+        session.commit()
+        return jsonify(deal_to_dict(deal))
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=os.getenv("FLASK_DEBUG", "0") == "1")

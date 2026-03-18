@@ -1,0 +1,13 @@
+.env
+.DS_Store
+*.db
+*.json
+!.env.example
+!requirements.txt
+!railway.toml
+!package.json
+dealflow_log.txt
+scraped_cache.json
+__pycache__/
+*.pyc
+.claude/

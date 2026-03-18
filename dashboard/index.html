@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DealFlow AI — IE Deal Finder</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; }
+
+        .header { background: #1e293b; padding: 20px 30px; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 24px; color: #f8fafc; }
+        .header h1 span { color: #3b82f6; }
+
+        .stats-bar { display: flex; gap: 20px; padding: 15px 30px; background: #1e293b; border-bottom: 1px solid #334155; }
+        .stat-card { background: #334155; padding: 12px 20px; border-radius: 8px; min-width: 150px; }
+        .stat-card .label { font-size: 12px; color: #94a3b8; text-transform: uppercase; }
+        .stat-card .value { font-size: 24px; font-weight: bold; color: #f8fafc; margin-top: 4px; }
+
+        .tabs { display: flex; gap: 0; padding: 0 30px; background: #1e293b; border-bottom: 1px solid #334155; }
+        .tab { padding: 12px 24px; cursor: pointer; color: #94a3b8; font-size: 14px; font-weight: 500; border-bottom: 2px solid transparent; transition: all 0.15s; }
+        .tab:hover { color: #e2e8f0; }
+        .tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
+        .tab .badge { background: #475569; color: #e2e8f0; padding: 2px 8px; border-radius: 10px; font-size: 12px; margin-left: 6px; }
+
+        .filters { padding: 15px 30px; background: #1e293b; border-bottom: 1px solid #334155; display: flex; gap: 15px; flex-wrap: wrap; align-items: center; }
+        .filters label { font-size: 12px; color: #94a3b8; text-transform: uppercase; }
+        .filters select, .filters input { background: #334155; border: 1px solid #475569; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
+        .filters button { background: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+        .filters button:hover { background: #2563eb; }
+        .btn-run { background: #22c55e !important; }
+        .btn-run:hover { background: #16a34a !important; }
+
+        .container { padding: 20px 30px; }
+
+        table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; }
+        thead th { background: #334155; padding: 12px 15px; text-align: left; font-size: 13px; color: #94a3b8; text-transform: uppercase; cursor: pointer; user-select: none; white-space: nowrap; }
+        thead th:hover { color: #e2e8f0; }
+        thead th.sorted { color: #3b82f6; }
+        tbody td { padding: 12px 15px; border-bottom: 1px solid #334155; font-size: 14px; }
+        tbody tr { cursor: pointer; transition: background 0.15s; }
+        tbody tr:hover { background: #334155; }
+
+        .score-badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-weight: bold; font-size: 13px; }
+        .score-green { background: #166534; color: #4ade80; }
+        .score-yellow { background: #854d0e; color: #fbbf24; }
+        .score-red { background: #991b1b; color: #fca5a5; }
+
+        .condition-badge { display: inline-block; padding: 2px 8px; border-radius: 8px; font-size: 12px; }
+        .cond-good { background: #166534; color: #4ade80; }
+        .cond-fair { background: #854d0e; color: #fbbf24; }
+        .cond-poor { background: #991b1b; color: #fca5a5; }
+        .cond-unknown { background: #475569; color: #94a3b8; }
+
+        .offer-status { display: inline-block; padding: 3px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+        .offer-pending { background: #854d0e; color: #fbbf24; }
+        .offer-accepted { background: #166534; color: #4ade80; }
+        .offer-rejected { background: #991b1b; color: #fca5a5; }
+        .offer-countered { background: #1e3a5f; color: #60a5fa; }
+
+        /* Modal — full screen overlay */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); z-index: 1000; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        .modal-overlay.active { display: flex; justify-content: center; align-items: flex-start; padding: 40px 20px; }
+        .modal { background: #1e293b; border-radius: 12px; max-width: 800px; width: 100%; border: 1px solid #334155; position: relative; margin: auto 0; box-shadow: 0 25px 50px rgba(0,0,0,0.5); }
+        .modal-header { padding: 20px; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; background: #1e293b; border-radius: 12px 12px 0 0; z-index: 1; }
+        .modal-header h2 { font-size: 20px; color: #f8fafc; }
+        .modal-close { background: none; border: none; color: #94a3b8; font-size: 28px; cursor: pointer; padding: 0 5px; line-height: 1; }
+        .modal-close:hover { color: #f8fafc; }
+        .modal-body { padding: 20px; }
+
+        .analysis-section { margin-bottom: 20px; }
+        .analysis-section h3 { font-size: 14px; text-transform: uppercase; color: #3b82f6; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid #334155; }
+        .analysis-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
+        .analysis-row .label { color: #94a3b8; }
+        .analysis-row .value { color: #f8fafc; font-weight: 500; }
+        .analysis-row.total { border-top: 1px solid #475569; padding-top: 10px; margin-top: 5px; }
+        .analysis-row.total .value { color: #3b82f6; font-weight: bold; }
+        .analysis-row.profit .value { color: #4ade80; font-weight: bold; font-size: 18px; }
+
+        .grades-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+        .grade-item { background: #334155; padding: 10px; border-radius: 8px; text-align: center; }
+        .grade-item .zone { font-size: 12px; color: #94a3b8; }
+        .grade-item .grade { font-size: 16px; font-weight: bold; margin-top: 4px; }
+
+        .btn-privy { display: inline-block; background: #8b5cf6; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; margin-right: 10px; font-size: 14px; }
+        .btn-zillow { display: inline-block; background: #3b82f6; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-size: 14px; }
+        .btn-copy { display: inline-block; background: #64748b; color: white; padding: 10px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; }
+        .btn-copy:hover { background: #475569; }
+        .btn-action { display: inline-block; background: #475569; color: white; padding: 10px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; margin-right: 10px; }
+        .btn-action:hover { background: #64748b; }
+        .btn-archive { background: #dc2626; }
+        .btn-archive:hover { background: #b91c1c; }
+        .btn-offer { background: #f59e0b; }
+        .btn-offer:hover { background: #d97706; }
+
+        .input-field { background: #1e293b; border: 1px solid #475569; color: #f8fafc; padding: 10px 14px; border-radius: 6px; font-size: 16px; font-weight: bold; width: 180px; }
+        .input-field:focus { border-color: #3b82f6; outline: none; }
+        .btn-save { background: #22c55e; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; }
+        .btn-save:hover { background: #16a34a; }
+
+        .empty-state { text-align: center; padding: 60px; color: #64748b; }
+        .empty-state h3 { font-size: 18px; margin-bottom: 10px; }
+
+        /* Offer form */
+        .offer-form { background: #334155; padding: 15px; border-radius: 8px; margin-top: 15px; }
+        .offer-form label { display: block; font-size: 12px; color: #94a3b8; text-transform: uppercase; margin-bottom: 4px; margin-top: 10px; }
+        .offer-form input, .offer-form select, .offer-form textarea { width: 100%; background: #1e293b; border: 1px solid #475569; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
+        .offer-form textarea { height: 60px; resize: vertical; }
+
+        @media (max-width: 768px) {
+            .stats-bar { flex-direction: column; }
+            .filters { flex-direction: column; }
+            table { font-size: 12px; }
+            thead th, tbody td { padding: 8px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>DealFlow <span>AI</span></h1>
+        <button class="btn-run" onclick="runPipeline()">Run Pipeline</button>
+    </div>
+
+    <div class="stats-bar" id="stats-bar">
+        <div class="stat-card"><div class="label">Total Deals</div><div class="value" id="stat-total">—</div></div>
+        <div class="stat-card"><div class="label">Score 80+</div><div class="value" id="stat-high">—</div></div>
+        <div class="stat-card"><div class="label">Avg Score</div><div class="value" id="stat-avg">—</div></div>
+    </div>
+
+    <div class="tabs">
+        <div class="tab active" data-tab="active" onclick="switchTab('active')">Active Deals <span class="badge" id="tab-active-count">0</span></div>
+        <div class="tab" data-tab="offers" onclick="switchTab('offers')">My Offers <span class="badge" id="tab-offers-count">0</span></div>
+        <div class="tab" data-tab="archived" onclick="switchTab('archived')">Archived <span class="badge" id="tab-archived-count">0</span></div>
+    </div>
+
+    <div class="filters" id="filters-bar">
+        <div><label>Zip Code</label><br><select id="filter-zip" onchange="loadDeals()"><option value="">All Zips</option></select></div>
+        <div><label>Score Min</label><br><input type="number" id="filter-score-min" placeholder="0" min="0" max="100" style="width:80px" onchange="loadDeals()"></div>
+        <div><label>Score Max</label><br><input type="number" id="filter-score-max" placeholder="100" min="0" max="100" style="width:80px" onchange="loadDeals()"></div>
+        <div><label>Price Min</label><br><input type="number" id="filter-price-min" placeholder="0" style="width:120px" onchange="loadDeals()"></div>
+        <div><label>Price Max</label><br><input type="number" id="filter-price-max" placeholder="900000" style="width:120px" onchange="loadDeals()"></div>
+        <div><label>&nbsp;</label><br><button onclick="clearFilters()">Clear Filters</button></div>
+    </div>
+
+    <div class="container">
+        <table id="deals-table">
+            <thead>
+                <tr id="table-header">
+                    <th data-sort="days_on_zillow" class="sorted">Listed &#9650;</th>
+                    <th data-sort="score">Score</th>
+                    <th data-sort="address">Address</th>
+                    <th data-sort="zip_code">Zip</th>
+                    <th data-sort="price">Price</th>
+                    <th data-sort="arv">ARV</th>
+                    <th data-sort="max_offer">Max Offer</th>
+                    <th data-sort="estimated_profit">Profit</th>
+                    <th data-sort="roi_pct">ROI</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="deals-body"></tbody>
+        </table>
+        <div class="empty-state" id="empty-state" style="display:none;">
+            <h3>No deals found</h3>
+            <p>Run the pipeline to scrape and analyze listings, or adjust your filters.</p>
+        </div>
+    </div>
+
+    <!-- Deal Detail Modal -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal" id="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2 id="modal-title">Deal Details</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Offer Form Modal -->
+    <div class="modal-overlay" id="offer-modal-overlay">
+        <div class="modal" style="max-width:500px;" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2 id="offer-modal-title">Submit Offer</h2>
+                <button class="modal-close" onclick="closeOfferModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="offer-form">
+                    <input type="hidden" id="offer-deal-id">
+                    <label>Offer Amount ($)</label>
+                    <input type="number" id="offer-amount" placeholder="Enter offer amount">
+                    <label>Date</label>
+                    <input type="date" id="offer-date">
+                    <label>Status</label>
+                    <select id="offer-form-status">
+                        <option value="Pending">Pending</option>
+                        <option value="Accepted">Accepted</option>
+                        <option value="Rejected">Rejected</option>
+                        <option value="Countered">Countered</option>
+                    </select>
+                    <label>Notes</label>
+                    <textarea id="offer-notes" placeholder="Optional notes..."></textarea>
+                    <div style="margin-top:15px;">
+                        <button class="btn-save" onclick="saveOffer()">Save Offer</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentSort = 'days_on_zillow';
+        let currentDir = 'asc';
+        let currentTab = 'active';
+        let allDeals = [];
+
+        async function loadStats() {
+            try {
+                const resp = await fetch('/api/stats');
+                const stats = await resp.json();
+                document.getElementById('stat-total').textContent = stats.total_deals;
+                document.getElementById('stat-high').textContent = stats.high_score_deals;
+                document.getElementById('stat-avg').textContent = stats.average_score;
+            } catch(e) {}
+        }
+
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
+            loadDeals();
+        }
+
+        async function loadDeals() {
+            const params = new URLSearchParams();
+            params.set('sort', currentSort);
+            params.set('dir', currentDir);
+            params.set('tab', currentTab);
+
+            const zip = document.getElementById('filter-zip').value;
+            if (zip) params.set('zip_code', zip);
+            const scoreMin = document.getElementById('filter-score-min').value;
+            if (scoreMin) params.set('score_min', scoreMin);
+            const scoreMax = document.getElementById('filter-score-max').value;
+            if (scoreMax) params.set('score_max', scoreMax);
+            const priceMin = document.getElementById('filter-price-min').value;
+            if (priceMin) params.set('price_min', priceMin);
+            const priceMax = document.getElementById('filter-price-max').value;
+            if (priceMax) params.set('price_max', priceMax);
+
+            try {
+                const resp = await fetch('/api/deals?' + params.toString());
+                allDeals = await resp.json();
+                renderDeals(allDeals);
+                populateZipFilter(allDeals);
+                updateTabCounts();
+            } catch(e) { console.error('Failed to load deals', e); }
+        }
+
+        async function updateTabCounts() {
+            try {
+                const [active, archived, offers] = await Promise.all([
+                    fetch('/api/deals?tab=active').then(r => r.json()),
+                    fetch('/api/deals?tab=archived').then(r => r.json()),
+                    fetch('/api/deals?tab=offers').then(r => r.json()),
+                ]);
+                document.getElementById('tab-active-count').textContent = active.length;
+                document.getElementById('tab-archived-count').textContent = archived.length;
+                document.getElementById('tab-offers-count').textContent = offers.length;
+            } catch(e) {}
+        }
+
+        function populateZipFilter(deals) {
+            const select = document.getElementById('filter-zip');
+            const current = select.value;
+            if (select.options.length <= 1) {
+                const zips = [...new Set(deals.map(d => d.zip_code).filter(Boolean))].sort();
+                zips.forEach(z => { const opt = document.createElement('option'); opt.value = z; opt.textContent = z; select.appendChild(opt); });
+            }
+            select.value = current;
+        }
+
+        function fmt(val) { if (val == null) return '—'; return '$' + Math.round(val).toLocaleString(); }
+        function scoreClass(s) { if (s >= 80) return 'score-green'; if (s >= 60) return 'score-yellow'; return 'score-red'; }
+        function condClass(c) { if (!c) return 'cond-unknown'; return 'cond-' + c.toLowerCase(); }
+        function offerClass(s) { if (!s) return ''; return 'offer-' + s.toLowerCase(); }
+
+        function daysAgo(days) {
+            if (days == null) return '—';
+            if (days === 0) return 'Today';
+            if (days === 1) return '1 day ago';
+            if (days < 7) return days + ' days ago';
+            if (days < 14) return '1 week ago';
+            if (days < 30) return Math.floor(days / 7) + ' weeks ago';
+            return Math.floor(days / 30) + ' mo ago';
+        }
+        function daysColor(d) { if (d == null) return '#94a3b8'; if (d <= 3) return '#4ade80'; if (d <= 7) return '#22d3ee'; if (d <= 14) return '#fbbf24'; return '#94a3b8'; }
+
+        function estRepairs(d) {
+            const mid = d.repairs_mid || 0;
+            const worst = d.repairs_worst || 0;
+            if (!mid && !worst) return 0;
+            return Math.round((mid + worst) / 2);
+        }
+
+        function renderDeals(deals) {
+            const tbody = document.getElementById('deals-body');
+            const empty = document.getElementById('empty-state');
+            if (!deals.length) { tbody.innerHTML = ''; empty.style.display = 'block'; return; }
+            empty.style.display = 'none';
+
+            if (currentTab === 'offers') {
+                tbody.innerHTML = deals.map(d => `
+                    <tr onclick="showDeal(${d.id})">
+                        <td style="color:${daysColor(d.days_on_zillow)};white-space:nowrap;">${daysAgo(d.days_on_zillow)}</td>
+                        <td><span class="score-badge ${scoreClass(d.score)}">${d.score ?? '—'}</span></td>
+                        <td>${d.address || '—'}</td>
+                        <td>${d.zip_code || '—'}</td>
+                        <td>${fmt(d.price)}</td>
+                        <td>${fmt(d.offer_amount)}</td>
+                        <td>${d.offer_date || '—'}</td>
+                        <td><span class="offer-status ${offerClass(d.offer_status)}">${d.offer_status || '—'}</span></td>
+                        <td>${fmt(d.estimated_profit)}</td>
+                        <td><button class="btn-action btn-offer" onclick="event.stopPropagation();openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',${d.offer_amount||0},'${d.offer_date||''}','${d.offer_status||'Pending'}','${(d.offer_notes||'').replace(/'/g,"\\'")}')">Update</button></td>
+                    </tr>
+                `).join('');
+            } else {
+                tbody.innerHTML = deals.map(d => `
+                    <tr onclick="showDeal(${d.id})">
+                        <td style="color:${daysColor(d.days_on_zillow)};white-space:nowrap;">${daysAgo(d.days_on_zillow)}</td>
+                        <td><span class="score-badge ${scoreClass(d.score)}">${d.score ?? '—'}</span></td>
+                        <td>${d.address || '—'}</td>
+                        <td>${d.zip_code || '—'}</td>
+                        <td>${fmt(d.price)}</td>
+                        <td>${fmt(d.arv)}</td>
+                        <td>${fmt(d.max_offer)}</td>
+                        <td style="color:${d.estimated_profit > 0 ? '#4ade80' : '#fca5a5'}">${fmt(d.estimated_profit)}</td>
+                        <td>${d.roi_pct != null ? d.roi_pct + '%' : '—'}</td>
+                        <td style="white-space:nowrap;">
+                            <button class="btn-action btn-offer" onclick="event.stopPropagation();openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',0,'','Pending','')" title="Submit Offer">Offer</button>
+                            <button class="btn-action btn-archive" onclick="event.stopPropagation();archiveDeal(${d.id},${!d.is_archived})" title="${d.is_archived ? 'Restore' : 'Archive'}">${d.is_archived ? 'Restore' : 'Archive'}</button>
+                        </td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        // Sorting
+        document.querySelectorAll('thead th[data-sort]').forEach(th => {
+            th.addEventListener('click', () => {
+                const col = th.dataset.sort;
+                if (currentSort === col) { currentDir = currentDir === 'desc' ? 'asc' : 'desc'; }
+                else { currentSort = col; currentDir = 'desc'; }
+                document.querySelectorAll('thead th').forEach(t => { t.classList.remove('sorted'); t.textContent = t.textContent.replace(/ [▼▲]/g, ''); });
+                th.classList.add('sorted');
+                th.textContent += currentDir === 'desc' ? ' ▼' : ' ▲';
+                loadDeals();
+            });
+        });
+
+        // Deal detail
+        async function showDeal(id) {
+            try {
+                const resp = await fetch(`/api/deals/${id}`);
+                const d = await resp.json();
+                document.getElementById('modal-title').textContent = d.address || 'Deal Details';
+                document.getElementById('modal-body').innerHTML = buildDealDetail(d);
+                document.getElementById('modal-overlay').classList.add('active');
+            } catch(e) {}
+        }
+
+        function buildDealDetail(d) {
+            const o = d.offer_analysis || {};
+            const grades = d.photo_grades || {};
+            const repairs = estRepairs(d);
+
+            let html = `
+                <div style="margin-bottom:15px;">
+                    <span class="score-badge ${scoreClass(d.score)}" style="font-size:18px;">Score: ${d.score ?? '—'}/100</span>
+                    <span class="condition-badge ${condClass(d.overall_condition)}" style="margin-left:10px;">${d.overall_condition || 'Unknown'} Condition</span>
+                </div>
+                <p style="color:#94a3b8;margin-bottom:15px;">${d.score_reasoning || ''}</p>
+                <div style="margin-bottom:15px;display:flex;flex-wrap:wrap;gap:10px;">
+                    ${d.privy_url ? `<a href="${d.privy_url}" target="_blank" class="btn-privy">Open in Privy</a>` : ''}
+                    <a href="https://www.zillow.com/homes/for_sale/${encodeURIComponent(d.address + ', ' + d.city + ', ' + d.state + ' ' + d.zip_code)}_rb/" target="_blank" class="btn-zillow">View on Zillow</a>
+                    <button class="btn-copy" onclick="event.stopPropagation();copyAddress('${(d.address + ', ' + d.city + ', ' + (d.state||'CA') + ' ' + (d.zip_code||'')).replace(/'/g,"\\'")}')" id="btn-copy-${d.id}">Copy Address</button>
+                    <button class="btn-action" onclick="analyzePhotos(${d.id})" id="btn-analyze-${d.id}">Analyze Photos</button>
+                    <button class="btn-action btn-offer" onclick="openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',${d.offer_amount||0},'${d.offer_date||''}','${d.offer_status||'Pending'}','${(d.offer_notes||'').replace(/'/g,"\\'")}')">Submit Offer</button>
+                    <button class="btn-action btn-archive" onclick="archiveDeal(${d.id},${!d.is_archived})">${d.is_archived ? 'Restore Deal' : 'Archive Deal'}</button>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:15px;font-size:14px;">
+                    <div><span style="color:#94a3b8">Price:</span> ${fmt(d.price)}</div>
+                    <div><span style="color:#94a3b8">Year Built:</span> ${d.year_built || '—'}</div>
+                    <div><span style="color:#94a3b8">Bed/Bath:</span> ${d.bedrooms || '—'}/${d.bathrooms || '—'}</div>
+                    <div><span style="color:#94a3b8">Sqft:</span> ${d.sqft ? d.sqft.toLocaleString() : '—'}</div>
+                    <div><span style="color:#94a3b8">Zip:</span> ${d.zip_code || '—'}</div>
+                    <div><span style="color:#94a3b8">Listed:</span> <span style="color:${daysColor(d.days_on_zillow)}">${daysAgo(d.days_on_zillow)}</span></div>
+                </div>
+
+                <!-- ARV Input -->
+                <div style="background:#334155;padding:15px;border-radius:8px;margin-bottom:15px;">
+                    <label style="font-size:13px;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:6px;">ARV (from Privy)</label>
+                    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                        <span style="color:#94a3b8;font-size:18px;">$</span>
+                        <input type="number" id="arv-input-${d.id}" value="${d.arv || ''}" class="input-field">
+                        <button class="btn-save" onclick="updateArv(${d.id})">Save ARV</button>
+                        <span id="arv-status-${d.id}" style="color:#94a3b8;font-size:13px;"></span>
+                    </div>
+                </div>
+
+                <!-- Repairs Input -->
+                <div style="background:#334155;padding:15px;border-radius:8px;margin-bottom:15px;">
+                    <label style="font-size:13px;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:6px;">Est. Repairs (your estimate)</label>
+                    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                        <span style="color:#94a3b8;font-size:18px;">$</span>
+                        <input type="number" id="repairs-input-${d.id}" value="${repairs || ''}" class="input-field">
+                        <button class="btn-save" onclick="updateRepairs(${d.id})">Save Repairs</button>
+                        <span id="repairs-status-${d.id}" style="color:#94a3b8;font-size:13px;"></span>
+                    </div>
+                </div>
+            `;
+
+            // Photo Grades
+            if (Object.keys(grades).length && Object.values(grades).some(g => g !== 'Unknown')) {
+                html += `<div class="analysis-section"><h3>Photo Condition Grades</h3><div class="grades-grid">`;
+                for (const [zone, grade] of Object.entries(grades)) {
+                    const cls = grade === 'Good' ? '#4ade80' : grade === 'Fair' ? '#fbbf24' : grade === 'Poor' ? '#fca5a5' : '#94a3b8';
+                    html += `<div class="grade-item"><div class="zone">${zone}</div><div class="grade" style="color:${cls}">${grade}</div></div>`;
+                }
+                html += `</div></div>`;
+            }
+
+            // Profit Analysis
+            if (o.arv) {
+                html += `
+                <div class="analysis-section"><h3>Buying</h3>
+                    <div class="analysis-row"><span class="label">Purchase Price (Max Offer)</span><span class="value">${fmt(o.purchase_price)}</span></div>
+                    <div class="analysis-row"><span class="label">Closing/Title (1%)</span><span class="value">${fmt(o.closing_buy)}</span></div>
+                    <div class="analysis-row total"><span class="label">Total Acquisition</span><span class="value">${fmt(o.total_acquisition)}</span></div>
+                </div>
+                <div class="analysis-section"><h3>Renovation</h3>
+                    <div class="analysis-row"><span class="label">Est. Repairs</span><span class="value">${fmt(o.total_renovation)}</span></div>
+                </div>
+                <div class="analysis-section"><h3>Holding (3 Months)</h3>
+                    <div class="analysis-row"><span class="label">Loan Amount (100% LTC)</span><span class="value">${fmt(o.loan_amount)}</span></div>
+                    <div class="analysis-row"><span class="label">Private Money Interest (12%)</span><span class="value">${fmt(o.private_money_interest)}</span></div>
+                    <div class="analysis-row"><span class="label">Property Taxes</span><span class="value">${fmt(o.property_taxes)}</span></div>
+                    <div class="analysis-row"><span class="label">Insurance</span><span class="value">${fmt(o.insurance)}</span></div>
+                    <div class="analysis-row"><span class="label">Utilities</span><span class="value">${fmt(o.utilities)}</span></div>
+                    <div class="analysis-row total"><span class="label">Total Holding</span><span class="value">${fmt(o.total_holding)}</span></div>
+                </div>
+                <div class="analysis-section"><h3>Selling</h3>
+                    <div class="analysis-row"><span class="label">Staging/Marketing</span><span class="value">${fmt(o.staging_marketing)}</span></div>
+                    <div class="analysis-row"><span class="label">Closing Costs (1% ARV)</span><span class="value">${fmt(o.closing_sell)}</span></div>
+                    <div class="analysis-row"><span class="label">Listing Agent (2% ARV)</span><span class="value">${fmt(o.listing_agent_commission)}</span></div>
+                    <div class="analysis-row"><span class="label">Buyers Agent (2% ARV)</span><span class="value">${fmt(o.buyers_agent_commission)}</span></div>
+                    <div class="analysis-row total"><span class="label">Total Selling</span><span class="value">${fmt(o.total_selling)}</span></div>
+                </div>
+                <div class="analysis-section" style="background:#0f172a;padding:15px;border-radius:8px;">
+                    <h3>Summary</h3>
+                    <div class="analysis-row"><span class="label">ARV</span><span class="value">${fmt(o.arv)}</span></div>
+                    <div class="analysis-row"><span class="label">Total All Costs</span><span class="value">${fmt(o.total_all_costs)}</span></div>
+                    <div class="analysis-row"><span class="label">Target Profit (10% ARV)</span><span class="value">${fmt(o.target_profit)}</span></div>
+                    <div class="analysis-row profit"><span class="label" style="font-size:16px;">Estimated Profit</span><span class="value">${fmt(o.estimated_profit)}</span></div>
+                    <div class="analysis-row"><span class="label">Max Offer Price</span><span class="value" style="color:#3b82f6;font-weight:bold;">${fmt(o.max_offer)}</span></div>
+                    <div class="analysis-row"><span class="label">Cash Requirements</span><span class="value">${fmt(o.cash_requirements)}</span></div>
+                    <div class="analysis-row"><span class="label">ROI</span><span class="value">${o.roi_pct ?? '—'}%</span></div>
+                </div>`;
+            }
+            return html;
+        }
+
+        function closeModal() { document.getElementById('modal-overlay').classList.remove('active'); }
+        document.getElementById('modal-overlay').addEventListener('click', e => { if (e.target === document.getElementById('modal-overlay')) closeModal(); });
+
+        // ARV update
+        async function updateArv(dealId) {
+            const arv = parseFloat(document.getElementById(`arv-input-${dealId}`).value);
+            const status = document.getElementById(`arv-status-${dealId}`);
+            if (!arv || arv <= 0) { status.textContent = 'Enter valid ARV'; status.style.color = '#fca5a5'; return; }
+            status.textContent = 'Saving...'; status.style.color = '#94a3b8';
+            try {
+                const resp = await fetch(`/api/deals/${dealId}/update-arv`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({arv}) });
+                const deal = await resp.json();
+                if (deal.error) { status.textContent = deal.error; status.style.color = '#fca5a5'; }
+                else { status.textContent = `Saved! Profit: ${fmt(deal.estimated_profit)}`; status.style.color = '#4ade80'; setTimeout(() => { showDeal(dealId); loadDeals(); }, 500); }
+            } catch(e) { status.textContent = 'Failed'; status.style.color = '#fca5a5'; }
+        }
+
+        // Repairs update
+        async function updateRepairs(dealId) {
+            const repairs = parseFloat(document.getElementById(`repairs-input-${dealId}`).value);
+            const status = document.getElementById(`repairs-status-${dealId}`);
+            if (!repairs || repairs < 0) { status.textContent = 'Enter valid amount'; status.style.color = '#fca5a5'; return; }
+            status.textContent = 'Saving...'; status.style.color = '#94a3b8';
+            try {
+                const resp = await fetch(`/api/deals/${dealId}/update-repairs`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({repairs}) });
+                const deal = await resp.json();
+                if (deal.error) { status.textContent = deal.error; status.style.color = '#fca5a5'; }
+                else { status.textContent = `Saved! Profit: ${fmt(deal.estimated_profit)}`; status.style.color = '#4ade80'; setTimeout(() => { showDeal(dealId); loadDeals(); }, 500); }
+            } catch(e) { status.textContent = 'Failed'; status.style.color = '#fca5a5'; }
+        }
+
+        // Archive
+        async function archiveDeal(dealId, archive) {
+            try {
+                await fetch(`/api/deals/${dealId}/archive`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({archived: archive}) });
+                closeModal();
+                loadDeals();
+            } catch(e) { alert('Failed to archive deal'); }
+        }
+
+        // Offer form
+        function openOfferForm(dealId, address, amount, date, status, notes) {
+            document.getElementById('offer-deal-id').value = dealId;
+            document.getElementById('offer-modal-title').textContent = 'Offer: ' + address;
+            document.getElementById('offer-amount').value = amount || '';
+            document.getElementById('offer-date').value = date || new Date().toISOString().split('T')[0];
+            document.getElementById('offer-form-status').value = status || 'Pending';
+            document.getElementById('offer-notes').value = notes || '';
+            document.getElementById('offer-modal-overlay').classList.add('active');
+        }
+        function closeOfferModal() { document.getElementById('offer-modal-overlay').classList.remove('active'); }
+        document.getElementById('offer-modal-overlay').addEventListener('click', e => { if (e.target === document.getElementById('offer-modal-overlay')) closeOfferModal(); });
+
+        async function saveOffer() {
+            const dealId = document.getElementById('offer-deal-id').value;
+            const data = {
+                amount: parseFloat(document.getElementById('offer-amount').value) || 0,
+                date: document.getElementById('offer-date').value,
+                status: document.getElementById('offer-form-status').value,
+                notes: document.getElementById('offer-notes').value,
+            };
+            try {
+                await fetch(`/api/deals/${dealId}/offer`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) });
+                closeOfferModal();
+                closeModal();
+                loadDeals();
+            } catch(e) { alert('Failed to save offer'); }
+        }
+
+        // Photo analysis
+        function copyAddress(addr) {
+            navigator.clipboard.writeText(addr).then(() => {
+                const btn = event.target;
+                const orig = btn.textContent;
+                btn.textContent = 'Copied!';
+                btn.style.background = '#22c55e';
+                setTimeout(() => { btn.textContent = orig; btn.style.background = '#64748b'; }, 1500);
+            }).catch(() => {
+                // Fallback for older browsers
+                const ta = document.createElement('textarea');
+                ta.value = addr; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+                const btn = event.target;
+                btn.textContent = 'Copied!'; btn.style.background = '#22c55e';
+                setTimeout(() => { btn.textContent = 'Copy Address'; btn.style.background = '#64748b'; }, 1500);
+            });
+        }
+
+        async function analyzePhotos(dealId) {
+            const btn = document.getElementById(`btn-analyze-${dealId}`);
+            if (btn) { btn.textContent = 'Analyzing...'; btn.disabled = true; }
+            try {
+                await fetch(`/api/deals/${dealId}/analyze-photos`, {method:'POST'});
+                alert('Photo analysis started. Results in ~30 seconds.');
+                setTimeout(() => { showDeal(dealId); if (btn) { btn.textContent = 'Analyze Photos'; btn.disabled = false; } }, 30000);
+            } catch(e) { alert('Failed'); if (btn) { btn.textContent = 'Analyze Photos'; btn.disabled = false; } }
+        }
+
+        // Pipeline
+        async function runPipeline() {
+            if (!confirm('Run the full DealFlow pipeline?')) return;
+            try { const r = await fetch('/api/run-pipeline',{method:'POST'}); const d = await r.json(); alert(d.status||d.error); } catch(e) { alert('Failed'); }
+        }
+
+        function clearFilters() {
+            document.getElementById('filter-zip').value = '';
+            document.getElementById('filter-score-min').value = '';
+            document.getElementById('filter-score-max').value = '';
+            document.getElementById('filter-price-min').value = '';
+            document.getElementById('filter-price-max').value = '';
+            loadDeals();
+        }
+
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeOfferModal(); } });
+
+        // Init
+        loadStats();
+        loadDeals();
+    </script>
+</body>
+</html>
