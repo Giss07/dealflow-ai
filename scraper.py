@@ -103,6 +103,17 @@ def normalize_listing(raw):
     if isinstance(price, str):
         price = int(price.replace("$", "").replace(",", "").strip()) if price.replace("$","").replace(",","").strip().isdigit() else None
 
+    # Detect new construction from Apify data
+    sub_type = home_info.get("listing_sub_type", {})
+    is_new_construction = bool(
+        sub_type.get("is_newHome")
+        or sub_type.get("is_NEW_CONSTRUCTION")
+        or sub_type.get("is_newConstruction")
+        or raw.get("newConstructionType")
+        or "NEW_CONSTRUCTION" in (home_info.get("homeStatus") or "")
+        or "new_construction" in str(sub_type).lower()
+    )
+
     return {
         "zpid": str(home_info.get("zpid") or raw.get("zpid", "")),
         "address": raw.get("addressStreet") or home_info.get("streetAddress", ""),
@@ -126,6 +137,7 @@ def normalize_listing(raw):
         "status": home_info.get("homeStatus") or raw.get("statusType", ""),
         "zestimate": home_info.get("zestimate") or raw.get("zestimate"),
         "broker": raw.get("brokerName", ""),
+        "is_new_construction": is_new_construction,
         "raw_data": raw,
     }
 
@@ -235,7 +247,11 @@ def scrape_and_normalize():
                 continue
             if zpid:
                 seen_zpids.add(zpid)
-            if listing["price"] and listing["address"]:
+            if listing["price"] and listing["address"] and not listing.get("is_new_construction"):
+                # Also skip 2024-2026 builds
+                yb = listing.get("year_built")
+                if yb and int(yb) >= 2024:
+                    continue
                 normalized.append(listing)
         except Exception as e:
             logger.warning(f"Failed to normalize listing: {e}")
