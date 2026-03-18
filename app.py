@@ -15,14 +15,26 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__, template_folder="dashboard", static_folder="dashboard/static")
 
 # Initialize database on startup
-with app.app_context():
+try:
     init_db()
+except Exception as e:
+    logger.warning(f"DB init on startup: {e}")
+
+
+@app.route("/health")
+def health():
+    """Healthcheck endpoint for Railway."""
+    return "ok", 200
 
 
 @app.route("/")
 def index():
     """Serve the dashboard."""
-    return render_template("index.html")
+    try:
+        return render_template("index.html")
+    except Exception as e:
+        logger.error(f"Template error: {e}")
+        return f"<h1>DealFlow AI</h1><p>Dashboard loading error: {e}</p>", 500
 
 
 @app.route("/api/deals")
