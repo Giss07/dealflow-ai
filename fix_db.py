@@ -12,8 +12,9 @@ from database import init_db, get_session, Deal, PipelineRun, save_deals
 # Address patterns to EXCLUDE
 BAD_ADDRESS_RE = re.compile(
     r'(\bspace\b|\bspc\b|\btrailer\b|\blot\b|\bunit\b|\bapt\b|#'
-    r'|\bplan\s*[1-4]\b|\bresidence\s*(one|two|three|four)\b'
-    r'|\bpaseo\b|\bvista\b|\bpointe\b)',
+    r'|\bplan\b|\bresidence\b|\bat the\b|\bcollection\b|\breserve\b'
+    r'|\bpaseo\b|\bvista\b|\bpointe\b'
+    r'|\bflora\b|\barboretum\b|\bmeadow\w*\b.*\bplan\b)',
     re.IGNORECASE
 )
 
@@ -73,6 +74,11 @@ def is_new_construction(listing):
                 return True
         except (ValueError, TypeError):
             pass
+    # New listing + high price = likely new construction
+    days = listing.get("days_on_zillow")
+    price = listing.get("price") or 0
+    if days is not None and days == 0 and price > 600000:
+        return True
     return False
 
 
