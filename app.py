@@ -299,5 +299,5 @@ def api_update_arv(deal_id):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    port = int(os.getenv("PORT", 5000))
+    port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=os.getenv("FLASK_DEBUG", "0") == "1")
