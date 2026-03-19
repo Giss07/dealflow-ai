@@ -345,22 +345,7 @@
             if (!deals.length) { tbody.innerHTML = ''; cards.innerHTML = ''; empty.style.display = 'block'; return; }
             empty.style.display = 'none';
 
-            if (currentTab === 'offers') {
-                tbody.innerHTML = deals.map(d => `
-                    <tr onclick="showDeal(${d.id})">
-                        <td style="color:${daysColor(d.days_on_zillow)};white-space:nowrap;">${daysAgo(d.days_on_zillow)}</td>
-                        <td><span class="score-badge ${scoreClass(d.score)}">${d.score ?? '—'}</span></td>
-                        <td>${d.address || '—'}</td>
-                        <td>${d.zip_code || '—'}</td>
-                        <td>${fmt(d.price)}</td>
-                        <td>${fmt(d.offer_amount)}</td>
-                        <td>${d.offer_date || '—'}</td>
-                        <td><span class="offer-status ${offerClass(d.offer_status)}">${d.offer_status || '—'}</span></td>
-                        <td>${fmt(d.estimated_profit)}</td>
-                        <td><button class="btn-action btn-offer" onclick="event.stopPropagation();openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',${d.offer_amount||0},'${d.offer_date||''}','${d.offer_status||'Pending'}','${(d.offer_notes||'').replace(/'/g,"\\'")}')">Update</button></td>
-                    </tr>
-                `).join('');
-            } else {
+            {
                 tbody.innerHTML = deals.map(d => `
                     <tr onclick="showDeal(${d.id})">
                         <td style="color:${daysColor(d.days_on_zillow)};white-space:nowrap;">${daysAgo(d.days_on_zillow)}</td>
@@ -536,7 +521,7 @@
 
         // ARV update
         async function updateArv(dealId) {
-            const arv = parseFloat(document.getElementById(`arv-input-${dealId}`).value);
+            const arv = parseFloat(document.getElementById(`arv-input-${dealId}`).value.replace(/,/g, ''));
             const status = document.getElementById(`arv-status-${dealId}`);
             if (!arv || arv <= 0) { status.textContent = 'Enter valid ARV'; status.style.color = '#fca5a5'; return; }
             status.textContent = 'Saving...'; status.style.color = '#94a3b8';
@@ -550,7 +535,7 @@
 
         // Repairs update
         async function updateRepairs(dealId) {
-            const repairs = parseFloat(document.getElementById(`repairs-input-${dealId}`).value);
+            const repairs = parseFloat(document.getElementById(`repairs-input-${dealId}`).value.replace(/,/g, ''));
             const status = document.getElementById(`repairs-status-${dealId}`);
             if (!repairs || repairs < 0) { status.textContent = 'Enter valid amount'; status.style.color = '#fca5a5'; return; }
             status.textContent = 'Saving...'; status.style.color = '#94a3b8';
