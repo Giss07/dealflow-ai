@@ -104,6 +104,10 @@ class Deal(Base):
     offer_notes = Column(Text)
     offer_status = Column(String(20))  # Pending, Accepted, Rejected, Countered
 
+    # Comps & ARV justification
+    user_comps = Column(Text)  # JSON list of comp addresses
+    arv_justification = Column(Text)
+
 
 class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
@@ -294,6 +298,8 @@ def deal_to_dict(deal):
         "offer_date": deal.offer_date,
         "offer_notes": deal.offer_notes,
         "offer_status": deal.offer_status,
+        "user_comps": json.loads(deal.user_comps) if deal.user_comps else [],
+        "arv_justification": deal.arv_justification,
     }
 
 

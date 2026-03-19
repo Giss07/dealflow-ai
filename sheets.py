@@ -26,12 +26,19 @@ def write_offer_to_sheet(deal_dict, offer_amount, offer_date, offer_status, offe
 
     full_address = f"{deal_dict.get('address', '')}, {deal_dict.get('city', '')}, {deal_dict.get('state', 'CA')} {deal_dict.get('zip_code', '')}"
 
+    # Get user comps and ARV justification
+    user_comps = deal_dict.get("user_comps", [])
+    comps_str = " | ".join(user_comps) if user_comps else ""
+    arv_justification = deal_dict.get("arv_justification", "") or ""
+
     payload = {
         "date": offer_date or datetime.now().strftime("%Y-%m-%d"),
         "address": full_address,
         "arv": deal_dict.get("arv", ""),
         "offer_amount": offer_amount,
         "repairs": repairs,
+        "comps": comps_str,
+        "arv_justification": arv_justification,
     }
 
     try:

@@ -474,6 +474,28 @@
                         <span id="repairs-status-${d.id}" style="color:#94a3b8;font-size:13px;"></span>
                     </div>
                 </div>
+
+                <!-- Comps & ARV Justification -->
+                <div style="background:#334155;padding:15px;border-radius:8px;margin-bottom:15px;">
+                    <label style="font-size:13px;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:6px;">Comps (for offer submission)</label>
+                    <div id="comps-list-${d.id}">
+                        ${(d.user_comps && d.user_comps.length ? d.user_comps : ['']).map((c, i) =>
+                            `<div style="display:flex;gap:8px;margin-bottom:6px;align-items:center;">
+                                <span style="color:#94a3b8;font-size:13px;min-width:20px;">${i+1}.</span>
+                                <input type="text" class="comp-input-${d.id}" value="${c || ''}" placeholder="Comp address" style="flex:1;background:#1e293b;border:1px solid #475569;color:#f8fafc;padding:8px 12px;border-radius:6px;font-size:14px;">
+                            </div>`
+                        ).join('')}
+                    </div>
+                    <button onclick="addCompInput(${d.id})" style="background:#475569;color:#e2e8f0;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;margin-top:4px;">+ Add Comp</button>
+
+                    <label style="font-size:13px;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:6px;margin-top:12px;">ARV Justification Notes</label>
+                    <textarea id="arv-justification-${d.id}" placeholder="Why this ARV? Comp details, condition adjustments..." style="width:100%;background:#1e293b;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:6px;font-size:14px;height:70px;resize:vertical;">${d.arv_justification || ''}</textarea>
+
+                    <div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
+                        <button class="btn-save" onclick="saveComps(${d.id})">Save Comps</button>
+                        <span id="comps-status-${d.id}" style="color:#94a3b8;font-size:13px;"></span>
+                    </div>
+                </div>
             `;
 
             // Photo Grades
@@ -595,6 +617,33 @@
         }
 
         // Photo analysis
+        function addCompInput(dealId) {
+            const list = document.getElementById(`comps-list-${dealId}`);
+            const count = list.querySelectorAll('input').length + 1;
+            if (count > 5) return;
+            const div = document.createElement('div');
+            div.style.cssText = 'display:flex;gap:8px;margin-bottom:6px;align-items:center;';
+            div.innerHTML = `<span style="color:#94a3b8;font-size:13px;min-width:20px;">${count}.</span><input type="text" class="comp-input-${dealId}" value="" placeholder="Comp address" style="flex:1;background:#1e293b;border:1px solid #475569;color:#f8fafc;padding:8px 12px;border-radius:6px;font-size:14px;">`;
+            list.appendChild(div);
+        }
+
+        async function saveComps(dealId) {
+            const inputs = document.querySelectorAll(`.comp-input-${dealId}`);
+            const comps = Array.from(inputs).map(i => i.value).filter(v => v.trim());
+            const justification = document.getElementById(`arv-justification-${dealId}`).value;
+            const status = document.getElementById(`comps-status-${dealId}`);
+            status.textContent = 'Saving...'; status.style.color = '#94a3b8';
+            try {
+                const resp = await fetch(`/api/deals/${dealId}/save-comps`, {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({comps, arv_justification: justification})
+                });
+                const deal = await resp.json();
+                if (deal.error) { status.textContent = deal.error; status.style.color = '#fca5a5'; }
+                else { status.textContent = `Saved ${comps.length} comps`; status.style.color = '#4ade80'; }
+            } catch(e) { status.textContent = 'Failed'; status.style.color = '#fca5a5'; }
+        }
+
         function copyAddress(addr) {
             navigator.clipboard.writeText(addr).then(() => {
                 const btn = event.target;

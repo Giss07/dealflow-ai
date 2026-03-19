@@ -159,6 +159,29 @@ def api_analyze_photos(deal_id):
     return jsonify({"status": "Photo analysis started", "deal_id": deal_id})
 
 
+@app.route("/api/deals/<int:deal_id>/save-comps", methods=["POST"])
+def api_save_comps(deal_id):
+    """Save user comps and ARV justification."""
+    session = get_session()
+    try:
+        deal = session.query(Deal).filter_by(id=deal_id).first()
+        if not deal:
+            return jsonify({"error": "Deal not found"}), 404
+        data = request.get_json() or {}
+        comps = data.get("comps", [])
+        # Filter out empty strings
+        comps = [c.strip() for c in comps if c and c.strip()]
+        deal.user_comps = json.dumps(comps) if comps else None
+        deal.arv_justification = data.get("arv_justification") or None
+        session.commit()
+        return jsonify(deal_to_dict(deal))
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
 @app.route("/api/deals/<int:deal_id>/archive", methods=["POST"])
 def api_archive_deal(deal_id):
     """Toggle archive status."""
