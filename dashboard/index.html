@@ -230,7 +230,7 @@
                 <div class="offer-form">
                     <input type="hidden" id="offer-deal-id">
                     <label>Offer Amount ($)</label>
-                    <input type="number" id="offer-amount" placeholder="Enter offer amount">
+                    <input type="text" inputmode="numeric" id="offer-amount" placeholder="Enter offer amount" oninput="formatNumberInput(this)">
                     <label>Date</label>
                     <input type="date" id="offer-date">
                     <label>Notes</label>
@@ -316,6 +316,16 @@
         }
 
         function fmt(val) { if (val == null) return '—'; return '$' + Math.round(val).toLocaleString(); }
+        function parseNum(el) { return parseFloat((el.value || '0').replace(/,/g, '')); }
+        function formatNumberInput(el) {
+            const pos = el.selectionStart;
+            const oldLen = el.value.length;
+            const raw = el.value.replace(/[^0-9]/g, '');
+            if (!raw) { el.value = ''; return; }
+            el.value = parseInt(raw).toLocaleString();
+            const newLen = el.value.length;
+            el.setSelectionRange(pos + (newLen - oldLen), pos + (newLen - oldLen));
+        }
         function scoreClass(s) { if (s >= 80) return 'score-green'; if (s >= 60) return 'score-yellow'; return 'score-red'; }
         function condClass(c) { if (!c) return 'cond-unknown'; return 'cond-' + c.toLowerCase(); }
         function offerClass(s) { if (!s) return ''; return 'offer-' + s.toLowerCase(); }
@@ -448,7 +458,7 @@
                     <label style="font-size:13px;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:6px;">ARV (from Privy)</label>
                     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
                         <span style="color:#94a3b8;font-size:18px;">$</span>
-                        <input type="number" id="arv-input-${d.id}" value="${d.arv || ''}" class="input-field">
+                        <input type="text" inputmode="numeric" id="arv-input-${d.id}" value="${d.arv ? Math.round(d.arv).toLocaleString() : ''}" class="input-field" oninput="formatNumberInput(this)">
                         <button class="btn-save" onclick="updateArv(${d.id})">Save ARV</button>
                         <span id="arv-status-${d.id}" style="color:#94a3b8;font-size:13px;"></span>
                     </div>
@@ -459,7 +469,7 @@
                     <label style="font-size:13px;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:6px;">Est. Repairs (your estimate)</label>
                     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
                         <span style="color:#94a3b8;font-size:18px;">$</span>
-                        <input type="number" id="repairs-input-${d.id}" value="${repairs || ''}" class="input-field">
+                        <input type="text" inputmode="numeric" id="repairs-input-${d.id}" value="${repairs ? Math.round(repairs).toLocaleString() : ''}" class="input-field" oninput="formatNumberInput(this)">
                         <button class="btn-save" onclick="updateRepairs(${d.id})">Save Repairs</button>
                         <span id="repairs-status-${d.id}" style="color:#94a3b8;font-size:13px;"></span>
                     </div>
@@ -521,7 +531,7 @@
 
         // ARV update
         async function updateArv(dealId) {
-            const arv = parseFloat(document.getElementById(`arv-input-${dealId}`).value.replace(/,/g, ''));
+            const arv = parseNum(document.getElementById(`arv-input-${dealId}`));
             const status = document.getElementById(`arv-status-${dealId}`);
             if (!arv || arv <= 0) { status.textContent = 'Enter valid ARV'; status.style.color = '#fca5a5'; return; }
             status.textContent = 'Saving...'; status.style.color = '#94a3b8';
@@ -535,7 +545,7 @@
 
         // Repairs update
         async function updateRepairs(dealId) {
-            const repairs = parseFloat(document.getElementById(`repairs-input-${dealId}`).value.replace(/,/g, ''));
+            const repairs = parseNum(document.getElementById(`repairs-input-${dealId}`));
             const status = document.getElementById(`repairs-status-${dealId}`);
             if (!repairs || repairs < 0) { status.textContent = 'Enter valid amount'; status.style.color = '#fca5a5'; return; }
             status.textContent = 'Saving...'; status.style.color = '#94a3b8';
@@ -560,7 +570,7 @@
         function openOfferForm(dealId, address, amount, date, status, notes) {
             document.getElementById('offer-deal-id').value = dealId;
             document.getElementById('offer-modal-title').textContent = 'Offer: ' + address;
-            document.getElementById('offer-amount').value = amount || '';
+            document.getElementById('offer-amount').value = amount ? Math.round(amount).toLocaleString() : '';
             document.getElementById('offer-date').value = date || new Date().toISOString().split('T')[0];
             document.getElementById('offer-notes').value = notes || '';
             document.getElementById('offer-modal-overlay').classList.add('active');
@@ -571,7 +581,7 @@
         async function saveOffer() {
             const dealId = document.getElementById('offer-deal-id').value;
             const data = {
-                amount: parseFloat(document.getElementById('offer-amount').value) || 0,
+                amount: parseNum(document.getElementById('offer-amount')) || 0,
                 date: document.getElementById('offer-date').value,
                 status: "Submitted",
                 notes: document.getElementById('offer-notes').value,
