@@ -100,52 +100,122 @@ def score_deal(listing, client=None):
         return fallback_score(listing)
 
 
-RENOVATED_PENALTY_KEYWORDS = [
-    "remodeled", "renovated", "updated", "new kitchen", "new bath",
-    "new floors", "new flooring", "new roof", "new hvac", "turnkey",
-    "move in ready", "move-in ready", "fully updated", "brand new",
-]
+RENOVATED_PENALTY_KEYWORDS = {
+    # -30 each
+    "turnkey": -30, "move-in ready": -30, "move in ready": -30,
+    "updated": -30, "remodeled": -30, "renovated": -30,
+    "fresh": -30, "clean interior": -30,
+    "new kitchen": -30, "new bath": -30, "new floors": -30,
+    "new flooring": -30, "new roof": -30, "new hvac": -30,
+    "fully updated": -30, "brand new": -30,
+    # -40 for new construction
+    "new construction": -40, "new build": -40, "built in 202": -40,
+}
 
 
 def fallback_score(listing):
-    """Simple keyword-based scoring when API is unavailable."""
-    score = 50  # base score
+    """Smart fallback scoring using ARV gap, $/sqft, days on market, repairs ratio."""
+    score = 30  # base score
+    reasons = []
 
-    # Check for renovation indicators — heavy penalty
+    price = listing.get("price", 0) or 0
+    arv = listing.get("arv", 0) or 0
+    sqft = listing.get("sqft", 0) or 0
+    days = listing.get("days_on_zillow")
+    repairs_mid = listing.get("repairs_mid", 0) or 0
+    repairs_worst = listing.get("repairs_worst", 0) or 0
+    repairs = round((repairs_mid + repairs_worst) / 2) if (repairs_mid or repairs_worst) else 0
+
+    # === ARV vs Price gap (30 points max) ===
+    if arv and price and arv > 0:
+        margin = (arv - price) / arv
+        if margin >= 0.30:
+            score += 30
+            reasons.append(f"Strong ARV margin ({margin:.0%})")
+        elif margin >= 0.20:
+            score += 20
+            reasons.append(f"Good ARV margin ({margin:.0%})")
+        elif margin >= 0.10:
+            score += 10
+            reasons.append(f"Moderate ARV margin ({margin:.0%})")
+        elif margin < 0:
+            score -= 20
+            reasons.append(f"Negative margin ({margin:.0%})")
+
+    # === Price per sqft (20 points max) ===
+    if price and sqft and sqft > 0:
+        ppsf = price / sqft
+        if ppsf < 200:
+            score += 20
+            reasons.append(f"Low $/sqft (${ppsf:.0f})")
+        elif ppsf < 300:
+            score += 10
+            reasons.append(f"Moderate $/sqft (${ppsf:.0f})")
+        elif ppsf > 400:
+            score -= 10
+            reasons.append(f"High $/sqft (${ppsf:.0f})")
+
+    # === Days on market (15 points max) ===
+    if days is not None:
+        if days >= 30:
+            score += 15
+            reasons.append(f"Stale listing ({days} days)")
+        elif days >= 15:
+            score += 10
+            reasons.append(f"On market {days} days")
+        elif days >= 1:
+            score += 5
+
+    # === Repairs vs ARV ratio (15 points max) ===
+    if repairs and arv and arv > 0:
+        repair_ratio = repairs / arv
+        if repair_ratio < 0.10:
+            score += 15
+            reasons.append(f"Low repair ratio ({repair_ratio:.0%})")
+        elif repair_ratio < 0.20:
+            score += 10
+            reasons.append(f"Moderate repairs ({repair_ratio:.0%})")
+        elif repair_ratio > 0.30:
+            score -= 10
+            reasons.append(f"Heavy repairs ({repair_ratio:.0%})")
+
+    # === Price bonus (10 points max, reduced weight) ===
+    if price < 300000:
+        score += 10
+    elif price < 500000:
+        score += 5
+
+    # === Year built bonus (5 points max, reduced weight) ===
+    year = listing.get("year_built")
+    if year and year < 1980:
+        score += 5
+    elif year and year < 2000:
+        score += 3
+
+    # === Deal keywords bonus (10 points max) ===
+    if listing.get("has_deal_keywords"):
+        score += 7
+    keywords = listing.get("matched_keywords", [])
+    score += min(len(keywords) * 2, 3)
+
+    # === Renovation penalty ===
     desc = (listing.get("description") or "").lower()
-    for kw in RENOVATED_PENALTY_KEYWORDS:
+    for kw, penalty in RENOVATED_PENALTY_KEYWORDS.items():
         if kw in desc:
-            score -= 25
+            score += penalty  # penalty is negative
+            reasons.append(f"Penalty: '{kw}'")
             break
 
-    # Photo grades penalty: if most zones are "Good", it's already renovated
+    # === Photo grades penalty ===
     grades = listing.get("photo_grades", {})
     good_count = sum(1 for g in grades.values() if g == "Good")
     if good_count >= 4:
-        score -= 20  # clearly renovated interior
-
-    price = listing.get("price", 0) or 0
-    if price < 300000:
-        score += 15
-    elif price < 500000:
-        score += 10
-    elif price < 700000:
-        score += 5
-
-    year = listing.get("year_built")
-    if year and year < 1980:
-        score += 10
-    elif year and year < 2000:
-        score += 5
-
-    if listing.get("has_deal_keywords"):
-        score += 15
-
-    keywords = listing.get("matched_keywords", [])
-    score += len(keywords) * 3
+        score -= 20
+        reasons.append("Photos show renovated condition")
 
     score = max(1, min(100, score))
-    return {"score": score, "reasoning": "Fallback scoring based on price, age, and keywords."}
+    reasoning = ". ".join(reasons[:4]) if reasons else "Scored on price, location, and market data."
+    return {"score": score, "reasoning": reasoning}
 
 
 def score_deals(listings):
