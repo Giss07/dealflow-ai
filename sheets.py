@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 SHEETS_WEBHOOK = os.getenv(
     "SHEETS_WEBHOOK_URL",
-    "https://script.google.com/macros/s/AKfycbzTzA1hE8APrwCPoDNKx4VDLCEUK_DjFP_c2wquFANTs-pDfeEipjwtcGLmy1SSO7bj/exec"
+    "https://script.google.com/macros/s/AKfycbwXyNNtvrEE3FeqjoH-YB52H2rGdTYh3bbAG9emXzzPv2px_BZfRyjLMEhYh2K0TJAJ/exec"
 )
 
 
