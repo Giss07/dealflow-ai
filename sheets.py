@@ -28,21 +28,36 @@ def get_credentials():
 
     # Try token file first (local), then env var (Railway)
     if os.path.exists(TOKEN_FILE):
+        logger.info("Loading Google credentials from token.json")
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
     elif os.getenv("GOOGLE_TOKEN_JSON"):
+        logger.info("Loading Google credentials from GOOGLE_TOKEN_JSON env var")
         token_data = json.loads(os.getenv("GOOGLE_TOKEN_JSON"))
         creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+    else:
+        logger.warning("No Google credentials found (no token.json or GOOGLE_TOKEN_JSON)")
+        return None
 
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        # Save refreshed token locally if possible
+    # Always try to refresh if we have a refresh token
+    if creds and creds.refresh_token:
         try:
-            with open(TOKEN_FILE, "w") as f:
-                f.write(creds.to_json())
-        except Exception:
+            if not creds.valid or creds.expired:
+                logger.info("Refreshing expired Google token...")
+                creds.refresh(Request())
+                logger.info("Google token refreshed successfully")
+                # Save refreshed token locally if possible
+                try:
+                    with open(TOKEN_FILE, "w") as f:
+                        f.write(creds.to_json())
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"Failed to refresh Google token: {e}")
+            # Try using the creds anyway — they might still work
             pass
 
-    if not creds or not creds.valid:
+    if not creds:
+        logger.error("No Google credentials available")
         return None
 
     return creds
