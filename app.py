@@ -195,6 +195,21 @@ def api_submit_offer(deal_id):
             deal.offer_notes = data["notes"]
         deal.offer_status = data.get("status", deal.offer_status or "Pending")
         session.commit()
+
+        # Write to Google Sheet
+        try:
+            from sheets import write_offer_to_sheet, update_offer_status_in_sheet
+            deal_data = deal_to_dict(deal)
+            if data.get("amount"):
+                write_offer_to_sheet(
+                    deal_data, deal.offer_amount, deal.offer_date,
+                    deal.offer_status, deal.offer_notes
+                )
+            elif data.get("status"):
+                update_offer_status_in_sheet(deal.address, deal.offer_status)
+        except Exception as e:
+            logger.warning(f"Sheet write failed (non-fatal): {e}")
+
         return jsonify(deal_to_dict(deal))
     except Exception as e:
         session.rollback()
