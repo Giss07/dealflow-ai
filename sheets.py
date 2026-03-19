@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 SPREADSHEET_ID = "1GMp9LbZLgY_uaTjiDQ9cTcy4I1QxOqLsNZWORwkUMCY"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 CLIENT_SECRET = os.path.join(os.path.dirname(__file__), "client_secret.json")
+# On Railway, client_secret.json won't exist but we don't need it
+# (only needed for initial auth flow, not for token refresh)
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.json")
 OFFERS_SHEET = "Offers"  # Tab name for offers
 

@@ -200,15 +200,17 @@ def api_submit_offer(deal_id):
         try:
             from sheets import write_offer_to_sheet, update_offer_status_in_sheet
             deal_data = deal_to_dict(deal)
+            logger.info(f"Writing offer to Google Sheet: {deal.address} ${deal.offer_amount}")
             if data.get("amount"):
-                write_offer_to_sheet(
+                result = write_offer_to_sheet(
                     deal_data, deal.offer_amount, deal.offer_date,
                     deal.offer_status, deal.offer_notes
                 )
+                logger.info(f"Sheet write result: {result}")
             elif data.get("status"):
                 update_offer_status_in_sheet(deal.address, deal.offer_status)
         except Exception as e:
-            logger.warning(f"Sheet write failed (non-fatal): {e}")
+            logger.warning(f"Sheet write failed (non-fatal): {e}", exc_info=True)
 
         return jsonify(deal_to_dict(deal))
     except Exception as e:
