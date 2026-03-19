@@ -233,13 +233,6 @@
                     <input type="number" id="offer-amount" placeholder="Enter offer amount">
                     <label>Date</label>
                     <input type="date" id="offer-date">
-                    <label>Status</label>
-                    <select id="offer-form-status">
-                        <option value="Pending">Pending</option>
-                        <option value="Accepted">Accepted</option>
-                        <option value="Rejected">Rejected</option>
-                        <option value="Countered">Countered</option>
-                    </select>
                     <label>Notes</label>
                     <textarea id="offer-notes" placeholder="Optional notes..."></textarea>
                     <div style="margin-top:15px;">
@@ -584,7 +577,6 @@
             document.getElementById('offer-modal-title').textContent = 'Offer: ' + address;
             document.getElementById('offer-amount').value = amount || '';
             document.getElementById('offer-date').value = date || new Date().toISOString().split('T')[0];
-            document.getElementById('offer-form-status').value = status || 'Pending';
             document.getElementById('offer-notes').value = notes || '';
             document.getElementById('offer-modal-overlay').classList.add('active');
         }
@@ -596,7 +588,7 @@
             const data = {
                 amount: parseFloat(document.getElementById('offer-amount').value) || 0,
                 date: document.getElementById('offer-date').value,
-                status: document.getElementById('offer-form-status').value,
+                status: "Submitted",
                 notes: document.getElementById('offer-notes').value,
             };
             try {

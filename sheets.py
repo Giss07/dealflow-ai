@@ -32,7 +32,6 @@ def write_offer_to_sheet(deal_dict, offer_amount, offer_date, offer_status, offe
         "arv": deal_dict.get("arv", ""),
         "offer_amount": offer_amount,
         "repairs": repairs,
-        "status": offer_status or "Pending",
     }
 
     try:
