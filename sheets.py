@@ -13,24 +13,26 @@ logger = logging.getLogger(__name__)
 
 SHEETS_WEBHOOK = os.getenv(
     "SHEETS_WEBHOOK_URL",
-    "https://script.google.com/macros/s/AKfycbz6kVs-zRr5x11Knh0UwuWm__rBmlfW_3GRsSA2eWH0CAPfTCvvLxACG6eica5moOrF/exec"
+    "https://script.google.com/macros/s/AKfycbzTzA1hE8APrwCPoDNKx4VDLCEUK_DjFP_c2wquFANTs-pDfeEipjwtcGLmy1SSO7bj/exec"
 )
 
 
 def write_offer_to_sheet(deal_dict, offer_amount, offer_date, offer_status, offer_notes):
     """Write an offer to Google Sheet via Apps Script webhook."""
+    # Compute single repair estimate (avg of mid/worst)
+    repairs_mid = deal_dict.get("repairs_mid") or 0
+    repairs_worst = deal_dict.get("repairs_worst") or 0
+    repairs = round((repairs_mid + repairs_worst) / 2) if (repairs_mid or repairs_worst) else ""
+
+    full_address = f"{deal_dict.get('address', '')}, {deal_dict.get('city', '')}, {deal_dict.get('state', 'CA')} {deal_dict.get('zip_code', '')}"
+
     payload = {
         "date": offer_date or datetime.now().strftime("%Y-%m-%d"),
-        "address": deal_dict.get("address", ""),
-        "city": deal_dict.get("city", ""),
-        "state": deal_dict.get("state", "CA"),
-        "zip": deal_dict.get("zip_code", ""),
-        "offer_amount": offer_amount,
-        "price": deal_dict.get("price", ""),
+        "address": full_address,
         "arv": deal_dict.get("arv", ""),
-        "profit": deal_dict.get("estimated_profit", ""),
+        "offer_amount": offer_amount,
+        "repairs": repairs,
         "status": offer_status or "Pending",
-        "notes": offer_notes or "",
     }
 
     try:
