@@ -107,6 +107,14 @@
         .offer-form input, .offer-form select, .offer-form textarea { width: 100%; background: #1e293b; border: 1px solid #475569; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
         .offer-form textarea { height: 60px; resize: vertical; }
 
+        /* Search results */
+        .search-section { margin-bottom:12px; }
+        .search-section-title { font-size:13px; color:#94a3b8; text-transform:uppercase; margin-bottom:6px; }
+        .search-item { padding:10px 12px; background:#334155; border-radius:6px; margin-bottom:4px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; }
+        .search-item:hover { background:#475569; }
+        .search-item-addr { color:#f8fafc; font-size:14px; }
+        .search-item-meta { color:#94a3b8; font-size:13px; }
+
         /* Mobile card view */
         .deal-cards { display: none; }
         .deal-card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 15px; margin-bottom: 12px; }
@@ -122,6 +130,7 @@
         @media (max-width: 768px) {
             .header { padding: 15px; }
             .header h1 { font-size: 20px; }
+            #global-search { font-size: 16px; }
             .stats-bar { flex-direction: column; gap: 10px; padding: 10px 15px; }
             .stat-card { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; }
             .stat-card .label { margin-bottom: 0; }
@@ -160,6 +169,15 @@
     <div class="header">
         <h1>DealFlow <span>AI</span></h1>
         <button class="btn-run" onclick="runPipeline()">Run Pipeline</button>
+    </div>
+
+    <div style="padding:12px 30px;background:#1e293b;border-bottom:1px solid #334155;">
+        <div style="position:relative;max-width:500px;">
+            <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#64748b;font-size:16px;">&#128269;</span>
+            <input type="text" id="global-search" placeholder="Search by address, zip, or city..." oninput="handleSearch(this.value)"
+                style="width:100%;background:#334155;border:1px solid #475569;color:#e2e8f0;padding:10px 12px 10px 38px;border-radius:8px;font-size:15px;outline:none;">
+        </div>
+        <div id="search-results" style="display:none;margin-top:10px;"></div>
     </div>
 
     <div class="stats-bar" id="stats-bar">
@@ -687,6 +705,69 @@
         }
 
         document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeOfferModal(); } });
+
+        // Search
+        let searchTimeout = null;
+        async function handleSearch(query) {
+            const resultsDiv = document.getElementById('search-results');
+            const mainContent = document.querySelectorAll('.stats-bar,.tabs,.filters,.container');
+
+            if (!query || query.length < 2) {
+                resultsDiv.style.display = 'none';
+                mainContent.forEach(el => el.style.display = '');
+                return;
+            }
+
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(async () => {
+                const q = query.toLowerCase();
+                try {
+                    const [active, archived, offers] = await Promise.all([
+                        fetch('/api/deals?tab=active').then(r => r.json()),
+                        fetch('/api/deals?tab=archived').then(r => r.json()),
+                        fetch('/api/deals?tab=offers').then(r => r.json()),
+                    ]);
+
+                    const match = d => {
+                        return (d.address || '').toLowerCase().includes(q)
+                            || (d.zip_code || '').includes(q)
+                            || (d.city || '').toLowerCase().includes(q);
+                    };
+
+                    const activeMatches = active.filter(match);
+                    const offerMatches = offers.filter(match);
+                    const archivedMatches = archived.filter(match);
+
+                    let html = '';
+
+                    function renderSection(title, deals) {
+                        html += `<div class="search-section"><div class="search-section-title">${title} (${deals.length})</div>`;
+                        if (deals.length === 0) {
+                            html += `<div style="color:#64748b;font-size:13px;padding:4px 0;">No matches</div>`;
+                        }
+                        deals.slice(0, 10).forEach(d => {
+                            html += `<div class="search-item" onclick="showDeal(${d.id})">
+                                <div>
+                                    <div class="search-item-addr">${d.address}, ${d.city} ${d.zip_code}</div>
+                                    <div class="search-item-meta">${fmt(d.price)} | Score: ${d.score ?? '—'} | ${daysAgo(d.days_on_zillow)}</div>
+                                </div>
+                                <span class="score-badge ${scoreClass(d.score)}" style="font-size:12px;">${d.score ?? '—'}</span>
+                            </div>`;
+                        });
+                        if (deals.length > 10) html += `<div style="color:#64748b;font-size:12px;padding:4px;">+${deals.length - 10} more</div>`;
+                        html += `</div>`;
+                    }
+
+                    renderSection('Active Deals', activeMatches);
+                    renderSection('My Offers', offerMatches);
+                    renderSection('Archived', archivedMatches);
+
+                    resultsDiv.innerHTML = html;
+                    resultsDiv.style.display = 'block';
+                    mainContent.forEach(el => el.style.display = 'none');
+                } catch(e) { console.error('Search failed', e); }
+            }, 200);
+        }
 
         // Init
         loadStats();
