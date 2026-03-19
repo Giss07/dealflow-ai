@@ -18,18 +18,27 @@ OFFERS_SHEET = "Offers"  # Tab name for offers
 
 
 def get_credentials():
-    """Get OAuth2 credentials, refreshing if needed."""
+    """Get OAuth2 credentials from file or GOOGLE_TOKEN_JSON env var."""
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
     creds = None
+
+    # Try token file first (local), then env var (Railway)
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    elif os.getenv("GOOGLE_TOKEN_JSON"):
+        token_data = json.loads(os.getenv("GOOGLE_TOKEN_JSON"))
+        creds = Credentials.from_authorized_user_info(token_data, SCOPES)
 
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
+        # Save refreshed token locally if possible
+        try:
+            with open(TOKEN_FILE, "w") as f:
+                f.write(creds.to_json())
+        except Exception:
+            pass
 
     if not creds or not creds.valid:
         return None
