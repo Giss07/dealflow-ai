@@ -870,39 +870,60 @@
                 // Desktop table — match Google Sheet column order
                 const header = document.getElementById('table-header');
                 header.innerHTML = `
-                    <th>Date</th><th>Source</th><th>Address</th><th>ARV</th>
-                    <th>Offer Amount</th><th>Repairs</th><th>Comps</th><th>ARV Justification</th>`;
+                    <th>Date</th><th>Address</th><th>ARV</th><th>Offer</th>
+                    <th>Repairs</th><th>Status</th><th>Counter</th><th>Counter Date</th>
+                    <th>Notes</th><th>Comps</th>`;
+
+                function statusStyle(s) {
+                    s = (s || '').toLowerCase();
+                    if (s.includes('stp') || s.includes('sold') || s.includes('closed')) return 'background:#991b1b;color:#fca5a5;';
+                    if (s.includes('pending')) return 'background:#854d0e;color:#fbbf24;';
+                    if (s.includes('active') || s.includes('sent')) return 'background:#166534;color:#4ade80;';
+                    if (s.includes('resubmit')) return 'background:#1e3a5f;color:#60a5fa;';
+                    if (s.includes('counter')) return 'background:#7c2d12;color:#fdba74;';
+                    if (s.includes('accepted')) return 'background:#166534;color:#4ade80;';
+                    if (s.includes('rejected')) return 'background:#991b1b;color:#fca5a5;';
+                    return 'background:#475569;color:#94a3b8;';
+                }
+
                 tbody.innerHTML = rows.map(r => {
                     const addr = r.address || '';
                     const zUrl = addr ? 'https://www.zillow.com/homes/' + encodeURIComponent(addr) + '_rb/' : '#';
+                    const st = r.status || '';
                     return `<tr>
                         <td style="white-space:nowrap;">${r.date || '—'}</td>
-                        <td>${r.source || '—'}</td>
                         <td><a href="${zUrl}" target="_blank" style="color:#3b82f6;text-decoration:none;">${addr || '—'}</a></td>
                         <td>${r.arv || '—'}</td>
                         <td>${r.offer || '—'}</td>
                         <td>${r.repairs || '—'}</td>
-                        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${r.comps || '—'}</td>
-                        <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;">${r.justification || '—'}</td>
+                        <td><span style="padding:3px 10px;border-radius:10px;font-size:12px;font-weight:600;${statusStyle(st)}">${st || '—'}</span></td>
+                        <td>${r.counter_price || '—'}</td>
+                        <td style="white-space:nowrap;">${r.counter_date || '—'}</td>
+                        <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;">${r.notes || '—'}</td>
+                        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;">${r.comps || '—'}</td>
                     </tr>`;
                 }).join('');
 
                 // Mobile cards
-                cards.innerHTML = rows.map(r => `
-                    <div class="deal-card">
-                        <div class="deal-card-address">${r.address || '—'}</div>
+                cards.innerHTML = rows.map(r => {
+                    const st = r.status || '';
+                    return `<div class="deal-card">
+                        <div class="deal-card-header">
+                            <div class="deal-card-address">${r.address || '—'}</div>
+                            <span style="padding:3px 10px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap;${statusStyle(st)}">${st || '—'}</span>
+                        </div>
                         <div class="deal-card-grid" style="margin-top:8px;">
                             <span class="lbl">Date</span><span class="val">${r.date || '—'}</span>
                             <span class="lbl">ARV</span><span class="val">${r.arv || '—'}</span>
                             <span class="lbl">Offer</span><span class="val">${r.offer || '—'}</span>
                             <span class="lbl">Repairs</span><span class="val">${r.repairs || '—'}</span>
-                            <span class="lbl">Status</span><span class="val">${r.status || '—'}</span>
-                            <span class="lbl">Counter</span><span class="val">${r.counter || '—'}</span>
+                            <span class="lbl">Counter</span><span class="val">${r.counter_price || '—'}</span>
+                            <span class="lbl">Counter Date</span><span class="val">${r.counter_date || '—'}</span>
                         </div>
-                        ${r.comps ? `<div style="margin-top:6px;font-size:12px;color:#94a3b8;">Comps: ${r.comps}</div>` : ''}
-                        ${r.justification ? `<div style="margin-top:4px;font-size:12px;color:#94a3b8;">Notes: ${r.justification}</div>` : ''}
-                    </div>
-                `).join('');
+                        ${r.notes ? `<div style="margin-top:6px;font-size:12px;color:#94a3b8;">Notes: ${r.notes}</div>` : ''}
+                        ${r.comps ? `<div style="margin-top:4px;font-size:12px;color:#94a3b8;">Comps: ${r.comps}</div>` : ''}
+                    </div>`;
+                }).join('');
 
             } catch(e) {
                 tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:30px;color:#fca5a5;">Failed to load tracker data</td></tr>';
