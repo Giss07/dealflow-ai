@@ -649,7 +649,7 @@ def run_full(sheet, records, headers, status_col):
         if not address or len(address) < 10:
             continue
         current_status = record.get('Status (/Accepted/Rejected/Counter)', '')
-        if current_status in ['Accepted', 'Rejected', 'Closed', 'STP', 'Pending']:
+        if current_status in ['Accepted', 'Rejected', 'Closed', 'STP']:
             continue
 
         # Get Zillow URL from hyperlink map
