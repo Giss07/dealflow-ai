@@ -107,6 +107,11 @@
         .offer-form input, .offer-form select, .offer-form textarea { width: 100%; background: #1e293b; border: 1px solid #475569; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
         .offer-form textarea { height: 60px; resize: vertical; }
 
+        /* Score tooltip */
+        .score-wrap { position: relative; display: inline-block; }
+        .score-tip { display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: #0f172a; border: 1px solid #475569; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 12px; white-space: nowrap; z-index: 50; margin-bottom: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+        .score-wrap:hover .score-tip { display: block; }
+
         /* Score filter buttons */
         .score-filter-btn { background: #334155; color: #94a3b8; border: 1px solid #475569; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
         .score-filter-btn:hover { background: #475569; color: #e2e8f0; }
@@ -133,37 +138,40 @@
         .deal-card-actions button { flex: 1; padding: 10px; font-size: 13px; }
 
         @media (max-width: 768px) {
-            .header { padding: 15px; }
-            .header h1 { font-size: 20px; }
+            .header { padding: 12px 15px; }
+            .header h1 { font-size: 18px; }
             #global-search { font-size: 16px; }
-            .stats-bar { flex-direction: column; gap: 10px; padding: 10px 15px; }
-            .stat-card { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; }
-            .stat-card .label { margin-bottom: 0; }
-            .stat-card .value { font-size: 20px; margin-top: 0; }
+            .stats-bar { flex-direction: row; gap: 8px; padding: 10px 15px; overflow-x: auto; }
+            .stat-card { min-width: auto; flex: 1; padding: 8px 12px; }
+            .stat-card .label { font-size: 10px; }
+            .stat-card .value { font-size: 18px; margin-top: 2px; }
             .tabs { padding: 0 10px; overflow-x: auto; }
-            .tab { padding: 10px 16px; font-size: 13px; white-space: nowrap; }
+            .tab { padding: 10px 14px; font-size: 13px; white-space: nowrap; }
+            .score-filter-btn { padding: 5px 10px; font-size: 12px; }
             .filters { flex-direction: column; padding: 10px 15px; gap: 8px; }
             .filters > div { width: 100%; }
             .filters select, .filters input { width: 100%; }
             .filters button { width: 100%; }
-            .container { padding: 10px 15px; }
+            .container { padding: 10px 15px; overflow-x: auto; }
 
-            /* Hide table, show cards on mobile */
+            /* Show cards on mobile, hide table */
             #deals-table { display: none; }
             .deal-cards { display: block; }
 
-            /* Modal */
-            .modal-overlay.active { padding: 10px; }
-            .modal { max-width: 100%; border-radius: 8px; }
-            .modal-header { padding: 15px; }
-            .modal-header h2 { font-size: 16px; }
-            .modal-body { padding: 15px; }
+            /* Full-screen modal on mobile */
+            .modal-overlay.active { padding: 0; align-items: stretch; }
+            .modal { max-width: 100%; width: 100%; min-height: 100vh; border-radius: 0; border: none; }
+            .modal-header { padding: 12px 15px; position: sticky; top: 0; z-index: 10; }
+            .modal-header h2 { font-size: 15px; }
+            .modal-body { padding: 12px 15px; }
             .modal-body .btn-privy, .modal-body .btn-zillow, .modal-body .btn-copy, .modal-body .btn-action { width: 100%; text-align: center; margin-bottom: 8px; margin-right: 0; display: block; }
             .input-field { width: 100% !important; }
+            .btn-save { width: 100%; }
             .analysis-row { font-size: 13px; }
             .analysis-row .label { flex: 1; }
             .analysis-row .value { text-align: right; }
             .grades-grid { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+            .score-tip { white-space: normal; min-width: 200px; }
 
             /* Offer modal */
             .offer-form input, .offer-form select, .offer-form textarea { font-size: 16px; }
@@ -216,6 +224,7 @@
         <div><label>Price Min</label><br><input type="number" id="filter-price-min" placeholder="0" style="width:120px" onchange="loadDeals()"></div>
         <div><label>Price Max</label><br><input type="number" id="filter-price-max" placeholder="900000" style="width:120px" onchange="loadDeals()"></div>
         <div><label>&nbsp;</label><br><button onclick="clearFilters()">Clear Filters</button></div>
+        <div><label>&nbsp;</label><br><button onclick="exportCSV()" style="background:#8b5cf6;">Export CSV</button></div>
     </div>
 
     <div class="container">
@@ -394,7 +403,7 @@
                 tbody.innerHTML = deals.map(d => `
                     <tr onclick="showDeal(${d.id})">
                         <td style="color:${daysColor(d.days_on_zillow)};white-space:nowrap;">${daysAgo(d.days_on_zillow)}</td>
-                        <td><span class="score-badge ${scoreClass(d.score)}">${d.score ?? '—'}</span></td>
+                        <td><div class="score-wrap"><span class="score-badge ${scoreClass(d.score)}">${d.score ?? '—'}</span><div class="score-tip">${d.score_reasoning || 'No breakdown available'}</div></div></td>
                         <td>${d.address || '—'}</td>
                         <td>${d.zip_code || '—'}</td>
                         <td>${fmt(d.price)}</td>
@@ -420,6 +429,7 @@
                     <div style="margin-bottom:8px;">
                         <span class="score-badge ${scoreClass(d.score)}">${d.score ?? '—'}</span>
                         ${d.offer_status ? `<span class="offer-status ${offerClass(d.offer_status)}" style="margin-left:6px;">${d.offer_status}</span>` : ''}
+                        <div style="color:#94a3b8;font-size:11px;margin-top:4px;">${d.score_reasoning || ''}</div>
                     </div>
                     <div class="deal-card-grid">
                         <span class="lbl">Price</span><span class="val">${fmt(d.price)}</span>
@@ -748,6 +758,31 @@
             document.querySelectorAll('.score-filter-btn').forEach(b => b.classList.remove('active'));
             document.querySelector('.score-filter-btn:nth-child(4)').classList.add('active'); // 60+
             loadDeals();
+        }
+
+        function exportCSV() {
+            if (!allDeals.length) { alert('No deals to export'); return; }
+            const headers = ['Address','City','Zip','Price','ARV','Repairs','Max Offer','Profit','ROI %','Score','Score Reasoning','Days Listed'];
+            const rows = allDeals.map(d => [
+                d.address || '',
+                d.city || '',
+                d.zip_code || '',
+                d.price || '',
+                d.arv || '',
+                estRepairs(d) || '',
+                d.max_offer || '',
+                d.estimated_profit || '',
+                d.roi_pct || '',
+                d.score || '',
+                (d.score_reasoning || '').replace(/,/g, ';'),
+                d.days_on_zillow ?? ''
+            ]);
+            let csv = headers.join(',') + '\n' + rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+            const blob = new Blob([csv], {type: 'text/csv'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'dealflow-export.csv'; a.click();
+            URL.revokeObjectURL(url);
         }
 
         document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeOfferModal(); } });
