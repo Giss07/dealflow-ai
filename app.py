@@ -482,8 +482,10 @@ def api_tracker():
     if not TRACKER_URL:
         return jsonify({"error": "TRACKER_WEBHOOK_URL not set"}), 500
     try:
-        resp = req.get(TRACKER_URL, timeout=15)
-        return jsonify(resp.json())
+        resp = req.get(TRACKER_URL, timeout=15, params={"t": request.args.get("t", "")})
+        response = jsonify(resp.json())
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
     except Exception as e:
         logger.error(f"Tracker fetch failed: {e}")
         return jsonify({"error": str(e)}), 500

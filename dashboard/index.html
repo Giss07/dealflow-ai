@@ -432,6 +432,10 @@
                     loadDeals();
                 });
             });
+            // Hide tracker refresh bar on non-tracker tabs
+            const refreshBar = document.getElementById('tracker-refresh');
+            if (refreshBar) refreshBar.style.display = 'none';
+
             if (!deals.length) { tbody.innerHTML = ''; cards.innerHTML = ''; empty.style.display = 'block'; return; }
             empty.style.display = 'none';
 
@@ -867,9 +871,20 @@
 
             tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:30px;color:#94a3b8;">Loading tracker data from Google Sheet...</td></tr>';
             cards.innerHTML = '<div style="text-align:center;padding:30px;color:#94a3b8;">Loading...</div>';
+            // Add refresh button above table
+            const container = document.querySelector('.container');
+            let refreshBar = document.getElementById('tracker-refresh');
+            if (!refreshBar) {
+                refreshBar = document.createElement('div');
+                refreshBar.id = 'tracker-refresh';
+                refreshBar.style.cssText = 'margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;';
+                container.insertBefore(refreshBar, container.firstChild);
+            }
+            refreshBar.innerHTML = '<span style="color:#94a3b8;font-size:13px;">Live data from Google Sheet</span><button onclick="loadTracker()" style="background:#3b82f6;color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;">Refresh</button>';
+            refreshBar.style.display = 'flex';
 
             try {
-                const resp = await fetch('/api/tracker');
+                const resp = await fetch('/api/tracker?t=' + Date.now());
                 const data = await resp.json();
 
                 if (data.error) {
