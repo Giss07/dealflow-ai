@@ -35,6 +35,8 @@ MANUAL USAGE:
 """
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import gspread
 import sys
 from google.oauth2.service_account import Credentials
