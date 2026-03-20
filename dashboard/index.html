@@ -408,6 +408,27 @@
             const tbody = document.getElementById('deals-body');
             const cards = document.getElementById('deal-cards');
             const empty = document.getElementById('empty-state');
+            // Restore normal headers if coming from Tracker tab
+            const header = document.getElementById('table-header');
+            header.innerHTML = `
+                <th data-sort="days_on_zillow">Listed</th><th data-sort="score">Score</th>
+                <th data-sort="address">Address</th><th data-sort="zip_code">Zip</th>
+                <th data-sort="price">Price</th><th data-sort="arv">ARV</th>
+                <th data-sort="max_offer">Max Offer</th><th data-sort="estimated_profit">Profit</th>
+                <th data-sort="roi_pct">ROI</th><th>Actions</th>`;
+            // Re-attach sort listeners
+            header.querySelectorAll('th[data-sort]').forEach(th => {
+                th.style.cursor = 'pointer';
+                th.addEventListener('click', () => {
+                    const col = th.dataset.sort;
+                    if (currentSort === col) { currentDir = currentDir === 'desc' ? 'asc' : 'desc'; }
+                    else { currentSort = col; currentDir = 'desc'; }
+                    header.querySelectorAll('th').forEach(t => { t.classList.remove('sorted'); t.textContent = t.textContent.replace(/ [▼▲]/g, ''); });
+                    th.classList.add('sorted');
+                    th.textContent += currentDir === 'desc' ? ' ▼' : ' ▲';
+                    loadDeals();
+                });
+            });
             if (!deals.length) { tbody.innerHTML = ''; cards.innerHTML = ''; empty.style.display = 'block'; return; }
             empty.style.display = 'none';
 
@@ -846,20 +867,23 @@
                 }
                 empty.style.display = 'none';
 
-                // Desktop table
+                // Desktop table — match Google Sheet column order
+                const header = document.getElementById('table-header');
+                header.innerHTML = `
+                    <th>Date</th><th>Source</th><th>Address</th><th>ARV</th>
+                    <th>Offer Amount</th><th>Repairs</th><th>Comps</th><th>ARV Justification</th>`;
                 tbody.innerHTML = rows.map(r => {
                     const addr = r.address || '';
                     const zUrl = addr ? 'https://www.zillow.com/homes/' + encodeURIComponent(addr) + '_rb/' : '#';
                     return `<tr>
                         <td style="white-space:nowrap;">${r.date || '—'}</td>
+                        <td>${r.source || '—'}</td>
                         <td><a href="${zUrl}" target="_blank" style="color:#3b82f6;text-decoration:none;">${addr || '—'}</a></td>
                         <td>${r.arv || '—'}</td>
                         <td>${r.offer || '—'}</td>
                         <td>${r.repairs || '—'}</td>
-                        <td>${r.status || '—'}</td>
-                        <td>${r.counter || '—'}</td>
                         <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${r.comps || '—'}</td>
-                        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${r.justification || '—'}</td>
+                        <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;">${r.justification || '—'}</td>
                     </tr>`;
                 }).join('');
 
