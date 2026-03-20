@@ -40,6 +40,7 @@ def write_offer_to_sheet(deal_dict, offer_amount, offer_date, offer_status, offe
         "comps": comps_str,
         "arv_justification": arv_justification,
     }
+    logger.info(f"Sheet payload: arv={payload['arv']}, offer={payload['offer_amount']}, repairs={payload['repairs']}")
 
     try:
         # Apps Script redirects on POST — need to follow redirects

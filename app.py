@@ -300,7 +300,7 @@ def api_submit_offer(deal_id):
         if not deal:
             return jsonify({"error": "Deal not found"}), 404
         data = request.get_json() or {}
-        if "amount" in data:
+        if "amount" in data and data["amount"]:
             deal.offer_amount = float(data["amount"])
         if "date" in data:
             deal.offer_date = data["date"]
@@ -320,7 +320,7 @@ def api_submit_offer(deal_id):
             from sheets import write_offer_to_sheet, update_offer_status_in_sheet
             deal_data = deal_to_dict(deal)
             logger.info(f"Writing offer to Google Sheet: {deal.address} ${deal.offer_amount}")
-            if data.get("amount"):
+            if "amount" in data:
                 result = write_offer_to_sheet(
                     deal_data, deal.offer_amount, deal.offer_date,
                     deal.offer_status, deal.offer_notes
