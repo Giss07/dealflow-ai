@@ -5,9 +5,12 @@ DealFlow Flask App — Serves the dashboard and API endpoints.
 import os
 import json
 import logging
+import time
+from datetime import timedelta
 from dotenv import load_dotenv
 load_dotenv()
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, session, redirect, url_for
+from functools import wraps
 from database import init_db, get_session, get_all_deals, deal_to_dict, Deal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -16,6 +19,29 @@ logger = logging.getLogger(__name__)
 logger.info(f"Starting DealFlow app, PORT={os.getenv('PORT', 'not set')}")
 
 app = Flask(__name__, template_folder="dashboard", static_folder="dashboard/static")
+app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(32).hex())
+app.permanent_session_lifetime = timedelta(days=7)
+
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "dealflow2026")
+
+# Rate limiting for login
+login_attempts = {}  # ip -> {"count": N, "locked_until": timestamp}
+MAX_ATTEMPTS = 5
+LOCKOUT_SECONDS = 900  # 15 minutes
+
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not DASHBOARD_PASSWORD:
+            return f(*args, **kwargs)
+        if session.get("authenticated"):
+            return f(*args, **kwargs)
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Unauthorized"}), 401
+        return redirect(url_for("login"))
+    return decorated
+
 
 # Initialize database on startup
 try:
@@ -25,10 +51,69 @@ except Exception as e:
     logger.warning(f"DB init on startup: {e}")
 
 
+@app.before_request
+def check_auth():
+    """Require login for all routes except health, login, and static."""
+    open_paths = {"/health", "/login", "/logout"}
+    if not DASHBOARD_PASSWORD:
+        return
+    if request.path in open_paths or request.path.startswith("/static/"):
+        return
+    if not session.get("authenticated"):
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Unauthorized"}), 401
+        return redirect(url_for("login"))
+
+
 @app.route("/health")
 def health():
     """Healthcheck endpoint for Railway."""
     return "ok", 200
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if session.get("authenticated"):
+        return redirect("/")
+    error = ""
+    if request.method == "POST":
+        ip = request.remote_addr
+        now = time.time()
+        info = login_attempts.get(ip, {"count": 0, "locked_until": 0})
+        if info["locked_until"] > now:
+            remaining = int(info["locked_until"] - now)
+            error = f"Too many attempts. Try again in {remaining // 60}m {remaining % 60}s."
+        elif request.form.get("password") == DASHBOARD_PASSWORD:
+            session.permanent = True
+            session["authenticated"] = True
+            login_attempts.pop(ip, None)
+            return redirect("/")
+        else:
+            info["count"] += 1
+            if info["count"] >= MAX_ATTEMPTS:
+                info["locked_until"] = now + LOCKOUT_SECONDS
+                error = "Too many failed attempts. Locked for 15 minutes."
+            else:
+                error = f"Wrong password. {MAX_ATTEMPTS - info['count']} attempts remaining."
+            login_attempts[ip] = info
+    return f'''<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#3b82f6"><title>DealFlow AI — Login</title></head>
+<body style="font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;">
+<div style="background:#1e293b;padding:40px;border-radius:12px;width:100%;max-width:380px;border:1px solid #334155;">
+<h1 style="text-align:center;margin:0 0 8px;font-size:24px;">DealFlow <span style="color:#3b82f6;">AI</span></h1>
+<p style="text-align:center;color:#94a3b8;margin:0 0 24px;font-size:14px;">Inland Empire Deal Finder</p>
+{"<p style='color:#fca5a5;background:#991b1b;padding:10px;border-radius:6px;font-size:13px;text-align:center;'>" + error + "</p>" if error else ""}
+<form method="POST"><input type="password" name="password" placeholder="Enter password" autofocus
+style="width:100%;padding:12px;background:#334155;border:1px solid #475569;color:#f8fafc;border-radius:8px;font-size:16px;margin-bottom:12px;box-sizing:border-box;">
+<button type="submit" style="width:100%;padding:12px;background:#3b82f6;color:white;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;">Sign In</button></form>
+</div></body></html>'''
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 
 @app.route("/")
