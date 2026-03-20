@@ -201,6 +201,7 @@
 
     <div class="tabs">
         <div class="tab active" data-tab="active" onclick="switchTab('active')">Active Deals <span class="badge" id="tab-active-count">0</span></div>
+        <div class="tab" data-tab="pending" onclick="switchTab('pending')">Pending <span class="badge" id="tab-pending-count" style="background:#854d0e;color:#fbbf24;">0</span></div>
         <div class="tab" data-tab="offers" onclick="switchTab('offers')">My Offers <span class="badge" id="tab-offers-count">0</span></div>
         <div class="tab" data-tab="archived" onclick="switchTab('archived')">Archived <span class="badge" id="tab-archived-count">0</span></div>
     </div>
@@ -338,14 +339,16 @@
 
         async function updateTabCounts() {
             try {
-                const [active, archived, offers] = await Promise.all([
+                const [active, archived, offers, pending] = await Promise.all([
                     fetch('/api/deals?tab=active').then(r => r.json()),
                     fetch('/api/deals?tab=archived').then(r => r.json()),
                     fetch('/api/deals?tab=offers').then(r => r.json()),
+                    fetch('/api/deals?tab=pending').then(r => r.json()),
                 ]);
                 document.getElementById('tab-active-count').textContent = active.length;
                 document.getElementById('tab-archived-count').textContent = archived.length;
                 document.getElementById('tab-offers-count').textContent = offers.length;
+                document.getElementById('tab-pending-count').textContent = pending.length;
             } catch(e) {}
         }
 
@@ -413,6 +416,7 @@
                         <td>${d.roi_pct != null ? d.roi_pct + '%' : '—'}</td>
                         <td style="white-space:nowrap;">
                             <button class="btn-action btn-offer" onclick="event.stopPropagation();openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',0,'','Pending','')" title="Submit Offer">Offer</button>
+                            <button class="btn-action" style="background:#b45309;color:#fef3c7;" onclick="event.stopPropagation();markPending(${d.id})" title="Mark Pending">${d.offer_status === 'Pending' ? 'Active' : 'Pending'}</button>
                             <button class="btn-action btn-archive" onclick="event.stopPropagation();archiveDeal(${d.id},${!d.is_archived})" title="${d.is_archived ? 'Restore' : 'Archive'}">${d.is_archived ? 'Restore' : 'Archive'}</button>
                         </td>
                     </tr>
@@ -439,6 +443,7 @@
                     </div>
                     <div class="deal-card-actions">
                         <button class="btn-action btn-offer" onclick="event.stopPropagation();openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',${d.offer_amount||0},'${d.offer_date||''}','${d.offer_status||'Pending'}','${(d.offer_notes||'').replace(/'/g,"\\'")}')">Offer</button>
+                        <button class="btn-action" style="background:#b45309;color:#fef3c7;" onclick="event.stopPropagation();markPending(${d.id})">${d.offer_status === 'Pending' ? 'Active' : 'Pending'}</button>
                         <button class="btn-action btn-archive" onclick="event.stopPropagation();archiveDeal(${d.id},${!d.is_archived})">${d.is_archived ? 'Restore' : 'Archive'}</button>
                     </div>
                 </div>
@@ -486,6 +491,7 @@
                     <button class="btn-copy" onclick="event.stopPropagation();copyAddress('${(d.address + ', ' + d.city + ', ' + (d.state||'CA') + ' ' + (d.zip_code||'')).replace(/'/g,"\\'")}')" id="btn-copy-${d.id}">Copy Address</button>
                     <button class="btn-action" onclick="analyzePhotos(${d.id})" id="btn-analyze-${d.id}">Analyze Photos</button>
                     <button class="btn-action btn-offer" onclick="openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',${d.offer_amount||0},'${d.offer_date||''}','${d.offer_status||'Pending'}','${(d.offer_notes||'').replace(/'/g,"\\'")}')">Submit Offer</button>
+                    ${d.offer_status === 'Pending' ? `<button class="btn-action" style="background:#22c55e;" onclick="markPending(${d.id})">Back to Active</button>` : `<button class="btn-action" style="background:#b45309;color:#fef3c7;" onclick="markPending(${d.id})">Mark Pending</button>`}
                     <button class="btn-action btn-archive" onclick="archiveDeal(${d.id},${!d.is_archived})">${d.is_archived ? 'Restore Deal' : 'Archive Deal'}</button>
                 </div>
 
@@ -631,6 +637,21 @@
                 closeModal();
                 loadDeals();
             } catch(e) { alert('Failed to archive deal'); }
+        }
+
+        // Mark Pending
+        async function markPending(dealId) {
+            try {
+                // Toggle: if already pending, set to null (back to active)
+                const deal = allDeals.find(d => d.id === dealId);
+                const newStatus = (deal && deal.offer_status === 'Pending') ? null : 'Pending';
+                await fetch(`/api/deals/${dealId}/offer`, {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({status: newStatus || ''})
+                });
+                closeModal();
+                loadDeals();
+            } catch(e) { alert('Failed'); }
         }
 
         // Offer form

@@ -48,14 +48,19 @@ def api_deals():
     try:
         query = session.query(Deal)
 
-        # Tab filter: active, archived, offers
+        # Tab filter: active, archived, offers, pending
         tab = request.args.get("tab", "active")
         if tab == "archived":
             query = query.filter(Deal.is_archived == True)
         elif tab == "offers":
             query = query.filter(Deal.offer_status != None)
+        elif tab == "pending":
+            query = query.filter(Deal.offer_status == "Pending")
         else:
-            query = query.filter((Deal.is_archived == False) | (Deal.is_archived == None))
+            query = query.filter(
+                (Deal.is_archived == False) | (Deal.is_archived == None),
+                (Deal.offer_status != "Pending") | (Deal.offer_status == None)
+            )
 
         # Filters
         zip_code = request.args.get("zip_code")
@@ -216,7 +221,13 @@ def api_submit_offer(deal_id):
             deal.offer_date = data["date"]
         if "notes" in data:
             deal.offer_notes = data["notes"]
-        deal.offer_status = data.get("status", deal.offer_status or "Pending")
+        status_val = data.get("status")
+        if status_val == "":
+            deal.offer_status = None
+        elif status_val:
+            deal.offer_status = status_val
+        elif not deal.offer_status:
+            deal.offer_status = "Pending"
         session.commit()
 
         # Write to Google Sheet
