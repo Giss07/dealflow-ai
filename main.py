@@ -20,7 +20,7 @@ def run_full_pipeline():
     from arv_calculator import compute_arv_for_all
     from repair_estimator import estimate_all_repairs
     from offer_calculator import calculate_all_offers
-    from alerts import send_alerts
+    from alerts import send_alerts_for_new_deals
     from database import init_db, save_deals, log_pipeline_run
 
     started_at = datetime.utcnow()
@@ -78,13 +78,28 @@ def run_full_pipeline():
         logger.info("[7/8] Calculating max offers...")
         with_offers = calculate_all_offers(with_repairs)
 
-        # Step 8: Send alerts
-        logger.info("[8/8] Sending alerts for top deals...")
-        alerts_sent = send_alerts(with_offers)
-
-        # Save to database
+        # Save to database first (marks which deals are new)
         logger.info("Saving deals to database...")
         save_deals(with_offers)
+
+        # Step 8: Send alerts for NEW high-scoring deals only
+        logger.info("[8/8] Sending alerts for new high-scoring deals...")
+        from alerts import send_alerts_for_new_deals
+        alerts_sent = send_alerts_for_new_deals(with_offers)
+
+        # Update alert_sent flags in DB
+        if alerts_sent:
+            from database import get_session, Deal
+            session = get_session()
+            for listing in with_offers:
+                if listing.get("alert_sent"):
+                    zpid = listing.get("zpid")
+                    if zpid:
+                        deal = session.query(Deal).filter_by(zpid=zpid).first()
+                        if deal:
+                            deal.alert_sent = True
+            session.commit()
+            session.close()
 
         # Log pipeline run
         log_pipeline_run(
@@ -115,7 +130,7 @@ def run_reprocess():
     from arv_calculator import compute_arv_for_all
     from repair_estimator import estimate_all_repairs
     from offer_calculator import calculate_all_offers
-    from alerts import send_alerts
+    from alerts import send_alerts_for_new_deals
     from database import init_db, get_session, Deal, deal_to_dict, save_deals, log_pipeline_run
 
     started_at = datetime.utcnow()
@@ -179,7 +194,7 @@ def run_reprocess():
 
         # Send alerts
         logger.info("Sending alerts for top deals...")
-        alerts_sent = send_alerts(with_offers)
+        alerts_sent = send_alerts_for_new_deals(with_offers)
 
         # Save updated deals
         logger.info("Saving reprocessed deals to database...")

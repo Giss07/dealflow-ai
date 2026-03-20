@@ -1,5 +1,5 @@
 """
-DealFlow Email Alerts — Send deal alerts for high-scoring properties.
+DealFlow Email Alerts — Send alerts for high-scoring NEW deals via Gmail SMTP.
 """
 
 import os
@@ -7,98 +7,125 @@ import smtplib
 import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from urllib.parse import quote_plus
 
 logger = logging.getLogger(__name__)
 
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_PASSWORD = os.getenv("GMAIL_PASSWORD")
-ALERT_RECIPIENT = "gescobarrei@gmail.com"
-SCORE_THRESHOLD_MIN = 80
-SCORE_THRESHOLD_MAX = 100
+ALERT_EMAIL = os.getenv("ALERT_EMAIL", "gescobarrei@gmail.com")
+SCORE_THRESHOLD = 80
+
+
+def build_zillow_url(listing):
+    """Build Zillow search URL for the property."""
+    address = listing.get("address", "")
+    city = listing.get("city", "")
+    state = listing.get("state", "CA")
+    zip_code = listing.get("zip_code", "")
+    full = f"{address}, {city}, {state} {zip_code}"
+    return f"https://www.zillow.com/homes/{quote_plus(full)}_rb/"
+
+
+def fmt(val):
+    """Format number as currency."""
+    if val is None:
+        return "N/A"
+    return f"${val:,.0f}"
 
 
 def build_alert_email(listing):
     """Build HTML email for a high-scoring deal."""
-    analysis = listing.get("offer_analysis", {})
     address = f"{listing.get('address', 'N/A')}, {listing.get('city', '')}, {listing.get('state', 'CA')} {listing.get('zip_code', '')}"
-
     score = listing.get("score", 0)
-    arv = analysis.get("arv", "N/A")
-    max_offer = analysis.get("max_offer", "N/A")
-    repairs_mid = analysis.get("repairs_mid", "N/A")
-    repairs_worst = analysis.get("repairs_worst", "N/A")
-    profit = analysis.get("estimated_profit", "N/A")
-    roi = analysis.get("roi_pct", "N/A")
+    price = listing.get("price")
+    arv = listing.get("arv")
+    days = listing.get("days_on_zillow")
+    reasoning = listing.get("score_reasoning", "")
+    zillow_url = build_zillow_url(listing)
     privy_url = listing.get("privy_url", "#")
-    listing_url = listing.get("listing_url", "#")
 
-    # Format currency values
-    def fmt(val):
-        if isinstance(val, (int, float)):
-            return f"${val:,.0f}"
-        return str(val)
+    # Get offer analysis
+    offer = listing.get("offer_analysis", {})
+    if isinstance(offer, str):
+        import json
+        try:
+            offer = json.loads(offer)
+        except Exception:
+            offer = {}
+
+    max_offer = offer.get("max_offer") or listing.get("max_offer")
+    profit = offer.get("estimated_profit") or listing.get("estimated_profit")
+
+    # Repairs
+    repairs_mid = listing.get("repairs_mid", 0) or 0
+    repairs_worst = listing.get("repairs_worst", 0) or 0
+    repairs = round((repairs_mid + repairs_worst) / 2) if (repairs_mid or repairs_worst) else None
 
     # Score color
     if score >= 80:
         score_color = "#22c55e"
+        score_bg = "#166534"
     elif score >= 60:
-        score_color = "#eab308"
+        score_color = "#fbbf24"
+        score_bg = "#854d0e"
     else:
-        score_color = "#ef4444"
+        score_color = "#fca5a5"
+        score_bg = "#991b1b"
 
     html = f"""
     <html>
-    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background: #1e293b; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-            <h1 style="margin: 0;">🏠 DealFlow Alert</h1>
-            <p style="margin: 5px 0 0; opacity: 0.8;">High-scoring deal found!</p>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; background: #f8fafc;">
+        <div style="background: #1e293b; color: white; padding: 24px; border-radius: 12px 12px 0 0;">
+            <h1 style="margin: 0; font-size: 22px;">DealFlow Alert</h1>
+            <p style="margin: 5px 0 0; opacity: 0.7; font-size: 14px;">New high-scoring deal found</p>
         </div>
 
-        <div style="padding: 20px; border: 1px solid #e2e8f0; border-top: none;">
-            <h2 style="color: #1e293b; margin-top: 0;">{address}</h2>
-
-            <div style="display: inline-block; background: {score_color}; color: white; padding: 8px 16px; border-radius: 20px; font-size: 24px; font-weight: bold;">
-                Score: {score}/100
+        <div style="padding: 24px; background: white; border: 1px solid #e2e8f0; border-top: none;">
+            <div style="display: inline-block; background: {score_bg}; color: {score_color}; padding: 8px 20px; border-radius: 20px; font-size: 22px; font-weight: bold; margin-bottom: 16px;">
+                {score}/100
             </div>
 
-            <table style="width: 100%; margin-top: 20px; border-collapse: collapse;">
-                <tr style="border-bottom: 1px solid #e2e8f0;">
-                    <td style="padding: 8px; font-weight: bold;">ARV</td>
-                    <td style="padding: 8px; text-align: right;">{fmt(arv)}</td>
+            <h2 style="color: #1e293b; margin: 0 0 16px 0; font-size: 18px;">{address}</h2>
+
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+                <tr style="border-bottom: 1px solid #f1f5f9;">
+                    <td style="padding: 10px 0; color: #64748b; font-size: 14px;">Price</td>
+                    <td style="padding: 10px 0; text-align: right; font-weight: 600; font-size: 14px;">{fmt(price)}</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #e2e8f0;">
-                    <td style="padding: 8px; font-weight: bold;">Max Offer</td>
-                    <td style="padding: 8px; text-align: right;">{fmt(max_offer)}</td>
+                <tr style="border-bottom: 1px solid #f1f5f9;">
+                    <td style="padding: 10px 0; color: #64748b; font-size: 14px;">ARV</td>
+                    <td style="padding: 10px 0; text-align: right; font-weight: 600; font-size: 14px;">{fmt(arv)}</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #e2e8f0;">
-                    <td style="padding: 8px; font-weight: bold;">Repairs (Mid)</td>
-                    <td style="padding: 8px; text-align: right;">{fmt(repairs_mid)}</td>
+                <tr style="border-bottom: 1px solid #f1f5f9;">
+                    <td style="padding: 10px 0; color: #64748b; font-size: 14px;">Est. Repairs</td>
+                    <td style="padding: 10px 0; text-align: right; font-weight: 600; font-size: 14px;">{fmt(repairs)}</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #e2e8f0;">
-                    <td style="padding: 8px; font-weight: bold;">Repairs (Worst)</td>
-                    <td style="padding: 8px; text-align: right;">{fmt(repairs_worst)}</td>
+                <tr style="border-bottom: 1px solid #f1f5f9;">
+                    <td style="padding: 10px 0; color: #64748b; font-size: 14px;">Max Offer</td>
+                    <td style="padding: 10px 0; text-align: right; font-weight: 600; color: #3b82f6; font-size: 14px;">{fmt(max_offer)}</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #e2e8f0;">
-                    <td style="padding: 8px; font-weight: bold;">Est. Profit</td>
-                    <td style="padding: 8px; text-align: right; color: #22c55e; font-weight: bold;">{fmt(profit)}</td>
+                <tr style="border-bottom: 1px solid #f1f5f9;">
+                    <td style="padding: 10px 0; color: #64748b; font-size: 14px;">Est. Profit</td>
+                    <td style="padding: 10px 0; text-align: right; font-weight: 600; color: #22c55e; font-size: 14px;">{fmt(profit)}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; font-weight: bold;">ROI</td>
-                    <td style="padding: 8px; text-align: right;">{roi}%</td>
+                    <td style="padding: 10px 0; color: #64748b; font-size: 14px;">Days on Market</td>
+                    <td style="padding: 10px 0; text-align: right; font-weight: 600; font-size: 14px;">{days if days is not None else 'N/A'}</td>
                 </tr>
             </table>
 
-            <div style="margin-top: 20px;">
-                <a href="{listing_url}" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; margin-right: 10px;">View on Zillow</a>
-                <a href="{privy_url}" style="display: inline-block; background: #8b5cf6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none;">Open in Privy</a>
-            </div>
-
-            <p style="margin-top: 20px; color: #64748b; font-size: 12px;">
-                {listing.get('score_reasoning', '')}
+            <p style="color: #64748b; font-size: 13px; margin-bottom: 20px; padding: 10px; background: #f8fafc; border-radius: 6px;">
+                {reasoning}
             </p>
+
+            <div style="text-align: center;">
+                <a href="{zillow_url}" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px; margin-right: 8px;">View on Zillow</a>
+                <a href="{privy_url}" style="display: inline-block; background: #8b5cf6; color: white; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px;">Open in Privy</a>
+            </div>
         </div>
 
-        <div style="background: #f8fafc; padding: 15px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 8px 8px; text-align: center; color: #94a3b8; font-size: 12px;">
+        <div style="background: #f1f5f9; padding: 16px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px; text-align: center; color: #94a3b8; font-size: 12px;">
             DealFlow AI — Inland Empire Deal Finder
         </div>
     </body>
@@ -110,16 +137,16 @@ def build_alert_email(listing):
 def send_alert(listing):
     """Send email alert for a single deal."""
     if not GMAIL_USER or not GMAIL_PASSWORD:
-        logger.warning("GMAIL_USER or GMAIL_PASSWORD not set, skipping email")
+        logger.warning("GMAIL_USER or GMAIL_PASSWORD not set, skipping email alert")
         return False
 
-    address = listing.get("address", "Unknown Property")
+    address = listing.get("address", "Unknown")
     score = listing.get("score", 0)
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"🏠 DealFlow Alert: Score {score}/100 — {address}"
+    msg["Subject"] = f"New Deal Alert: {address} — Score {score}/100"
     msg["From"] = GMAIL_USER
-    msg["To"] = ALERT_RECIPIENT
+    msg["To"] = ALERT_EMAIL
 
     html = build_alert_email(listing)
     msg.attach(MIMEText(html, "html"))
@@ -127,7 +154,7 @@ def send_alert(listing):
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(GMAIL_USER, GMAIL_PASSWORD)
-            server.sendmail(GMAIL_USER, ALERT_RECIPIENT, msg.as_string())
+            server.sendmail(GMAIL_USER, ALERT_EMAIL, msg.as_string())
         logger.info(f"Alert sent for {address} (score {score})")
         return True
     except Exception as e:
@@ -135,19 +162,21 @@ def send_alert(listing):
         return False
 
 
-def send_alerts(listings):
-    """Send alerts for all listings scoring 80-100."""
+def send_alerts_for_new_deals(listings):
+    """Send alerts ONLY for new deals scoring 80+. Checks alert_sent flag."""
     high_scoring = [l for l in listings
-                    if SCORE_THRESHOLD_MIN <= l.get("score", 0) <= SCORE_THRESHOLD_MAX]
+                    if l.get("score", 0) >= SCORE_THRESHOLD
+                    and not l.get("alert_sent")]
 
     if not high_scoring:
-        logger.info("No deals scoring 80-100, no alerts to send")
+        logger.info(f"No new deals scoring {SCORE_THRESHOLD}+")
         return 0
 
-    logger.info(f"Sending alerts for {len(high_scoring)} high-scoring deals")
+    logger.info(f"Sending alerts for {len(high_scoring)} new high-scoring deals")
     sent = 0
     for listing in high_scoring:
         if send_alert(listing):
+            listing["alert_sent"] = True
             sent += 1
 
     logger.info(f"Sent {sent}/{len(high_scoring)} alerts")
@@ -156,14 +185,13 @@ def send_alerts(listings):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    # Test
     test = {
-        "address": "123 Main St", "city": "Fontana", "state": "CA", "zip_code": "92335",
-        "score": 85, "score_reasoning": "Strong fixer opportunity in growing area.",
-        "listing_url": "https://zillow.com/test",
-        "privy_url": "https://app.privy.pro/dashboard?search_text=123+Main+St%2C+Fontana%2C+CA&street_number=123&street=123+Main+St&city=Fontana&zip=92335&state=CA&include_detached=true&include_active=true&date_range=6_month&spread_type=arv",
-        "offer_analysis": {
-            "arv": 650000, "max_offer": 420000, "repairs_mid": 75000,
-            "repairs_worst": 120000, "estimated_profit": 65000, "roi_pct": 10.0,
-        },
+        "address": "163 N Center St", "city": "Redlands", "state": "CA", "zip_code": "92373",
+        "score": 85, "score_reasoning": "Strong ARV margin (40%). Low $/sqft ($150). Stale listing (194 days)",
+        "price": 188000, "arv": 310000, "max_offer": 200000,
+        "estimated_profit": 31000, "repairs_mid": 50000, "repairs_worst": 70000,
+        "days_on_zillow": 194, "privy_url": "#",
+        "offer_analysis": {"max_offer": 200000, "estimated_profit": 31000},
     }
     send_alert(test)
