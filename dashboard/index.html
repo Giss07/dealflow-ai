@@ -693,12 +693,11 @@
         // Mark Pending
         async function markPending(dealId) {
             try {
-                // Toggle: if already pending, set to null (back to active)
                 const deal = allDeals.find(d => d.id === dealId);
-                const newStatus = (deal && deal.offer_status === 'Pending') ? null : 'Pending';
-                await fetch(`/api/deals/${dealId}/offer`, {
+                const pending = !(deal && deal.offer_status === 'Pending');
+                await fetch(`/api/deals/${dealId}/mark-pending`, {
                     method: 'POST', headers: {'Content-Type':'application/json'},
-                    body: JSON.stringify({status: newStatus || ''})
+                    body: JSON.stringify({pending: pending})
                 });
                 closeModal();
                 loadDeals();

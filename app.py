@@ -272,6 +272,28 @@ def api_save_comps(deal_id):
         session.close()
 
 
+@app.route("/api/deals/<int:deal_id>/mark-pending", methods=["POST"])
+def api_mark_pending(deal_id):
+    """Toggle pending status. Does NOT write to Google Sheet."""
+    session = get_session()
+    try:
+        deal = session.query(Deal).filter_by(id=deal_id).first()
+        if not deal:
+            return jsonify({"error": "Deal not found"}), 404
+        data = request.get_json() or {}
+        if data.get("pending"):
+            deal.offer_status = "Pending"
+        else:
+            deal.offer_status = None
+        session.commit()
+        return jsonify(deal_to_dict(deal))
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
 @app.route("/api/deals/<int:deal_id>/archive", methods=["POST"])
 def api_archive_deal(deal_id):
     """Toggle archive status."""
