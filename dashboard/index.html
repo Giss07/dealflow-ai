@@ -210,6 +210,7 @@
         <div class="tab" data-tab="pending" onclick="switchTab('pending')">Pending <span class="badge" id="tab-pending-count" style="background:#854d0e;color:#fbbf24;">0</span></div>
         <div class="tab" data-tab="offers" onclick="switchTab('offers')">My Offers <span class="badge" id="tab-offers-count">0</span></div>
         <div class="tab" data-tab="archived" onclick="switchTab('archived')">Archived <span class="badge" id="tab-archived-count">0</span></div>
+        <div class="tab" data-tab="tracker" onclick="switchTab('tracker')">Tracker <span class="badge" style="background:#8b5cf6;">Sheet</span></div>
     </div>
 
     <div style="padding:10px 30px;background:#1e293b;border-bottom:1px solid #334155;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
@@ -318,6 +319,8 @@
         }
 
         async function loadDeals() {
+            if (currentTab === 'tracker') { loadTracker(); return; }
+
             const params = new URLSearchParams();
             params.set('sort', currentSort);
             params.set('dir', currentDir);
@@ -813,6 +816,75 @@
         }
 
         document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeOfferModal(); } });
+
+        // Tracker tab
+        async function loadTracker() {
+            const tbody = document.getElementById('deals-body');
+            const cards = document.getElementById('deal-cards');
+            const empty = document.getElementById('empty-state');
+            const table = document.getElementById('deals-table');
+
+            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:30px;color:#94a3b8;">Loading tracker data from Google Sheet...</td></tr>';
+            cards.innerHTML = '<div style="text-align:center;padding:30px;color:#94a3b8;">Loading...</div>';
+
+            try {
+                const resp = await fetch('/api/tracker');
+                const data = await resp.json();
+
+                if (data.error) {
+                    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:30px;color:#fca5a5;">${data.error}</td></tr>`;
+                    cards.innerHTML = `<div style="text-align:center;padding:30px;color:#fca5a5;">${data.error}</div>`;
+                    return;
+                }
+
+                const rows = data.rows || [];
+                if (!rows.length) {
+                    empty.style.display = 'block';
+                    tbody.innerHTML = '';
+                    cards.innerHTML = '';
+                    return;
+                }
+                empty.style.display = 'none';
+
+                // Desktop table
+                tbody.innerHTML = rows.map(r => {
+                    const addr = r.address || '';
+                    const zUrl = addr ? 'https://www.zillow.com/homes/' + encodeURIComponent(addr) + '_rb/' : '#';
+                    return `<tr>
+                        <td style="white-space:nowrap;">${r.date || '—'}</td>
+                        <td><a href="${zUrl}" target="_blank" style="color:#3b82f6;text-decoration:none;">${addr || '—'}</a></td>
+                        <td>${r.arv || '—'}</td>
+                        <td>${r.offer || '—'}</td>
+                        <td>${r.repairs || '—'}</td>
+                        <td>${r.status || '—'}</td>
+                        <td>${r.counter || '—'}</td>
+                        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${r.comps || '—'}</td>
+                        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${r.justification || '—'}</td>
+                    </tr>`;
+                }).join('');
+
+                // Mobile cards
+                cards.innerHTML = rows.map(r => `
+                    <div class="deal-card">
+                        <div class="deal-card-address">${r.address || '—'}</div>
+                        <div class="deal-card-grid" style="margin-top:8px;">
+                            <span class="lbl">Date</span><span class="val">${r.date || '—'}</span>
+                            <span class="lbl">ARV</span><span class="val">${r.arv || '—'}</span>
+                            <span class="lbl">Offer</span><span class="val">${r.offer || '—'}</span>
+                            <span class="lbl">Repairs</span><span class="val">${r.repairs || '—'}</span>
+                            <span class="lbl">Status</span><span class="val">${r.status || '—'}</span>
+                            <span class="lbl">Counter</span><span class="val">${r.counter || '—'}</span>
+                        </div>
+                        ${r.comps ? `<div style="margin-top:6px;font-size:12px;color:#94a3b8;">Comps: ${r.comps}</div>` : ''}
+                        ${r.justification ? `<div style="margin-top:4px;font-size:12px;color:#94a3b8;">Notes: ${r.justification}</div>` : ''}
+                    </div>
+                `).join('');
+
+            } catch(e) {
+                tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:30px;color:#fca5a5;">Failed to load tracker data</td></tr>';
+                cards.innerHTML = '<div style="text-align:center;padding:30px;color:#fca5a5;">Failed to load</div>';
+            }
+        }
 
         // Search
         let searchTimeout = null;

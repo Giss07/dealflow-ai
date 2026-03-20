@@ -364,6 +364,24 @@ def api_update_arv(deal_id):
         session.close()
 
 
+@app.route("/api/tracker")
+def api_tracker():
+    """Fetch Google Sheet tracker data via Apps Script."""
+    import requests as req
+    TRACKER_URL = os.getenv(
+        "TRACKER_WEBHOOK_URL",
+        ""
+    )
+    if not TRACKER_URL:
+        return jsonify({"error": "TRACKER_WEBHOOK_URL not set"}), 500
+    try:
+        resp = req.get(TRACKER_URL, timeout=15)
+        return jsonify(resp.json())
+    except Exception as e:
+        logger.error(f"Tracker fetch failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     port = int(os.getenv("PORT", 8080))
