@@ -6,6 +6,7 @@
 !requirements.txt
 !railway.toml
 !package.json
+!dashboard/static/manifest.json
 dealflow_log.txt
 scraped_cache.json
 __pycache__/
