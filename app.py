@@ -138,7 +138,7 @@ def api_deals():
         if tab == "archived":
             query = query.filter(Deal.is_archived == True)
         elif tab == "offers":
-            query = query.filter(Deal.offer_status != None)
+            query = query.filter((Deal.offer_amount != None) | (Deal.offer_status == "Submitted"))
         elif tab == "pending":
             query = query.filter(Deal.offer_status == "Pending")
         else:
@@ -311,8 +311,8 @@ def api_submit_offer(deal_id):
             deal.offer_status = None
         elif status_val:
             deal.offer_status = status_val
-        elif not deal.offer_status:
-            deal.offer_status = "Pending"
+        elif data.get("amount") and not deal.offer_status:
+            deal.offer_status = "Submitted"
         session.commit()
 
         # Write to Google Sheet

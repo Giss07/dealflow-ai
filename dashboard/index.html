@@ -435,7 +435,25 @@
             if (!deals.length) { tbody.innerHTML = ''; cards.innerHTML = ''; empty.style.display = 'block'; return; }
             empty.style.display = 'none';
 
-            {
+            if (currentTab === 'offers') {
+                header.innerHTML = `<th>Address</th><th>Zip</th><th>Price</th><th>Offer Amount</th><th>Date Submitted</th><th>ARV</th><th>Profit</th><th>Score</th><th>Actions</th>`;
+                tbody.innerHTML = deals.map(d => `
+                    <tr onclick="showDeal(${d.id})">
+                        <td>${d.address || '—'}</td>
+                        <td>${d.zip_code || '—'}</td>
+                        <td>${fmt(d.price)}</td>
+                        <td style="color:#3b82f6;font-weight:600;">${fmt(d.offer_amount)}</td>
+                        <td>${d.offer_date || '—'}</td>
+                        <td>${fmt(d.arv)}</td>
+                        <td style="color:${d.estimated_profit > 0 ? '#4ade80' : '#fca5a5'}">${fmt(d.estimated_profit)}</td>
+                        <td><span class="score-badge ${scoreClass(d.score)}">${d.score ?? '—'}</span></td>
+                        <td style="white-space:nowrap;">
+                            <button class="btn-action btn-offer" onclick="event.stopPropagation();openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',${d.offer_amount||0},'${d.offer_date||''}','Submitted','${(d.offer_notes||'').replace(/'/g,"\\'")}')">Edit</button>
+                            <button class="btn-action btn-archive" onclick="event.stopPropagation();archiveDeal(${d.id},true)">Archive</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } else {
                 tbody.innerHTML = deals.map(d => `
                     <tr onclick="showDeal(${d.id})">
                         <td style="color:${daysColor(d.days_on_zillow)};white-space:nowrap;">${daysAgo(d.days_on_zillow)}</td>
@@ -448,7 +466,7 @@
                         <td style="color:${d.estimated_profit > 0 ? '#4ade80' : '#fca5a5'}">${fmt(d.estimated_profit)}</td>
                         <td>${d.roi_pct != null ? d.roi_pct + '%' : '—'}</td>
                         <td style="white-space:nowrap;">
-                            <button class="btn-action btn-offer" onclick="event.stopPropagation();openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',0,'','Pending','')" title="Submit Offer">Offer</button>
+                            <button class="btn-action btn-offer" onclick="event.stopPropagation();openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',0,'','Submitted','')" title="Submit Offer">Offer</button>
                             <button class="btn-action" style="background:#b45309;color:#fef3c7;" onclick="event.stopPropagation();markPending(${d.id})" title="Mark Pending">${d.offer_status === 'Pending' ? 'Active' : 'Pending'}</button>
                             <button class="btn-action btn-archive" onclick="event.stopPropagation();archiveDeal(${d.id},${!d.is_archived})" title="${d.is_archived ? 'Restore' : 'Archive'}">${d.is_archived ? 'Restore' : 'Archive'}</button>
                         </td>
