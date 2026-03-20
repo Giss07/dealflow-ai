@@ -28,9 +28,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 
 def run_full():
-    """Run dealflow_updater in full mode."""
-    now = datetime.now(PST).strftime("%Y-%m-%d %H:%M %Z")
-    logger.info(f"=== FULL RUN started at {now} ===")
+    """Run dealflow_updater in full mode (every 2 days)."""
+    now_pst = datetime.now(PST)
+    # Only run on odd days (1st, 3rd, 5th, etc.) to achieve every-2-days
+    if now_pst.day % 2 == 0:
+        logger.info(f"Skipping full run — runs every 2 days (next run tomorrow)")
+        return
+    logger.info(f"=== FULL RUN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
     try:
         os.system(f"{sys.executable} {os.path.join(os.path.dirname(__file__), 'dealflow_updater.py')} full")
     except Exception as e:
