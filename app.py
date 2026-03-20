@@ -370,7 +370,7 @@ def api_tracker():
     import requests as req
     TRACKER_URL = os.getenv(
         "TRACKER_WEBHOOK_URL",
-        ""
+        "https://script.google.com/macros/s/AKfycbxb0e9H3X94Ztf4CTR_1K82MGFGjL2wh-DGk8Xtjn-uEF04KSLeWzJ1oiZqGhQ4239F/exec"
     )
     if not TRACKER_URL:
         return jsonify({"error": "TRACKER_WEBHOOK_URL not set"}), 500
