@@ -669,15 +669,8 @@ def run_full(sheet, records, headers, status_col):
                 if 'STP Date' in headers:
                     stp_date_col = headers.index('STP Date') + 1
                     sheet.update_cell(i + 2, stp_date_col, datetime.now().strftime('%m/%d/%Y'))
-                # Try to grab sold price from Zillow and write to Archive_STP
-                sold_price = item.get('lastSoldPrice') or item.get('price')
-                if sold_price:
-                    try:
-                        sold_price_int = int(float(str(sold_price)))
-                        print(f"  → Sold price: ${sold_price_int:,}")
-                        write_sold_price_to_archive(address, sold_price_int)
-                    except:
-                        print(f"  → Could not parse sold price: {sold_price}")
+                # Write to Archive_STP
+                write_sold_price_to_archive(address, None)
         elif zillow_status == 'active':
             if current_status in ['Pending', 'Resubmit']:
                 # Skip if alert already sent for this property
