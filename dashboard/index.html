@@ -107,6 +107,11 @@
         .offer-form input, .offer-form select, .offer-form textarea { width: 100%; background: #1e293b; border: 1px solid #475569; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
         .offer-form textarea { height: 60px; resize: vertical; }
 
+        /* Score filter buttons */
+        .score-filter-btn { background: #334155; color: #94a3b8; border: 1px solid #475569; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
+        .score-filter-btn:hover { background: #475569; color: #e2e8f0; }
+        .score-filter-btn.active { background: #3b82f6; color: white; border-color: #3b82f6; }
+
         /* Search results */
         .search-section { margin-bottom:12px; }
         .search-section-title { font-size:13px; color:#94a3b8; text-transform:uppercase; margin-bottom:6px; }
@@ -192,9 +197,21 @@
         <div class="tab" data-tab="archived" onclick="switchTab('archived')">Archived <span class="badge" id="tab-archived-count">0</span></div>
     </div>
 
+    <div style="padding:10px 30px;background:#1e293b;border-bottom:1px solid #334155;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <span style="color:#94a3b8;font-size:12px;text-transform:uppercase;margin-right:4px;">Quick Filter:</span>
+        <button class="score-filter-btn" onclick="setScoreMin(0)">All</button>
+        <button class="score-filter-btn" onclick="setScoreMin(50)">50+</button>
+        <button class="score-filter-btn active" onclick="setScoreMin(60)">60+</button>
+        <button class="score-filter-btn" onclick="setScoreMin(70)">70+</button>
+        <button class="score-filter-btn" onclick="setScoreMin(80)">80+</button>
+        <button class="score-filter-btn" onclick="setScoreMin(90)">90+</button>
+        <span style="color:#334155;margin:0 6px;">|</span>
+        <button id="btn-hide-turnkey" class="score-filter-btn" onclick="toggleHideTurnkey()" style="background:#991b1b;color:#fca5a5;">Hide Turnkey (&lt;30)</button>
+    </div>
+
     <div class="filters" id="filters-bar">
         <div><label>Zip Code</label><br><select id="filter-zip" onchange="loadDeals()"><option value="">All Zips</option></select></div>
-        <div><label>Score Min</label><br><input type="number" id="filter-score-min" value="50" placeholder="50" min="0" max="100" style="width:80px" onchange="loadDeals()"></div>
+        <div><label>Score Min</label><br><input type="number" id="filter-score-min" value="60" placeholder="60" min="0" max="100" style="width:80px" onchange="loadDeals()"></div>
         <div><label>Score Max</label><br><input type="number" id="filter-score-max" placeholder="100" min="0" max="100" style="width:80px" onchange="loadDeals()"></div>
         <div><label>Price Min</label><br><input type="number" id="filter-price-min" placeholder="0" style="width:120px" onchange="loadDeals()"></div>
         <div><label>Price Max</label><br><input type="number" id="filter-price-max" placeholder="900000" style="width:120px" onchange="loadDeals()"></div>
@@ -695,12 +712,41 @@
             try { const r = await fetch('/api/run-pipeline',{method:'POST'}); const d = await r.json(); alert(d.status||d.error); } catch(e) { alert('Failed'); }
         }
 
+        function setScoreMin(val) {
+            document.getElementById('filter-score-min').value = val || '';
+            document.querySelectorAll('.score-filter-btn').forEach(b => b.classList.remove('active'));
+            event.target.classList.add('active');
+            loadDeals();
+        }
+
+        let hideTurnkey = false;
+        function toggleHideTurnkey() {
+            hideTurnkey = !hideTurnkey;
+            const btn = document.getElementById('btn-hide-turnkey');
+            if (hideTurnkey) {
+                btn.classList.add('active');
+                btn.style.background = '#3b82f6'; btn.style.color = 'white';
+                if (!document.getElementById('filter-score-min').value || parseInt(document.getElementById('filter-score-min').value) < 30) {
+                    document.getElementById('filter-score-min').value = '30';
+                }
+            } else {
+                btn.classList.remove('active');
+                btn.style.background = '#991b1b'; btn.style.color = '#fca5a5';
+            }
+            loadDeals();
+        }
+
         function clearFilters() {
             document.getElementById('filter-zip').value = '';
-            document.getElementById('filter-score-min').value = '50';
+            document.getElementById('filter-score-min').value = '60';
             document.getElementById('filter-score-max').value = '';
             document.getElementById('filter-price-min').value = '';
             document.getElementById('filter-price-max').value = '';
+            hideTurnkey = false;
+            const btn = document.getElementById('btn-hide-turnkey');
+            btn.classList.remove('active'); btn.style.background = '#991b1b'; btn.style.color = '#fca5a5';
+            document.querySelectorAll('.score-filter-btn').forEach(b => b.classList.remove('active'));
+            document.querySelector('.score-filter-btn:nth-child(4)').classList.add('active'); // 60+
             loadDeals();
         }
 
