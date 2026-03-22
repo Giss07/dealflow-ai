@@ -108,6 +108,9 @@ class Deal(Base):
     user_comps = Column(Text)  # JSON list of comp addresses
     arv_justification = Column(Text)
 
+    # Hidden (not interested, but not archived)
+    is_hidden = Column(Boolean, default=False)
+
 
 class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
@@ -300,6 +303,7 @@ def deal_to_dict(deal):
         "offer_status": deal.offer_status,
         "user_comps": json.loads(deal.user_comps) if deal.user_comps else [],
         "arv_justification": deal.arv_justification,
+        "is_hidden": deal.is_hidden or False,
     }
 
 

@@ -148,6 +148,8 @@ def api_deals():
                 (Deal.offer_status != "Submitted") | (Deal.offer_status == None),
                 Deal.offer_amount == None
             )
+            if not request.args.get("show_hidden"):
+                query = query.filter((Deal.is_hidden == False) | (Deal.is_hidden == None))
 
         # Filters
         zip_code = request.args.get("zip_code")
@@ -287,6 +289,25 @@ def api_mark_pending(deal_id):
             deal.offer_status = "Pending"
         else:
             deal.offer_status = None
+        session.commit()
+        return jsonify(deal_to_dict(deal))
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+@app.route("/api/deals/<int:deal_id>/hide", methods=["POST"])
+def api_hide_deal(deal_id):
+    """Toggle hidden status. Does NOT archive."""
+    session = get_session()
+    try:
+        deal = session.query(Deal).filter_by(id=deal_id).first()
+        if not deal:
+            return jsonify({"error": "Deal not found"}), 404
+        data = request.get_json() or {}
+        deal.is_hidden = data.get("hidden", not deal.is_hidden)
         session.commit()
         return jsonify(deal_to_dict(deal))
     except Exception as e:

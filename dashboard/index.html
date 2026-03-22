@@ -236,6 +236,7 @@
         <div><label>Price Max</label><br><input type="number" id="filter-price-max" placeholder="900000" style="width:120px" onchange="loadDeals()"></div>
         <div><label>&nbsp;</label><br><button onclick="clearFilters()">Clear Filters</button></div>
         <div><label>&nbsp;</label><br><button onclick="exportCSV()" style="background:#8b5cf6;">Export CSV</button></div>
+        <div><label>&nbsp;</label><br><button id="btn-show-hidden" onclick="toggleShowHidden()" style="background:#475569;">Show Hidden</button></div>
     </div>
 
     <div class="container">
@@ -328,6 +329,7 @@
             params.set('sort', currentSort);
             params.set('dir', currentDir);
             params.set('tab', currentTab);
+            if (showHidden && currentTab === 'active') params.set('show_hidden', '1');
 
             const zip = document.getElementById('filter-zip').value;
             if (zip) params.set('zip_code', zip);
@@ -472,6 +474,7 @@
                         <td style="white-space:nowrap;">
                             <button class="btn-action btn-offer" onclick="event.stopPropagation();openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',0,'','Submitted','')" title="Submit Offer">Offer</button>
                             <button class="btn-action" style="background:#b45309;color:#fef3c7;" onclick="event.stopPropagation();markPending(${d.id})" title="Mark Pending">${d.offer_status === 'Pending' ? 'Active' : 'Pending'}</button>
+                            <button class="btn-action" style="background:${d.is_hidden ? '#6b7280' : '#64748b'};color:${d.is_hidden ? '#fbbf24' : '#e2e8f0'};" onclick="event.stopPropagation();hideDeal(${d.id},${!d.is_hidden})" title="${d.is_hidden ? 'Unhide' : 'Hide'}">${d.is_hidden ? 'Unhide' : 'Hide'}</button>
                             <button class="btn-action btn-archive" onclick="event.stopPropagation();archiveDeal(${d.id},${!d.is_archived})" title="${d.is_archived ? 'Restore' : 'Archive'}">${d.is_archived ? 'Restore' : 'Archive'}</button>
                         </td>
                     </tr>
@@ -499,6 +502,7 @@
                     <div class="deal-card-actions">
                         <button class="btn-action btn-offer" onclick="event.stopPropagation();openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',${d.offer_amount||0},'${d.offer_date||''}','${d.offer_status||'Pending'}','${(d.offer_notes||'').replace(/'/g,"\\'")}')">Offer</button>
                         <button class="btn-action" style="background:#b45309;color:#fef3c7;" onclick="event.stopPropagation();markPending(${d.id})">${d.offer_status === 'Pending' ? 'Active' : 'Pending'}</button>
+                        <button class="btn-action" style="background:#64748b;" onclick="event.stopPropagation();hideDeal(${d.id},${!d.is_hidden})">${d.is_hidden ? 'Unhide' : 'Hide'}</button>
                         <button class="btn-action btn-archive" onclick="event.stopPropagation();archiveDeal(${d.id},${!d.is_archived})">${d.is_archived ? 'Restore' : 'Archive'}</button>
                     </div>
                 </div>
@@ -547,6 +551,7 @@
                     <button class="btn-action" onclick="analyzePhotos(${d.id})" id="btn-analyze-${d.id}">Analyze Photos</button>
                     <button class="btn-action btn-offer" onclick="openOfferForm(${d.id},'${(d.address||'').replace(/'/g,"\\'")}',${d.offer_amount||0},'${d.offer_date||''}','${d.offer_status||'Pending'}','${(d.offer_notes||'').replace(/'/g,"\\'")}')">Submit Offer</button>
                     ${d.offer_status === 'Pending' ? `<button class="btn-action" style="background:#22c55e;" onclick="markPending(${d.id})">Back to Active</button>` : `<button class="btn-action" style="background:#b45309;color:#fef3c7;" onclick="markPending(${d.id})">Mark Pending</button>`}
+                    <button class="btn-action" style="background:#64748b;" onclick="hideDeal(${d.id},${!d.is_hidden})">${d.is_hidden ? 'Unhide Deal' : 'Hide Deal'}</button>
                     <button class="btn-action btn-archive" onclick="archiveDeal(${d.id},${!d.is_archived})">${d.is_archived ? 'Restore Deal' : 'Archive Deal'}</button>
                 </div>
 
@@ -692,6 +697,24 @@
                 closeModal();
                 loadDeals();
             } catch(e) { alert('Failed to archive deal'); }
+        }
+
+        // Hide deal
+        let showHidden = false;
+        function toggleShowHidden() {
+            showHidden = !showHidden;
+            const btn = document.getElementById('btn-show-hidden');
+            if (showHidden) { btn.style.background = '#3b82f6'; btn.style.color = 'white'; btn.textContent = 'Showing Hidden'; }
+            else { btn.style.background = '#475569'; btn.style.color = '#e2e8f0'; btn.textContent = 'Show Hidden'; }
+            loadDeals();
+        }
+
+        async function hideDeal(dealId, hide) {
+            try {
+                await fetch(`/api/deals/${dealId}/hide`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({hidden: hide}) });
+                closeModal();
+                loadDeals();
+            } catch(e) { alert('Failed'); }
         }
 
         // Mark Pending
