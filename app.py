@@ -144,7 +144,9 @@ def api_deals():
         else:
             query = query.filter(
                 (Deal.is_archived == False) | (Deal.is_archived == None),
-                (Deal.offer_status != "Pending") | (Deal.offer_status == None)
+                (Deal.offer_status != "Pending") | (Deal.offer_status == None),
+                (Deal.offer_status != "Submitted") | (Deal.offer_status == None),
+                Deal.offer_amount == None
             )
 
         # Filters
