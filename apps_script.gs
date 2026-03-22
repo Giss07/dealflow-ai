@@ -16,7 +16,8 @@ function doPost(e) {
     var arvVal = data.arv ? Number(data.arv).toLocaleString("en-US") : "";
     var offerVal = data.offer_amount ? Number(data.offer_amount).toLocaleString("en-US") : "";
     var repairsVal = data.repairs ? Number(data.repairs).toLocaleString("en-US") : "";
-    tab.appendRow([dateStr, "Other", "", arvVal, offerVal, repairsVal, "", "", "", "", "", "", "", "", "", data.arv_justification || ""]);
+    var emdVal = data.offer_amount ? "$" + Math.round(Number(data.offer_amount) * 0.01).toLocaleString("en-US") : "";
+    tab.appendRow([dateStr, "Other", "", arvVal, offerVal, repairsVal, "21 Days", "10 Days", emdVal, "", "", "", "", "", "", data.arv_justification || ""]);
     var lastRow = tab.getLastRow();
     var safeAddr = address.replace(/"/g, '""');
     tab.getRange(lastRow, 3).setFormula('=HYPERLINK("' + zillowUrl + '", "' + safeAddr + '")');
