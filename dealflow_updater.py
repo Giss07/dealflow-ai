@@ -36,7 +36,7 @@ MANUAL USAGE:
 
 import os
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 import gspread
 import sys
 from google.oauth2.service_account import Credentials
@@ -55,7 +55,7 @@ import pytz
 # CONFIGURATION
 # ============================================================
 
-SERVICE_ACCOUNT_FILE = os.getenv('SERVICE_ACCOUNT_FILE', 'dealflow-sheets-b59dc0c02384.json')
+SERVICE_ACCOUNT_FILE = os.getenv('SERVICE_ACCOUNT_FILE', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dealflow-sheets-b59dc0c02384.json'))
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID', '')
 
 YOUR_GMAIL = os.getenv('DEALFLOW_ALERTS_GMAIL', '')
