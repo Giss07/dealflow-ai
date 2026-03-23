@@ -284,16 +284,51 @@ def read_christian_emails(sheet, records):
                 raw_email = msg_data[0][1]
                 msg = email.message_from_bytes(raw_email)
                 body = ''
+                html_body = ''
                 if msg.is_multipart():
                     for part in msg.walk():
                         if part.get_content_type() == 'text/plain':
                             body += part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                        elif part.get_content_type() == 'text/html' and not body:
+                            html_body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
                 else:
-                    body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    ct = msg.get_content_type()
+                    payload = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    if ct == 'text/html':
+                        html_body = payload
+                    else:
+                        body = payload
+
+                # If no plain text, strip HTML tags
+                if not body and html_body:
+                    body = re.sub(r'<[^>]+>', ' ', html_body)
+                    body = re.sub(r'&nbsp;', ' ', body)
+                    body = re.sub(r'\s+', ' ', body).strip()
 
                 subject = msg.get('Subject', '')
                 full_text = subject + ' ' + body
+
+                # HUD-specific: extract address from email body
+                # HUD emails have "Address: 988 Laurel Ave, Lindsay, CA 93247"
+                hud_address_match = None
+                is_hud = 'hud' in subject.lower() and ('counter' in subject.lower() or 'bid' in subject.lower())
+                if is_hud:
+                    addr_match = re.search(r'address[:\s]+(\d+[^,\n]+,\s*[^,\n]+,\s*[A-Z]{2}\s*\d{5})', body, re.IGNORECASE)
+                    if addr_match:
+                        hud_address_match = addr_match.group(1).strip().lower()
+                        print(f"  HUD email — extracted address: {hud_address_match}")
+
                 matched_address = find_matching_address(full_text, sheet_addresses)
+
+                # If normal matching failed but HUD address was extracted, try fuzzy match
+                if not matched_address and hud_address_match:
+                    for sheet_addr in sheet_addresses:
+                        # Match on street number + street name
+                        hud_street = hud_address_match.split(',')[0].strip()
+                        if hud_street in sheet_addr or sheet_addr in hud_street:
+                            matched_address = sheet_addr
+                            print(f"  HUD fuzzy match: {matched_address}")
+                            break
 
                 if matched_address:
                     print(f"  Match found: {matched_address}")
