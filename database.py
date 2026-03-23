@@ -111,6 +111,9 @@ class Deal(Base):
     # Hidden (not interested, but not archived)
     is_hidden = Column(Boolean, default=False)
 
+    # Source tracking
+    source = Column(String(20), default="zillow")  # zillow or manual
+
 
 class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
@@ -304,6 +307,7 @@ def deal_to_dict(deal):
         "user_comps": json.loads(deal.user_comps) if deal.user_comps else [],
         "arv_justification": deal.arv_justification,
         "is_hidden": deal.is_hidden or False,
+        "source": deal.source or "zillow",
     }
 
 

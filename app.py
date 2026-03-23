@@ -172,6 +172,11 @@ def api_deals():
         if price_max is not None:
             query = query.filter(Deal.price <= price_max)
 
+        # Source filter
+        source = request.args.get("source")
+        if source:
+            query = query.filter(Deal.source == source)
+
         # Sort
         sort_by = request.args.get("sort", "score")
         sort_dir = request.args.get("dir", "desc")
@@ -293,6 +298,87 @@ def api_mark_pending(deal_id):
         return jsonify(deal_to_dict(deal))
     except Exception as e:
         session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+@app.route("/api/deals/add", methods=["POST"])
+def api_add_deal():
+    """Manually add a new deal."""
+    from arv_calculator import build_privy_url
+    from repair_estimator import estimate_repairs
+    from offer_calculator import calculate_offer
+    from scorer import fallback_score
+
+    data = request.get_json() or {}
+    if not data.get("address"):
+        return jsonify({"error": "Address is required"}), 400
+
+    session = get_session()
+    try:
+        deal = Deal()
+        deal.address = data["address"]
+        deal.zip_code = data.get("zip_code", "")
+        deal.city = data.get("city", "")
+        deal.state = data.get("state", "CA")
+        deal.price = float(data["price"]) if data.get("price") else None
+        deal.bedrooms = int(data["bedrooms"]) if data.get("bedrooms") else None
+        deal.bathrooms = float(data["bathrooms"]) if data.get("bathrooms") else None
+        deal.sqft = float(data["sqft"]) if data.get("sqft") else None
+        deal.year_built = int(data["year_built"]) if data.get("year_built") else None
+        deal.arv = float(data["arv"]) if data.get("arv") else None
+        deal.home_type = "SINGLE_FAMILY"
+        deal.source = "manual"
+        deal.offer_notes = data.get("notes", "")
+
+        # Set repairs if provided
+        repairs = float(data["repairs"]) if data.get("repairs") else None
+        if repairs:
+            deal.repairs_mid = repairs
+            deal.repairs_worst = repairs
+
+        # Build privy URL
+        listing = {"address": deal.address, "city": deal.city, "state": deal.state, "zip_code": deal.zip_code}
+        deal.privy_url = build_privy_url(listing)
+
+        # Score
+        listing_dict = {
+            "price": deal.price, "arv": deal.arv, "sqft": deal.sqft,
+            "days_on_zillow": None, "year_built": deal.year_built,
+            "repairs_mid": deal.repairs_mid or 0, "repairs_worst": deal.repairs_worst or 0,
+            "has_deal_keywords": False, "matched_keywords": [],
+            "photo_grades": {}, "description": "",
+        }
+        result = fallback_score(listing_dict)
+        deal.score = result["score"]
+        deal.score_reasoning = result["reasoning"]
+
+        # Estimate repairs if not provided
+        if not repairs:
+            listing_dict["photo_grades"] = {z: "Unknown" for z in ["Roof","HVAC","Plumbing","Interior","Kitchen","Bath","Foundation"]}
+            estimate_repairs(listing_dict)
+            deal.repairs_mid = listing_dict.get("repair_estimate", {}).get("total_mid")
+            deal.repairs_worst = listing_dict.get("repair_estimate", {}).get("total_worst")
+
+        # Calculate offer if ARV exists
+        if deal.arv:
+            listing_dict["arv"] = deal.arv
+            listing_dict["repair_estimate"] = {"total_mid": deal.repairs_mid or 0, "total_worst": deal.repairs_worst or 0}
+            calculate_offer(listing_dict)
+            offer = listing_dict.get("offer_analysis", {})
+            if "error" not in offer:
+                deal.max_offer = offer.get("max_offer")
+                deal.estimated_profit = offer.get("estimated_profit")
+                deal.roi_pct = offer.get("roi_pct")
+                deal.offer_analysis = json.dumps(offer)
+
+        session.add(deal)
+        session.commit()
+        return jsonify(deal_to_dict(deal))
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Failed to add deal: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
         session.close()

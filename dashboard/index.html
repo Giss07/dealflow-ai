@@ -188,6 +188,7 @@
     <div class="header">
         <h1>DealFlow <span>AI</span></h1>
         <div style="display:flex;gap:8px;">
+            <button onclick="openAddDeal()" style="background:#3b82f6;color:white;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">+ Add Deal</button>
             <button class="btn-run" onclick="runPipeline()">Run Pipeline</button>
             <a href="/logout" style="background:#475569;color:#94a3b8;padding:8px 14px;border-radius:6px;text-decoration:none;font-size:13px;display:flex;align-items:center;">Logout</a>
         </div>
@@ -237,6 +238,7 @@
         <div><label>&nbsp;</label><br><button onclick="clearFilters()">Clear Filters</button></div>
         <div><label>&nbsp;</label><br><button onclick="exportCSV()" style="background:#8b5cf6;">Export CSV</button></div>
         <div><label>&nbsp;</label><br><button id="btn-show-hidden" onclick="toggleShowHidden()" style="background:#475569;">Show Hidden</button></div>
+        <div><label>&nbsp;</label><br><button id="btn-manual-only" onclick="toggleManualOnly()" style="background:#475569;">Manual Only</button></div>
     </div>
 
     <div class="container">
@@ -299,6 +301,44 @@
         </div>
     </div>
 
+    <!-- Add Deal Modal -->
+    <div class="modal-overlay" id="add-deal-overlay">
+        <div class="modal" style="max-width:500px;" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>Add Deal Manually</h2>
+                <button class="modal-close" onclick="closeAddDeal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="offer-form">
+                    <label>Address *</label>
+                    <input type="text" id="add-address" placeholder="123 Main St">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                        <div><label>City</label><input type="text" id="add-city" placeholder="Fontana"></div>
+                        <div><label>Zip Code</label><input type="text" id="add-zip" placeholder="92335"></div>
+                    </div>
+                    <label>Price</label>
+                    <input type="text" inputmode="numeric" id="add-price" placeholder="450,000" oninput="formatNumberInput(this)">
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+                        <div><label>Beds</label><input type="number" id="add-beds" placeholder="3"></div>
+                        <div><label>Baths</label><input type="number" id="add-baths" placeholder="2" step="0.5"></div>
+                        <div><label>Sqft</label><input type="number" id="add-sqft" placeholder="1500"></div>
+                    </div>
+                    <label>Year Built</label>
+                    <input type="number" id="add-year" placeholder="1985">
+                    <label>ARV (from Privy)</label>
+                    <input type="text" inputmode="numeric" id="add-arv" placeholder="580,000" oninput="formatNumberInput(this)">
+                    <label>Est. Repairs</label>
+                    <input type="text" inputmode="numeric" id="add-repairs" placeholder="75,000" oninput="formatNumberInput(this)">
+                    <label>Notes</label>
+                    <textarea id="add-notes" placeholder="Optional notes..."></textarea>
+                    <div style="margin-top:15px;">
+                        <button class="btn-save" onclick="submitAddDeal()" style="width:100%;">Add Deal</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         let currentSort = 'days_on_zillow';
         let currentDir = 'asc';
@@ -330,6 +370,7 @@
             params.set('dir', currentDir);
             params.set('tab', currentTab);
             if (showHidden && currentTab === 'active') params.set('show_hidden', '1');
+            if (manualOnly) params.set('source', 'manual');
 
             const zip = document.getElementById('filter-zip').value;
             if (zip) params.set('zip_code', zip);
@@ -464,7 +505,7 @@
                     <tr onclick="showDeal(${d.id})">
                         <td style="color:${daysColor(d.days_on_zillow)};white-space:nowrap;">${daysAgo(d.days_on_zillow)}</td>
                         <td><div class="score-wrap"><span class="score-badge ${scoreClass(d.score)}">${d.score ?? '—'}</span><div class="score-tip">${d.score_reasoning || 'No breakdown available'}</div></div></td>
-                        <td>${d.address || '—'}</td>
+                        <td>${d.address || '—'}${d.source === 'manual' ? ' <span style="background:#1e3a5f;color:#60a5fa;padding:2px 6px;border-radius:4px;font-size:10px;margin-left:4px;">Manual</span>' : ''}</td>
                         <td>${d.zip_code || '—'}</td>
                         <td>${fmt(d.price)}</td>
                         <td>${fmt(d.arv)}</td>
@@ -485,7 +526,7 @@
             cards.innerHTML = deals.map(d => `
                 <div class="deal-card" onclick="showDeal(${d.id})">
                     <div class="deal-card-header">
-                        <div class="deal-card-address">${d.address || '—'}, ${d.city || ''} ${d.zip_code || ''}</div>
+                        <div class="deal-card-address">${d.address || '—'}, ${d.city || ''} ${d.zip_code || ''}${d.source === 'manual' ? ' <span style="background:#1e3a5f;color:#60a5fa;padding:2px 6px;border-radius:4px;font-size:10px;">Manual</span>' : ''}</div>
                         <span class="deal-card-listed" style="color:${daysColor(d.days_on_zillow)}">${daysAgo(d.days_on_zillow)}</span>
                     </div>
                     <div style="margin-bottom:8px;">
@@ -785,6 +826,49 @@
                 if (deal.error) { status.textContent = deal.error; status.style.color = '#fca5a5'; }
                 else { status.textContent = `Saved ${comps.length} comps`; status.style.color = '#4ade80'; }
             } catch(e) { status.textContent = 'Failed'; status.style.color = '#fca5a5'; }
+        }
+
+        // Add Deal manually
+        function openAddDeal() { document.getElementById('add-deal-overlay').classList.add('active'); }
+        function closeAddDeal() { document.getElementById('add-deal-overlay').classList.remove('active'); }
+        document.getElementById('add-deal-overlay').addEventListener('click', e => { if (e.target === document.getElementById('add-deal-overlay')) closeAddDeal(); });
+
+        async function submitAddDeal() {
+            const address = document.getElementById('add-address').value.trim();
+            if (!address) { alert('Address is required'); return; }
+            const data = {
+                address: address,
+                city: document.getElementById('add-city').value.trim(),
+                zip_code: document.getElementById('add-zip').value.trim(),
+                price: parseNum(document.getElementById('add-price')) || null,
+                bedrooms: document.getElementById('add-beds').value || null,
+                bathrooms: document.getElementById('add-baths').value || null,
+                sqft: document.getElementById('add-sqft').value || null,
+                year_built: document.getElementById('add-year').value || null,
+                arv: parseNum(document.getElementById('add-arv')) || null,
+                repairs: parseNum(document.getElementById('add-repairs')) || null,
+                notes: document.getElementById('add-notes').value,
+            };
+            try {
+                const resp = await fetch('/api/deals/add', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) });
+                const deal = await resp.json();
+                if (deal.error) { alert(deal.error); return; }
+                closeAddDeal();
+                // Clear form
+                ['add-address','add-city','add-zip','add-price','add-beds','add-baths','add-sqft','add-year','add-arv','add-repairs','add-notes'].forEach(id => document.getElementById(id).value = '');
+                loadDeals();
+                alert('Deal added! Score: ' + (deal.score || '—') + '/100');
+            } catch(e) { alert('Failed to add deal'); }
+        }
+
+        // Manual only filter
+        let manualOnly = false;
+        function toggleManualOnly() {
+            manualOnly = !manualOnly;
+            const btn = document.getElementById('btn-manual-only');
+            if (manualOnly) { btn.style.background = '#3b82f6'; btn.style.color = 'white'; btn.textContent = 'Manual Only'; }
+            else { btn.style.background = '#475569'; btn.style.color = '#e2e8f0'; btn.textContent = 'Manual Only'; }
+            loadDeals();
         }
 
         function copyAddress(addr) {
