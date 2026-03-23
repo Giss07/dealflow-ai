@@ -311,9 +311,11 @@ def read_christian_emails(sheet, records):
                 # HUD-specific: extract address from email body
                 # HUD emails have "Address: 988 Laurel Ave, Lindsay, CA 93247"
                 hud_address_match = None
-                is_hud = 'hud' in subject.lower() and ('counter' in subject.lower() or 'bid' in subject.lower())
+                is_hud = 'hud' in (subject + ' ' + body).lower() and any(kw in (subject + ' ' + body).lower() for kw in ['counter', 'bid', 'minimum acceptable', 'net to hud'])
                 if is_hud:
-                    addr_match = re.search(r'address[:\s]+(\d+[^,\n]+,\s*[^,\n]+,\s*[A-Z]{2}\s*\d{5})', body, re.IGNORECASE)
+                    addr_match = re.search(r'address[:\s]+(\d+[^,\n]+,\s*[^,\n]+,\s*[A-Z]{2}\s*\d{5})', body, re.IGNORECASE) or \
+                                 re.search(r'property[:\s]+(\d+[^,\n]+,\s*[^,\n]+,\s*[A-Z]{2}\s*\d{5})', body, re.IGNORECASE) or \
+                                 re.search(r'(\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+){0,3}(?:\s+(?:Ave|St|Dr|Ln|Rd|Blvd|Way|Ct|Pl|Cir))[^,]*,\s*[^,]+,\s*[A-Z]{2}\s*\d{5})', body, re.IGNORECASE)
                     if addr_match:
                         hud_address_match = addr_match.group(1).strip().lower()
                         print(f"  HUD email — extracted address: {hud_address_match}")
