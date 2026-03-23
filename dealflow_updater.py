@@ -205,12 +205,29 @@ REJECTION_KEYWORDS = [
 
 
 def detect_rejection(email_text):
-    """Check if email contains rejection language. Returns matched phrase or None."""
+    """Check if email contains rejection language. Returns (keyword, context) or (None, None)."""
     text_lower = email_text.lower()
+    # Clean up whitespace for better context extraction
+    import re as _re
+    clean_text = _re.sub(r'\s+', ' ', text_lower).strip()
     for kw in REJECTION_KEYWORDS:
-        if kw in text_lower:
-            return kw
-    return None
+        pos = clean_text.find(kw)
+        if pos >= 0:
+            # Extract ~150 chars of context around the keyword
+            start = max(0, pos - 60)
+            end = min(len(clean_text), pos + len(kw) + 90)
+            context = clean_text[start:end].strip()
+            # Clean up leading/trailing partial words
+            if start > 0:
+                space = context.find(' ')
+                if space > 0 and space < 15:
+                    context = context[space + 1:]
+            if end < len(clean_text):
+                space = context.rfind(' ')
+                if space > len(context) - 15:
+                    context = context[:space]
+            return kw, context
+    return None, None
 
 
 def extract_counter_price(email_text):
@@ -328,9 +345,9 @@ def read_christian_emails(sheet, records):
                                 break
                     else:
                         # Check if it's a rejection
-                        rejection = detect_rejection(full_text)
-                        if rejection:
-                            print(f"  REJECTION detected: '{rejection}'")
+                        rejection_kw, rejection_context = detect_rejection(full_text)
+                        if rejection_kw:
+                            print(f"  REJECTION detected: '{rejection_kw}'")
                             for i, record in enumerate(records):
                                 if record.get('Address', '').strip().lower() == matched_address:
                                     row_num = i + 2
@@ -339,7 +356,7 @@ def read_christian_emails(sheet, records):
                                         sheet.update_cell(row_num, status_col, 'Rejected')
                                         # Add rejection note
                                         existing_notes = record.get('Notes', '')
-                                        rejection_note = f"[Rejected: {rejection} — {datetime.now().strftime('%m/%d/%Y')}]"
+                                        rejection_note = f"[Rejected: {rejection_context} — {datetime.now().strftime('%m/%d/%Y')}]"
                                         new_notes = f"{existing_notes} | {rejection_note}" if existing_notes else rejection_note
                                         sheet.update_cell(row_num, notes_col, new_notes)
                                         print(f"  Sheet updated to Rejected for row {row_num}!")
@@ -356,7 +373,7 @@ def read_christian_emails(sheet, records):
                                             'difference': None,
                                             'row': row_num,
                                             'alert_col': alert_sent_col,
-                                            'reason': rejection
+                                            'reason': rejection_context
                                         })
                                     break
                         else:
