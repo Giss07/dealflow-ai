@@ -737,63 +737,115 @@ def api_preforeclosure_import():
 
 @app.route("/api/preforeclosure/scan/<int:pf_id>", methods=["POST"])
 def api_preforeclosure_scan(pf_id):
-    """Scan a single property for MLS status using Claude AI."""
+    """Scan a single property for MLS status using Apify Zillow scraper."""
     from datetime import datetime as dt
+    from urllib.parse import quote_plus
+    import requests as req
+
+    APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
+    if not APIFY_API_KEY:
+        return jsonify({"error": "APIFY_API_KEY not set"}), 500
+
     db = get_session()
     try:
         pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
         if not pf:
             return jsonify({"error": "Not found"}), 404
 
-        ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-        if not ANTHROPIC_API_KEY:
-            return jsonify({"error": "ANTHROPIC_API_KEY not set"}), 500
-
-        import anthropic
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
         full_addr = f"{pf.address}, {pf.city}, {pf.state} {pf.zip_code}"
-        prompt = f"""You are a real estate MLS research assistant. For the property at: "{full_addr}" (Type: {pf.property_type or 'SFR'}), determine if it is currently listed for sale on the MLS.
+        zillow_url = f"https://www.zillow.com/homes/{quote_plus(full_addr)}_rb/"
 
-Based on your knowledge of real estate listings, respond ONLY with a JSON object:
-{{"status": "on-market" | "pre-foreclosure" | "auction" | "unknown", "price": "listed price or null", "value": estimated_property_value_as_number_or_null, "notes": "brief one-line analysis"}}
+        # Use Apify zillow-detail-scraper to look up the property
+        api_url = "https://api.apify.com/v2/acts/maxcopell~zillow-detail-scraper/run-sync-get-dataset-items"
+        payload = {
+            "startUrls": [{"url": zillow_url}],
+            "maxItems": 1,
+        }
 
-Rules:
-- "on-market" = actively listed for sale on MLS
-- "pre-foreclosure" = in default/NOD process, NOT yet listed
-- "auction" = scheduled for trustee sale
-- "unknown" = cannot determine
-Only return valid JSON."""
-
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
+        logger.info(f"Scanning {full_addr} via Apify...")
+        resp = req.post(
+            api_url, params={"token": APIFY_API_KEY},
+            json=payload, headers={"Content-Type": "application/json"},
+            timeout=120
         )
-        text = response.content[0].text.strip()
 
-        import re as _re
-        text = text.replace("```json", "").replace("```", "").strip()
-        json_match = _re.search(r'\{[\s\S]*\}', text)
-        if json_match:
-            result = json.loads(json_match.group(0))
-            prev_status = pf.mls_status
-            pf.mls_status = result.get("status", "unknown")
-            pf.ai_notes = result.get("notes", "")
-            if result.get("value"):
-                pf.estimated_value = float(result["value"])
-            if result.get("price"):
-                price_str = str(result["price"]).replace("$", "").replace(",", "")
-                try:
-                    pf.mls_price = float(price_str)
-                except (ValueError, TypeError):
-                    pass
-            pf.is_new = (prev_status != "on-market" and pf.mls_status == "on-market")
-            pf.last_scanned = dt.utcnow()
+        prev_status = pf.mls_status
+        pf.last_scanned = dt.utcnow()
+
+        if resp.status_code != 200 and resp.status_code != 201:
+            error_text = resp.text[:200]
+            pf.ai_notes = f"Apify error {resp.status_code}: {error_text}"
+            db.commit()
+            return jsonify({"error": f"Apify returned {resp.status_code}", "details": error_text}), 502
+
+        results = resp.json()
+        if not results:
+            pf.mls_status = "unknown"
+            pf.ai_notes = "No Zillow results found for this address"
             db.commit()
             return jsonify(preforeclosure_to_dict(pf))
+
+        data = results[0]
+        home_status = (data.get("homeStatus") or data.get("hdpData", {}).get("homeInfo", {}).get("homeStatus") or "").upper()
+        price = data.get("price") or data.get("unformattedPrice")
+        zestimate = data.get("zestimate")
+        bedrooms = data.get("bedrooms")
+        bathrooms = data.get("bathrooms")
+        sqft = data.get("livingArea") or data.get("livingAreaValue")
+        year_built = data.get("yearBuilt")
+        description = (data.get("description") or "")[:200]
+
+        # Map Zillow status to our status
+        if "FOR_SALE" in home_status:
+            pf.mls_status = "on-market"
+        elif "PENDING" in home_status or "OTHER" in home_status:
+            pf.mls_status = "on-market"  # pending = was listed
+        elif "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
+            pf.mls_status = "unknown"
+        elif "FORECLOSURE" in home_status or "FORECLOSED" in home_status or "PRE_FORECLOSURE" in home_status:
+            pf.mls_status = "pre-foreclosure"
         else:
-            return jsonify({"error": "No JSON in AI response"}), 500
+            pf.mls_status = "unknown"
+
+        # Update property details
+        if price:
+            try:
+                pf.mls_price = float(str(price).replace("$", "").replace(",", ""))
+            except (ValueError, TypeError):
+                pass
+
+        if zestimate:
+            try:
+                pf.estimated_value = float(zestimate)
+            except (ValueError, TypeError):
+                pass
+        elif price and not pf.estimated_value:
+            try:
+                pf.estimated_value = float(str(price).replace("$", "").replace(",", ""))
+            except (ValueError, TypeError):
+                pass
+
+        # Build notes
+        notes_parts = []
+        notes_parts.append(f"Zillow: {home_status}")
+        if price:
+            notes_parts.append(f"Price: ${float(str(price).replace('$','').replace(',','')):,.0f}" if str(price).replace('$','').replace(',','').replace('.','').isdigit() else f"Price: {price}")
+        if zestimate:
+            notes_parts.append(f"Zestimate: ${float(zestimate):,.0f}")
+        if bedrooms or bathrooms or sqft:
+            notes_parts.append(f"{bedrooms or '?'}bd/{bathrooms or '?'}ba {sqft or '?'}sqft")
+        if year_built:
+            notes_parts.append(f"Built {year_built}")
+        if description:
+            notes_parts.append(description[:100])
+        pf.ai_notes = " | ".join(notes_parts)
+
+        pf.is_new = (prev_status != "on-market" and pf.mls_status == "on-market")
+
+        db.commit()
+        logger.info(f"Scan result for {pf.address}: {pf.mls_status} | {pf.ai_notes[:80]}")
+        return jsonify(preforeclosure_to_dict(pf))
+
     except Exception as e:
         db.rollback()
         logger.error(f"Scan failed: {e}", exc_info=True)
