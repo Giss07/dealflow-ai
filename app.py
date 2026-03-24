@@ -753,47 +753,73 @@ def api_preforeclosure_scan(pf_id):
             return jsonify({"error": "Not found"}), 404
 
         full_addr = f"{pf.address}, {pf.city}, {pf.state} {pf.zip_code}"
-        zillow_url = f"https://www.zillow.com/homes/{quote_plus(full_addr)}_rb/"
 
-        # Use Apify zillow-detail-scraper to look up the property
-        api_url = "https://api.apify.com/v2/acts/maxcopell~zillow-detail-scraper/run-sync-get-dataset-items"
+        # Use Apify zip search to find the property by zip code, then match by address
+        zip_code = pf.zip_code or ""
+        if not zip_code:
+            # Try to extract zip from address
+            import re as _re
+            zip_match = _re.search(r'\b(\d{5})\b', full_addr)
+            zip_code = zip_match.group(1) if zip_match else ""
+
+        logger.info(f"Scanning {full_addr} via Apify (zip: {zip_code})...")
+
+        api_url = "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search/run-sync-get-dataset-items"
         payload = {
-            "startUrls": [{"url": zillow_url}],
-            "maxItems": 1,
+            "zipCodes": [zip_code] if zip_code else [],
+            "maxItems": 50,
         }
-
-        logger.info(f"Scanning {full_addr} via Apify...")
-        resp = req.post(
-            api_url, params={"token": APIFY_API_KEY},
-            json=payload, headers={"Content-Type": "application/json"},
-            timeout=120
-        )
 
         prev_status = pf.mls_status
         pf.last_scanned = dt.utcnow()
 
-        if resp.status_code != 200 and resp.status_code != 201:
+        if not zip_code:
+            pf.ai_notes = "No zip code — cannot search Zillow"
+            pf.mls_status = "unknown"
+            db.commit()
+            return jsonify(preforeclosure_to_dict(pf))
+
+        resp = req.post(
+            api_url, params={"token": APIFY_API_KEY},
+            json=payload, headers={"Content-Type": "application/json"},
+            timeout=300
+        )
+
+        if resp.status_code not in (200, 201):
             error_text = resp.text[:200]
             pf.ai_notes = f"Apify error {resp.status_code}: {error_text}"
             db.commit()
             return jsonify({"error": f"Apify returned {resp.status_code}", "details": error_text}), 502
 
-        results = resp.json()
-        if not results:
+        all_results = resp.json()
+
+        # Find matching property by street number + street name
+        street_parts = pf.address.lower().split()
+        results = []
+        data = None
+        for item in all_results:
+            item_addr = (item.get("addressStreet") or item.get("address") or "").lower()
+            # Match on first few words of address (street number + name)
+            if len(street_parts) >= 2 and street_parts[0] in item_addr and street_parts[1] in item_addr:
+                data = item
+                break
+
+        if not data:
             pf.mls_status = "unknown"
-            pf.ai_notes = "No Zillow results found for this address"
+            pf.ai_notes = f"Not found on Zillow ({len(all_results)} listings in {zip_code})"
             db.commit()
             return jsonify(preforeclosure_to_dict(pf))
 
-        data = results[0]
-        home_status = (data.get("homeStatus") or data.get("hdpData", {}).get("homeInfo", {}).get("homeStatus") or "").upper()
-        price = data.get("price") or data.get("unformattedPrice")
-        zestimate = data.get("zestimate")
-        bedrooms = data.get("bedrooms")
-        bathrooms = data.get("bathrooms")
-        sqft = data.get("livingArea") or data.get("livingAreaValue")
-        year_built = data.get("yearBuilt")
-        description = (data.get("description") or "")[:200]
+        results = [data]
+        home_info = data.get("hdpData", {}).get("homeInfo", {})
+        home_status = (home_info.get("homeStatus") or data.get("statusType") or "").upper()
+        price = home_info.get("price") or data.get("unformattedPrice")
+        zestimate = home_info.get("zestimate") or data.get("zestimate")
+        bedrooms = home_info.get("bedrooms") or data.get("beds")
+        bathrooms = home_info.get("bathrooms") or data.get("baths")
+        sqft = home_info.get("livingArea") or data.get("area")
+        year_built = home_info.get("yearBuilt")
+        description = ""
 
         # Map Zillow status to our status
         if "FOR_SALE" in home_status:
