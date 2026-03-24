@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from functools import wraps
-from database import init_db, get_session, get_all_deals, deal_to_dict, Deal
+from database import init_db, get_session, get_all_deals, deal_to_dict, Deal, PreForeclosure, preforeclosure_to_dict
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -578,6 +578,228 @@ def api_update_arv(deal_id):
         return jsonify({"error": str(e)}), 500
     finally:
         session.close()
+
+
+@app.route("/api/preforeclosure")
+def api_preforeclosure_list():
+    """List all pre-foreclosure properties."""
+    db = get_session()
+    try:
+        query = db.query(PreForeclosure)
+        status = request.args.get("status")
+        if status and status != "all":
+            query = query.filter(PreForeclosure.mls_status == status)
+        search = request.args.get("search")
+        if search:
+            q = f"%{search}%"
+            query = query.filter(
+                PreForeclosure.address.ilike(q) | PreForeclosure.city.ilike(q) | PreForeclosure.zip_code.ilike(q)
+            )
+        query = query.order_by(PreForeclosure.date_added.desc())
+        return jsonify([preforeclosure_to_dict(p) for p in query.all()])
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure", methods=["POST"])
+def api_preforeclosure_add():
+    """Add a pre-foreclosure property manually."""
+    data = request.get_json() or {}
+    if not data.get("address"):
+        return jsonify({"error": "Address required"}), 400
+    db = get_session()
+    try:
+        pf = PreForeclosure(
+            address=data["address"],
+            city=data.get("city", ""),
+            state=data.get("state", "CA"),
+            zip_code=data.get("zip_code", ""),
+            property_type=data.get("property_type", "SFR"),
+            source_list=data.get("source_list", "pre-foreclosure"),
+            estimated_value=float(data["estimated_value"]) if data.get("estimated_value") else None,
+            auction_date=data.get("auction_date", ""),
+            notes=data.get("notes", ""),
+            mls_status="unknown",
+        )
+        db.add(pf)
+        db.commit()
+        return jsonify(preforeclosure_to_dict(pf))
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/<int:pf_id>", methods=["PUT"])
+def api_preforeclosure_update(pf_id):
+    """Update a pre-foreclosure property."""
+    db = get_session()
+    try:
+        pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
+        if not pf:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json() or {}
+        for field in ["address", "city", "state", "zip_code", "property_type", "source_list", "auction_date", "notes", "mls_status"]:
+            if field in data:
+                setattr(pf, field, data[field])
+        if "estimated_value" in data:
+            pf.estimated_value = float(data["estimated_value"]) if data["estimated_value"] else None
+        db.commit()
+        return jsonify(preforeclosure_to_dict(pf))
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/<int:pf_id>", methods=["DELETE"])
+def api_preforeclosure_delete(pf_id):
+    """Delete a pre-foreclosure property."""
+    db = get_session()
+    try:
+        pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
+        if not pf:
+            return jsonify({"error": "Not found"}), 404
+        db.delete(pf)
+        db.commit()
+        return jsonify({"status": "deleted"})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/import-csv", methods=["POST"])
+def api_preforeclosure_import():
+    """Import pre-foreclosure properties from CSV."""
+    import csv, io
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    file = request.files["file"]
+    text = file.read().decode("utf-8", errors="ignore")
+    reader = csv.DictReader(io.StringIO(text))
+
+    # Flexible column mapping
+    def find_col(row, candidates):
+        for c in candidates:
+            for key in row:
+                if c in key.lower():
+                    return row[key].strip()
+        return ""
+
+    db = get_session()
+    added = 0
+    skipped = 0
+    try:
+        for row in reader:
+            address = find_col(row, ["address", "street", "situs", "site address", "property address"])
+            if not address:
+                skipped += 1
+                continue
+            city = find_col(row, ["city", "situs city"])
+            zip_code = find_col(row, ["zip", "postal", "situs zip"])
+            # Dedup
+            existing = db.query(PreForeclosure).filter(
+                PreForeclosure.address.ilike(f"%{address}%"),
+                PreForeclosure.zip_code == zip_code
+            ).first()
+            if existing:
+                skipped += 1
+                continue
+            val_raw = find_col(row, ["value", "avm", "estimated", "market value", "assessed"])
+            val_clean = val_raw.replace("$", "").replace(",", "").strip()
+            auction = find_col(row, ["auction date", "sale date", "trustee sale", "foreclosure date"])
+            source = "auction" if auction else "pre-foreclosure"
+            pf = PreForeclosure(
+                address=address,
+                city=city,
+                state=find_col(row, ["state", "situs state"]) or "CA",
+                zip_code=zip_code,
+                property_type=find_col(row, ["property type", "type", "land use"]) or "SFR",
+                source_list=source,
+                estimated_value=float(val_clean) if val_clean and val_clean.replace(".", "").isdigit() else None,
+                auction_date=auction,
+                mls_status="unknown",
+            )
+            db.add(pf)
+            added += 1
+        db.commit()
+        return jsonify({"added": added, "skipped": skipped})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/scan/<int:pf_id>", methods=["POST"])
+def api_preforeclosure_scan(pf_id):
+    """Scan a single property for MLS status using Claude AI."""
+    from datetime import datetime as dt
+    db = get_session()
+    try:
+        pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
+        if not pf:
+            return jsonify({"error": "Not found"}), 404
+
+        ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+        if not ANTHROPIC_API_KEY:
+            return jsonify({"error": "ANTHROPIC_API_KEY not set"}), 500
+
+        import anthropic
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        full_addr = f"{pf.address}, {pf.city}, {pf.state} {pf.zip_code}"
+        prompt = f"""You are a real estate MLS research assistant. For the property at: "{full_addr}" (Type: {pf.property_type or 'SFR'}), determine if it is currently listed for sale on the MLS.
+
+Based on your knowledge of real estate listings, respond ONLY with a JSON object:
+{{"status": "on-market" | "pre-foreclosure" | "auction" | "unknown", "price": "listed price or null", "value": estimated_property_value_as_number_or_null, "notes": "brief one-line analysis"}}
+
+Rules:
+- "on-market" = actively listed for sale on MLS
+- "pre-foreclosure" = in default/NOD process, NOT yet listed
+- "auction" = scheduled for trustee sale
+- "unknown" = cannot determine
+Only return valid JSON."""
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip()
+
+        import re as _re
+        text = text.replace("```json", "").replace("```", "").strip()
+        json_match = _re.search(r'\{[\s\S]*\}', text)
+        if json_match:
+            result = json.loads(json_match.group(0))
+            prev_status = pf.mls_status
+            pf.mls_status = result.get("status", "unknown")
+            pf.ai_notes = result.get("notes", "")
+            if result.get("value"):
+                pf.estimated_value = float(result["value"])
+            if result.get("price"):
+                price_str = str(result["price"]).replace("$", "").replace(",", "")
+                try:
+                    pf.mls_price = float(price_str)
+                except (ValueError, TypeError):
+                    pass
+            pf.is_new = (prev_status != "on-market" and pf.mls_status == "on-market")
+            pf.last_scanned = dt.utcnow()
+            db.commit()
+            return jsonify(preforeclosure_to_dict(pf))
+        else:
+            return jsonify({"error": "No JSON in AI response"}), 500
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Scan failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
 
 
 @app.route("/api/tracker")

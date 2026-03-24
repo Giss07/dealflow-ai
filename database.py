@@ -115,6 +115,48 @@ class Deal(Base):
     source = Column(String(20), default="zillow")  # zillow or manual
 
 
+class PreForeclosure(Base):
+    __tablename__ = "preforeclosures"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    address = Column(String(255))
+    city = Column(String(100))
+    state = Column(String(10), default="CA")
+    zip_code = Column(String(10))
+    property_type = Column(String(50), default="SFR")
+    source_list = Column(String(50), default="pre-foreclosure")
+    estimated_value = Column(Float)
+    auction_date = Column(String(50))
+    notes = Column(Text)
+    mls_status = Column(String(50), default="unknown")
+    mls_price = Column(Float)
+    ai_notes = Column(Text)
+    last_scanned = Column(DateTime)
+    is_new = Column(Boolean, default=False)
+    date_added = Column(DateTime, default=datetime.utcnow)
+
+
+def preforeclosure_to_dict(pf):
+    return {
+        "id": pf.id,
+        "address": pf.address,
+        "city": pf.city,
+        "state": pf.state,
+        "zip_code": pf.zip_code,
+        "property_type": pf.property_type,
+        "source_list": pf.source_list,
+        "estimated_value": pf.estimated_value,
+        "auction_date": pf.auction_date,
+        "notes": pf.notes,
+        "mls_status": pf.mls_status,
+        "mls_price": pf.mls_price,
+        "ai_notes": pf.ai_notes,
+        "last_scanned": pf.last_scanned.isoformat() if pf.last_scanned else None,
+        "is_new": pf.is_new or False,
+        "date_added": pf.date_added.isoformat() if pf.date_added else None,
+    }
+
+
 class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
 

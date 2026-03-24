@@ -214,6 +214,7 @@
         <div class="tab" data-tab="pending" onclick="switchTab('pending')">Pending <span class="badge" id="tab-pending-count" style="background:#854d0e;color:#fbbf24;">0</span></div>
         <div class="tab" data-tab="offers" onclick="switchTab('offers')">My Offers <span class="badge" id="tab-offers-count">0</span></div>
         <div class="tab" data-tab="archived" onclick="switchTab('archived')">Archived <span class="badge" id="tab-archived-count">0</span></div>
+        <div class="tab" data-tab="preforeclosure" onclick="switchTab('preforeclosure')">Pre-Foreclosure <span class="badge" id="tab-pf-count" style="background:#dc2626;">0</span></div>
         <div class="tab" data-tab="tracker" onclick="switchTab('tracker')">Tracker <span class="badge" style="background:#8b5cf6;">Sheet</span></div>
     </div>
 
@@ -364,6 +365,7 @@
 
         async function loadDeals() {
             if (currentTab === 'tracker') { loadTracker(); return; }
+            if (currentTab === 'preforeclosure') { loadPreForeclosure(); return; }
 
             const params = new URLSearchParams();
             params.set('sort', currentSort);
@@ -394,16 +396,18 @@
 
         async function updateTabCounts() {
             try {
-                const [active, archived, offers, pending] = await Promise.all([
+                const [active, archived, offers, pending, pf] = await Promise.all([
                     fetch('/api/deals?tab=active').then(r => r.json()),
                     fetch('/api/deals?tab=archived').then(r => r.json()),
                     fetch('/api/deals?tab=offers').then(r => r.json()),
                     fetch('/api/deals?tab=pending').then(r => r.json()),
+                    fetch('/api/preforeclosure').then(r => r.json()),
                 ]);
                 document.getElementById('tab-active-count').textContent = active.length;
                 document.getElementById('tab-archived-count').textContent = archived.length;
                 document.getElementById('tab-offers-count').textContent = offers.length;
                 document.getElementById('tab-pending-count').textContent = pending.length;
+                document.getElementById('tab-pf-count').textContent = Array.isArray(pf) ? pf.length : 0;
             } catch(e) {}
         }
 
@@ -475,9 +479,12 @@
                     loadDeals();
                 });
             });
-            // Hide tracker refresh bar on non-tracker tabs
+            // Hide tracker/pf bars on deal tabs
             const refreshBar = document.getElementById('tracker-refresh');
             if (refreshBar) refreshBar.style.display = 'none';
+            const pfBar = document.getElementById('pf-toolbar');
+            if (pfBar) pfBar.style.display = 'none';
+            document.getElementById('filters-bar').style.display = '';
 
             if (!deals.length) { tbody.innerHTML = ''; cards.innerHTML = ''; empty.style.display = 'block'; return; }
             empty.style.display = 'none';
@@ -1008,6 +1015,205 @@
                 tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:30px;color:#fca5a5;">Failed to load tracker data</td></tr>';
                 cards.innerHTML = '<div style="text-align:center;padding:30px;color:#fca5a5;">Failed to load</div>';
             }
+        }
+
+        // Pre-Foreclosure tab
+        let pfData = [];
+        let pfFilter = 'all';
+        let pfSearch = '';
+
+        async function loadPreForeclosure() {
+            const tbody = document.getElementById('deals-body');
+            const cards = document.getElementById('deal-cards');
+            const empty = document.getElementById('empty-state');
+            const header = document.getElementById('table-header');
+            const filtersBar = document.getElementById('filters-bar');
+
+            // Hide deal filters, show PF toolbar
+            filtersBar.style.display = 'none';
+            let pfBar = document.getElementById('pf-toolbar');
+            if (!pfBar) {
+                pfBar = document.createElement('div');
+                pfBar.id = 'pf-toolbar';
+                pfBar.style.cssText = 'padding:12px 30px;background:#1e293b;border-bottom:1px solid #334155;display:flex;gap:10px;flex-wrap:wrap;align-items:center;';
+                filtersBar.parentNode.insertBefore(pfBar, filtersBar.nextSibling);
+            }
+            pfBar.innerHTML = `
+                <button class="score-filter-btn ${pfFilter==='all'?'active':''}" onclick="setPfFilter('all')">All</button>
+                <button class="score-filter-btn ${pfFilter==='on-market'?'active':''}" onclick="setPfFilter('on-market')" style="${pfFilter==='on-market'?'background:#22c55e;border-color:#22c55e;':''}">On Market</button>
+                <button class="score-filter-btn ${pfFilter==='pre-foreclosure'?'active':''}" onclick="setPfFilter('pre-foreclosure')" style="${pfFilter==='pre-foreclosure'?'background:#f97316;border-color:#f97316;':''}">Pre-Foreclosure</button>
+                <button class="score-filter-btn ${pfFilter==='auction'?'active':''}" onclick="setPfFilter('auction')" style="${pfFilter==='auction'?'background:#eab308;border-color:#eab308;':''}">Auction</button>
+                <input type="text" placeholder="Search address..." value="${pfSearch}" oninput="pfSearch=this.value;renderPfRows()" style="background:#334155;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:6px;font-size:14px;width:200px;">
+                <div style="flex:1;"></div>
+                <label for="pf-csv-input" style="background:#475569;color:#e2e8f0;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Import CSV</label>
+                <input type="file" id="pf-csv-input" accept=".csv" style="display:none;" onchange="importPfCSV(this.files[0])">
+                <button onclick="openPfAddModal()" style="background:#3b82f6;color:white;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">+ Add Property</button>
+                <button onclick="scanAllPf()" style="background:#00e5a0;color:#000;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">Scan All MLS</button>
+            `;
+            pfBar.style.display = 'flex';
+
+            // Set PF table headers
+            header.innerHTML = '<th>Property</th><th>Type</th><th>Est. Value</th><th>Auction Date</th><th>MLS Status</th><th>Last Checked</th><th>Actions</th>';
+
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:30px;color:#94a3b8;">Loading...</td></tr>';
+
+            try {
+                const params = new URLSearchParams();
+                if (pfFilter !== 'all') params.set('status', pfFilter);
+                const resp = await fetch('/api/preforeclosure?' + params.toString());
+                pfData = await resp.json();
+                renderPfRows();
+            } catch(e) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:30px;color:#fca5a5;">Failed to load</td></tr>';
+            }
+        }
+
+        function setPfFilter(f) { pfFilter = f; loadPreForeclosure(); }
+
+        function pfStatusBadge(status) {
+            const map = {
+                'on-market': ['background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.25);', 'On Market'],
+                'pre-foreclosure': ['background:rgba(249,115,22,.12);color:#f97316;border:1px solid rgba(249,115,22,.25);', 'Pre-Foreclosure'],
+                'auction': ['background:rgba(234,179,8,.12);color:#eab308;border:1px solid rgba(234,179,8,.25);', 'Auction'],
+                'checking': ['background:rgba(59,130,246,.12);color:#3b82f6;border:1px solid rgba(59,130,246,.25);', 'Checking...'],
+                'offer-submitted': ['background:rgba(168,85,247,.12);color:#a855f7;border:1px solid rgba(168,85,247,.25);', 'Offer Sent'],
+            };
+            const [style, label] = map[status] || ['background:rgba(100,116,139,.12);color:#94a3b8;border:1px solid rgba(100,116,139,.25);', 'Monitoring'];
+            return `<span style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:500;${style}"><span style="width:5px;height:5px;border-radius:50%;background:currentColor;"></span>${label}</span>`;
+        }
+
+        function renderPfRows() {
+            const tbody = document.getElementById('deals-body');
+            const cards = document.getElementById('deal-cards');
+            const empty = document.getElementById('empty-state');
+            let rows = pfData;
+            if (pfSearch) {
+                const q = pfSearch.toLowerCase();
+                rows = rows.filter(p => (p.address||'').toLowerCase().includes(q) || (p.city||'').toLowerCase().includes(q));
+            }
+
+            if (!rows.length) { tbody.innerHTML = ''; cards.innerHTML = ''; empty.style.display = 'block'; return; }
+            empty.style.display = 'none';
+
+            tbody.innerHTML = rows.map(p => {
+                const val = p.estimated_value ? '$' + Math.round(p.estimated_value).toLocaleString() : '—';
+                const checked = p.last_scanned ? new Date(p.last_scanned).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : 'Never';
+                const auc = p.auction_date || '—';
+                return `<tr>
+                    <td><div style="font-weight:500;">${p.address}${p.is_new ? ' <span style="background:#00e5a0;color:#000;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;">NEW</span>' : ''}</div><div style="color:#94a3b8;font-size:12px;">${p.city}${p.state ? ', '+p.state : ''} ${p.zip_code||''}</div></td>
+                    <td><span style="font-size:10px;padding:2px 7px;border-radius:3px;background:#334155;color:#94a3b8;">${p.property_type||'SFR'}</span></td>
+                    <td style="font-family:monospace;font-size:13px;">${val}</td>
+                    <td style="font-size:12px;color:#94a3b8;">${auc}</td>
+                    <td>${pfStatusBadge(p.mls_status||'unknown')}</td>
+                    <td style="font-size:12px;color:#94a3b8;">${checked}</td>
+                    <td>
+                        <div style="display:flex;gap:6px;">
+                            <button onclick="scanPf(${p.id})" title="Scan MLS" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#8635;</button>
+                            <button onclick="togglePfOffer(${p.id},'${p.mls_status}')" title="Mark Offer" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#9998;</button>
+                            <button onclick="deletePf(${p.id})" title="Delete" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&times;</button>
+                        </div>
+                    </td>
+                </tr>`;
+            }).join('');
+
+            // Mobile cards
+            cards.innerHTML = rows.map(p => {
+                const val = p.estimated_value ? '$' + Math.round(p.estimated_value).toLocaleString() : '—';
+                return `<div class="deal-card">
+                    <div class="deal-card-header"><div class="deal-card-address">${p.address}, ${p.city||''} ${p.zip_code||''}</div>${pfStatusBadge(p.mls_status||'unknown')}</div>
+                    <div class="deal-card-grid"><span class="lbl">Value</span><span class="val">${val}</span><span class="lbl">Type</span><span class="val">${p.property_type||'SFR'}</span><span class="lbl">Auction</span><span class="val">${p.auction_date||'—'}</span></div>
+                    <div class="deal-card-actions">
+                        <button class="btn-action" onclick="scanPf(${p.id})" style="background:#00e5a0;color:#000;">Scan</button>
+                        <button class="btn-action" onclick="deletePf(${p.id})" style="background:#dc2626;">Delete</button>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        async function scanPf(id) {
+            try {
+                const resp = await fetch('/api/preforeclosure/scan/' + id, {method:'POST'});
+                const data = await resp.json();
+                if (data.error) alert(data.error);
+                else { if (data.is_new) alert('ON MARKET: ' + data.address); loadPreForeclosure(); }
+            } catch(e) { alert('Scan failed'); }
+        }
+
+        async function scanAllPf() {
+            if (!pfData.length) { alert('No properties to scan'); return; }
+            for (const p of pfData) {
+                if (p.mls_status === 'offer-submitted') continue;
+                await scanPf(p.id);
+                await new Promise(r => setTimeout(r, 500));
+            }
+            alert('Scan complete');
+        }
+
+        async function togglePfOffer(id, current) {
+            const newStatus = current === 'offer-submitted' ? 'unknown' : 'offer-submitted';
+            await fetch('/api/preforeclosure/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mls_status: newStatus})});
+            loadPreForeclosure();
+        }
+
+        async function deletePf(id) {
+            if (!confirm('Remove this property?')) return;
+            await fetch('/api/preforeclosure/' + id, {method:'DELETE'});
+            loadPreForeclosure();
+        }
+
+        function openPfAddModal() {
+            const html = `<div class="offer-form">
+                <label>Street Address *</label><input id="pf-address" placeholder="123 Main St">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+                    <div><label>City</label><input id="pf-city" placeholder="Los Angeles"></div>
+                    <div><label>State</label><input id="pf-state" value="CA" maxlength="2"></div>
+                    <div><label>ZIP</label><input id="pf-zip" placeholder="90210"></div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div><label>Property Type</label><select id="pf-type"><option value="SFR">SFR</option><option value="MFR">Multi Family</option><option value="Condo">Condo</option></select></div>
+                    <div><label>Source</label><select id="pf-source"><option value="pre-foreclosure">Pre-Foreclosure</option><option value="auction">Auction</option><option value="other">Other</option></select></div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div><label>Estimated Value</label><input id="pf-value" type="number" placeholder="350000"></div>
+                    <div><label>Auction Date</label><input id="pf-auction" type="date"></div>
+                </div>
+                <label>Notes</label><textarea id="pf-notes" rows="2" placeholder="Notes..."></textarea>
+                <div style="margin-top:15px;"><button class="btn-save" onclick="savePfAdd()" style="width:100%;">Save Property</button></div>
+            </div>`;
+            document.getElementById('modal-title').textContent = 'Add Pre-Foreclosure Property';
+            document.getElementById('modal-body').innerHTML = html;
+            document.getElementById('modal-overlay').classList.add('active');
+        }
+
+        async function savePfAdd() {
+            const address = document.getElementById('pf-address').value.trim();
+            if (!address) { alert('Address required'); return; }
+            const data = {
+                address, city: document.getElementById('pf-city').value.trim(),
+                state: document.getElementById('pf-state').value.trim(),
+                zip_code: document.getElementById('pf-zip').value.trim(),
+                property_type: document.getElementById('pf-type').value,
+                source_list: document.getElementById('pf-source').value,
+                estimated_value: document.getElementById('pf-value').value || null,
+                auction_date: document.getElementById('pf-auction').value,
+                notes: document.getElementById('pf-notes').value,
+            };
+            try {
+                await fetch('/api/preforeclosure', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+                closeModal(); loadPreForeclosure();
+            } catch(e) { alert('Failed'); }
+        }
+
+        async function importPfCSV(file) {
+            if (!file) return;
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+                const resp = await fetch('/api/preforeclosure/import-csv', {method:'POST', body: formData});
+                const data = await resp.json();
+                if (data.error) alert(data.error);
+                else { alert('Imported ' + data.added + ' properties (' + data.skipped + ' skipped)'); loadPreForeclosure(); }
+            } catch(e) { alert('Import failed'); }
         }
 
         function filterTracker() {
