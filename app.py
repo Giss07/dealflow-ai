@@ -696,11 +696,13 @@ def api_preforeclosure_import():
     db = get_session()
     added = 0
     skipped = 0
+    skipped_details = []
     try:
-        for row in reader:
+        for row_num, row in enumerate(reader, start=2):
             address = find_col(row, ["address", "street", "situs", "site address", "property address"])
             if not address:
                 skipped += 1
+                skipped_details.append({"row": row_num, "reason": "No address found", "data": str(dict(row))[:100]})
                 continue
             city = find_col(row, ["city", "situs city"])
             zip_code = find_col(row, ["zip", "postal", "situs zip"])
@@ -711,6 +713,7 @@ def api_preforeclosure_import():
             ).first()
             if existing:
                 skipped += 1
+                skipped_details.append({"row": row_num, "reason": "Duplicate", "address": address, "zip": zip_code})
                 continue
             val_raw = find_col(row, ["value", "avm", "estimated", "market value", "assessed"])
             val_clean = val_raw.replace("$", "").replace(",", "").strip()
@@ -730,7 +733,7 @@ def api_preforeclosure_import():
             db.add(pf)
             added += 1
         db.commit()
-        return jsonify({"added": added, "skipped": skipped})
+        return jsonify({"added": added, "skipped": skipped, "skipped_details": skipped_details})
     except Exception as e:
         db.rollback()
         return jsonify({"error": str(e)}), 500

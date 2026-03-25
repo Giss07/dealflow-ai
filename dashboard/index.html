@@ -1242,7 +1242,14 @@
                 const resp = await fetch('/api/preforeclosure/import-csv', {method:'POST', body: formData});
                 const data = await resp.json();
                 if (data.error) alert(data.error);
-                else { alert('Imported ' + data.added + ' properties (' + data.skipped + ' skipped)'); loadPreForeclosure(); }
+                else {
+                    let msg = 'Imported ' + data.added + ' properties (' + data.skipped + ' skipped)';
+                    if (data.skipped_details && data.skipped_details.length) {
+                        msg += '\n\nSkipped:\n' + data.skipped_details.map(s => s.address ? s.address + ' — ' + s.reason : 'Row ' + s.row + ' — ' + s.reason).join('\n');
+                    }
+                    alert(msg);
+                    loadPreForeclosure();
+                }
             } catch(e) { alert('Import failed'); }
         }
 
