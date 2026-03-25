@@ -229,9 +229,9 @@ if __name__ == "__main__":
     schedule.every().day.at("08:00").do(run_full)           # 8AM PST full run
     schedule.every().hour.at(":00").do(run_gmail_only)      # Hourly Gmail check (9AM-6PM only)
 
-    # Schedule DealFlow AI pipeline (Mon & Thu at 7AM)
-    schedule.every().monday.at("07:00").do(run_dealflow_pipeline)
-    schedule.every().thursday.at("07:00").do(run_dealflow_pipeline)
+    # Schedule DealFlow AI pipeline (Mon & Thu at 7AM) — PAUSED
+    # schedule.every().monday.at("07:00").do(run_dealflow_pipeline)
+    # schedule.every().thursday.at("07:00").do(run_dealflow_pipeline)
 
     # Pre-foreclosure scan daily at 2AM PST
     schedule.every().day.at("02:00").do(run_preforeclosure_scan)
