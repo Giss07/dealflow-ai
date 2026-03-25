@@ -685,12 +685,22 @@ def api_preforeclosure_import():
     text = file.read().decode("utf-8", errors="ignore")
     reader = csv.DictReader(io.StringIO(text))
 
-    # Flexible column mapping
+    # Flexible column mapping — prioritizes "property" prefixed columns, skips empty matches
     def find_col(row, candidates):
+        # First pass: try candidates with "property" prefix
+        for c in candidates:
+            for key in row:
+                if c in key.lower() and "property" in key.lower():
+                    val = row[key].strip()
+                    if val:
+                        return val
+        # Second pass: try any match, skip empty
         for c in candidates:
             for key in row:
                 if c in key.lower():
-                    return row[key].strip()
+                    val = row[key].strip()
+                    if val:
+                        return val
         return ""
 
     db = get_session()
