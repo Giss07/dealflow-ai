@@ -586,6 +586,9 @@ def api_preforeclosure_list():
     db = get_session()
     try:
         query = db.query(PreForeclosure)
+        # Archive filter
+        if not request.args.get("show_archived"):
+            query = query.filter((PreForeclosure.is_archived == False) | (PreForeclosure.is_archived == None))
         status = request.args.get("status")
         if status and status != "all":
             query = query.filter(PreForeclosure.mls_status == status)
@@ -730,6 +733,108 @@ def api_preforeclosure_import():
         return jsonify({"added": added, "skipped": skipped})
     except Exception as e:
         db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/<int:pf_id>/archive", methods=["POST"])
+def api_preforeclosure_archive(pf_id):
+    """Toggle archive on a pre-foreclosure property."""
+    db = get_session()
+    try:
+        pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
+        if not pf:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json() or {}
+        pf.is_archived = data.get("archived", not pf.is_archived)
+        db.commit()
+        return jsonify(preforeclosure_to_dict(pf))
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/<int:pf_id>/create-deal", methods=["POST"])
+def api_preforeclosure_create_deal(pf_id):
+    """Create a Deal from a pre-foreclosure property so it appears in Active Deals."""
+    from arv_calculator import build_privy_url
+    from repair_estimator import estimate_repairs
+    from offer_calculator import calculate_offer
+    from scorer import fallback_score
+
+    db = get_session()
+    try:
+        pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
+        if not pf:
+            return jsonify({"error": "Not found"}), 404
+
+        # Check if already linked
+        if pf.linked_deal_id:
+            existing = db.query(Deal).filter_by(id=pf.linked_deal_id).first()
+            if existing:
+                return jsonify(deal_to_dict(existing))
+
+        # Create new Deal from pre-foreclosure data
+        deal = Deal()
+        deal.address = pf.address
+        deal.city = pf.city
+        deal.state = pf.state
+        deal.zip_code = pf.zip_code
+        deal.price = pf.mls_price or pf.estimated_value
+        deal.home_type = pf.property_type or "SINGLE_FAMILY"
+        deal.source = "pre-foreclosure"
+        deal.arv = pf.estimated_value
+        deal.listing_url = ""
+        deal.description = pf.ai_notes or ""
+
+        # Build privy URL
+        listing = {"address": deal.address, "city": deal.city, "state": deal.state, "zip_code": deal.zip_code}
+        deal.privy_url = build_privy_url(listing)
+
+        # Score
+        listing_dict = {
+            "price": deal.price, "arv": deal.arv, "sqft": None,
+            "days_on_zillow": None, "year_built": None,
+            "repairs_mid": 0, "repairs_worst": 0,
+            "has_deal_keywords": True, "matched_keywords": ["pre-foreclosure"],
+            "photo_grades": {}, "description": "",
+        }
+        result = fallback_score(listing_dict)
+        deal.score = result["score"]
+        deal.score_reasoning = result["reasoning"]
+
+        # Estimate repairs
+        listing_dict["photo_grades"] = {z: "Unknown" for z in ["Roof","HVAC","Plumbing","Interior","Kitchen","Bath","Foundation"]}
+        estimate_repairs(listing_dict)
+        deal.repairs_mid = listing_dict.get("repair_estimate", {}).get("total_mid")
+        deal.repairs_worst = listing_dict.get("repair_estimate", {}).get("total_worst")
+
+        # Calculate offer
+        if deal.arv:
+            listing_dict["arv"] = deal.arv
+            listing_dict["repair_estimate"] = {"total_mid": deal.repairs_mid or 0, "total_worst": deal.repairs_worst or 0}
+            calculate_offer(listing_dict)
+            offer = listing_dict.get("offer_analysis", {})
+            if "error" not in offer:
+                deal.max_offer = offer.get("max_offer")
+                deal.estimated_profit = offer.get("estimated_profit")
+                deal.roi_pct = offer.get("roi_pct")
+                deal.offer_analysis = json.dumps(offer)
+
+        db.add(deal)
+        db.flush()  # Get the deal.id
+
+        # Link pre-foreclosure to deal
+        pf.linked_deal_id = deal.id
+        db.commit()
+
+        return jsonify(deal_to_dict(deal))
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Create deal from PF failed: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()

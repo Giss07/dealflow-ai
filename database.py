@@ -133,6 +133,8 @@ class PreForeclosure(Base):
     ai_notes = Column(Text)
     last_scanned = Column(DateTime)
     is_new = Column(Boolean, default=False)
+    is_archived = Column(Boolean, default=False)
+    linked_deal_id = Column(Integer)  # ID of Deal created from this property
     date_added = Column(DateTime, default=datetime.utcnow)
 
 
@@ -153,6 +155,8 @@ def preforeclosure_to_dict(pf):
         "ai_notes": pf.ai_notes,
         "last_scanned": pf.last_scanned.isoformat() if pf.last_scanned else None,
         "is_new": pf.is_new or False,
+        "is_archived": pf.is_archived or False,
+        "linked_deal_id": pf.linked_deal_id,
         "date_added": pf.date_added.isoformat() if pf.date_added else None,
     }
 

@@ -1044,6 +1044,7 @@
                 <button class="score-filter-btn ${pfFilter==='pre-foreclosure'?'active':''}" onclick="setPfFilter('pre-foreclosure')" style="${pfFilter==='pre-foreclosure'?'background:#f97316;border-color:#f97316;':''}">Pre-Foreclosure</button>
                 <button class="score-filter-btn ${pfFilter==='auction'?'active':''}" onclick="setPfFilter('auction')" style="${pfFilter==='auction'?'background:#eab308;border-color:#eab308;':''}">Auction</button>
                 <input type="text" placeholder="Search address..." value="${pfSearch}" oninput="pfSearch=this.value;renderPfRows()" style="background:#334155;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:6px;font-size:14px;width:200px;">
+                <button id="btn-pf-archived" onclick="togglePfArchived()" style="background:#475569;color:#e2e8f0;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Show Archived</button>
                 <div style="flex:1;"></div>
                 <label for="pf-csv-input" style="background:#475569;color:#e2e8f0;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Import CSV</label>
                 <input type="file" id="pf-csv-input" accept=".csv" style="display:none;" onchange="importPfCSV(this.files[0])">
@@ -1060,6 +1061,7 @@
             try {
                 const params = new URLSearchParams();
                 if (pfFilter !== 'all') params.set('status', pfFilter);
+                if (pfShowArchived) params.set('show_archived', '1');
                 const resp = await fetch('/api/preforeclosure?' + params.toString());
                 pfData = await resp.json();
                 renderPfRows();
@@ -1109,8 +1111,8 @@
                     <td>
                         <div style="display:flex;gap:6px;">
                             <button onclick="scanPf(${p.id})" title="Scan MLS" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#8635;</button>
-                            <button onclick="togglePfOffer(${p.id},'${p.mls_status}')" title="Mark Offer" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#9998;</button>
-                            <button onclick="deletePf(${p.id})" title="Delete" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&times;</button>
+                            ${p.mls_status === 'on-market' ? `<button onclick="viewPfDeal(${p.id})" title="View Deal" style="padding:4px 10px;border-radius:6px;border:none;background:#22c55e;color:#000;cursor:pointer;font-size:11px;font-weight:600;">View Deal</button>` : `<button onclick="togglePfOffer(${p.id},'${p.mls_status}')" title="Mark Offer" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#9998;</button>`}
+                            <button onclick="archivePf(${p.id},${!p.is_archived})" title="${p.is_archived ? 'Restore' : 'Archive'}" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:${p.is_archived ? '#475569' : 'transparent'};color:${p.is_archived ? '#fbbf24' : '#94a3b8'};cursor:pointer;font-size:13px;">${p.is_archived ? '↩' : '✕'}</button>
                         </div>
                     </td>
                 </tr>`;
@@ -1124,7 +1126,8 @@
                     <div class="deal-card-grid"><span class="lbl">Value</span><span class="val">${val}</span><span class="lbl">Type</span><span class="val">${p.property_type||'SFR'}</span><span class="lbl">Auction</span><span class="val">${p.auction_date||'—'}</span></div>
                     <div class="deal-card-actions">
                         <button class="btn-action" onclick="scanPf(${p.id})" style="background:#00e5a0;color:#000;">Scan</button>
-                        <button class="btn-action" onclick="deletePf(${p.id})" style="background:#dc2626;">Delete</button>
+                        ${p.mls_status === 'on-market' ? `<button class="btn-action" onclick="viewPfDeal(${p.id})" style="background:#22c55e;color:#000;">View Deal</button>` : ''}
+                        <button class="btn-action" onclick="archivePf(${p.id},${!p.is_archived})" style="background:${p.is_archived ? '#475569' : '#dc2626'};">${p.is_archived ? 'Restore' : 'Archive'}</button>
                     </div>
                 </div>`;
             }).join('');
@@ -1202,6 +1205,33 @@
                 await fetch('/api/preforeclosure', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
                 closeModal(); loadPreForeclosure();
             } catch(e) { alert('Failed'); }
+        }
+
+        let pfShowArchived = false;
+        function togglePfArchived() {
+            pfShowArchived = !pfShowArchived;
+            const btn = document.getElementById('btn-pf-archived');
+            if (pfShowArchived) { btn.style.background = '#3b82f6'; btn.style.color = 'white'; btn.textContent = 'Showing Archived'; }
+            else { btn.style.background = '#475569'; btn.style.color = '#e2e8f0'; btn.textContent = 'Show Archived'; }
+            loadPreForeclosure();
+        }
+
+        async function archivePf(id, archive) {
+            await fetch(`/api/preforeclosure/${id}/archive`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({archived: archive})});
+            loadPreForeclosure();
+        }
+
+        async function viewPfDeal(pfId) {
+            // Create or get linked Deal, then open it in the deal detail modal
+            try {
+                const resp = await fetch(`/api/preforeclosure/${pfId}/create-deal`, {method:'POST'});
+                const deal = await resp.json();
+                if (deal.error) { alert(deal.error); return; }
+                // Open the deal detail modal (reusing Active Deals component)
+                document.getElementById('modal-title').textContent = deal.address || 'Deal Details';
+                document.getElementById('modal-body').innerHTML = buildDealDetail(deal);
+                document.getElementById('modal-overlay').classList.add('active');
+            } catch(e) { alert('Failed to load deal'); }
         }
 
         async function importPfCSV(file) {
