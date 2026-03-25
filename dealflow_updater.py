@@ -306,12 +306,27 @@ def read_christian_emails(sheet, records):
                     body = re.sub(r'\s+', ' ', body).strip()
 
                 subject = msg.get('Subject', '')
+                sender = msg.get('From', '').lower()
                 full_text = subject + ' ' + body
+
+                # Skip our own alert emails being forwarded back
+                own_alert_signatures = [
+                    'back on market', 'hot alert', 'close deal alert',
+                    'dealflow', 'offer rejected', 'deal alert'
+                ]
+                subject_lower = subject.lower()
+                is_own_alert = any(sig in subject_lower for sig in own_alert_signatures)
+                if is_own_alert:
+                    print(f"  Skipping forwarded alert email: {subject[:60]}")
+                    continue
 
                 # HUD-specific: extract address from email body
                 # HUD emails have "Address: 988 Laurel Ave, Lindsay, CA 93247"
                 hud_address_match = None
-                is_hud = 'hud' in (subject + ' ' + body).lower() and any(kw in (subject + ' ' + body).lower() for kw in ['counter', 'bid', 'minimum acceptable', 'net to hud'])
+                # Only detect HUD from the original subject (not forwarded/reply chains)
+                # Strip Re:/Fw:/Fwd: prefixes to get original subject
+                clean_subject = re.sub(r'^(re:|fw:|fwd:)\s*', '', subject.lower(), flags=re.IGNORECASE).strip()
+                is_hud = 'hud' in clean_subject and any(kw in clean_subject for kw in ['counter', 'bid'])
                 if is_hud:
                     addr_match = re.search(r'address[:\s]+(\d+[^,\n]+,\s*[^,\n]+,\s*[A-Z]{2}\s*\d{5})', body, re.IGNORECASE) or \
                                  re.search(r'property[:\s]+(\d+[^,\n]+,\s*[^,\n]+,\s*[A-Z]{2}\s*\d{5})', body, re.IGNORECASE) or \
