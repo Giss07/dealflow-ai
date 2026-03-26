@@ -444,6 +444,14 @@ def api_submit_offer(deal_id):
             deal.offer_status = status_val
         elif data.get("amount") and not deal.offer_status:
             deal.offer_status = "Submitted"
+
+        # If this deal came from pre-foreclosure, archive the PF record
+        if deal.source == "pre-foreclosure" and deal.offer_amount:
+            pf_linked = session.query(PreForeclosure).filter_by(linked_deal_id=deal.id).first()
+            if pf_linked:
+                pf_linked.is_archived = True
+                pf_linked.mls_status = "offer-submitted"
+
         session.commit()
 
         # Write to Google Sheet
@@ -940,13 +948,20 @@ def api_preforeclosure_scan(pf_id):
         description = ""
 
         # Map Zillow status to our status
-        if "FOR_SALE" in home_status:
+        # Check for auction listings (not real MLS)
+        sub_type = data.get("hdpData", {}).get("homeInfo", {}).get("listing_sub_type", {}) or {}
+        is_auction = bool(sub_type.get("is_foreclosure") or sub_type.get("is_bankOwned")
+                         or "AUCTION" in home_status or "FORECLOSED" in home_status)
+
+        if is_auction:
+            pf.mls_status = "auction"
+        elif "FOR_SALE" in home_status:
             pf.mls_status = "on-market"
         elif "PENDING" in home_status or "OTHER" in home_status:
-            pf.mls_status = "on-market"  # pending = was listed
+            pf.mls_status = "on-market"
         elif "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
             pf.mls_status = "unknown"
-        elif "FORECLOSURE" in home_status or "FORECLOSED" in home_status or "PRE_FORECLOSURE" in home_status:
+        elif "FORECLOSURE" in home_status or "PRE_FORECLOSURE" in home_status:
             pf.mls_status = "pre-foreclosure"
         else:
             pf.mls_status = "unknown"

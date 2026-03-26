@@ -131,7 +131,14 @@ def run_preforeclosure_scan():
                         price = home_info.get("price") or matched.get("unformattedPrice")
                         zestimate = home_info.get("zestimate") or matched.get("zestimate")
 
-                        if "FOR_SALE" in home_status:
+                        # Check if it's an auction listing (not a real MLS listing)
+                        sub_type = home_info.get("listing_sub_type", {}) or {}
+                        is_auction = bool(sub_type.get("is_foreclosure") or sub_type.get("is_bankOwned")
+                                         or "AUCTION" in home_status or "FORECLOSED" in home_status)
+
+                        if is_auction:
+                            pf.mls_status = "auction"
+                        elif "FOR_SALE" in home_status:
                             pf.mls_status = "on-market"
                         elif "PENDING" in home_status or "OTHER" in home_status:
                             pf.mls_status = "on-market"
