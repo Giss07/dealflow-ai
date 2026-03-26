@@ -168,13 +168,18 @@ def run_preforeclosure_scan():
                     pf.ai_notes = f"Scan error: {str(e)[:100]}"
                     pf.last_scanned = dt.utcnow()
 
+        # Save alert data before closing session
+        alert_data = []
+        for pf in new_on_market:
+            alert_data.append({"address": pf.address, "city": pf.city, "mls_price": pf.mls_price, "estimated_value": pf.estimated_value})
+
         db.commit()
         db.close()
 
         logger.info(f"Pre-foreclosure scan complete: {scanned} scanned, {len(new_on_market)} new on market")
 
         # Send alert for newly listed properties
-        if new_on_market:
+        if alert_data:
             try:
                 from alerts import GMAIL_USER, GMAIL_PASSWORD, ALERT_EMAIL
                 if GMAIL_USER and GMAIL_PASSWORD:
@@ -187,14 +192,14 @@ def run_preforeclosure_scan():
                     html += "<p>These pre-foreclosure properties just appeared on Zillow:</p>"
                     html += "<table border='1' cellpadding='8' style='border-collapse:collapse;'>"
                     html += "<tr style='background:#166534;color:white;'><th>Address</th><th>Price</th><th>Value</th></tr>"
-                    for pf in new_on_market:
-                        price_str = f"${pf.mls_price:,.0f}" if pf.mls_price else "N/A"
-                        val_str = f"${pf.estimated_value:,.0f}" if pf.estimated_value else "N/A"
-                        html += f"<tr><td><b>{pf.address}, {pf.city}</b></td><td>{price_str}</td><td>{val_str}</td></tr>"
+                    for ad in alert_data:
+                        price_str = f"${ad['mls_price']:,.0f}" if ad.get('mls_price') else "N/A"
+                        val_str = f"${ad['estimated_value']:,.0f}" if ad.get('estimated_value') else "N/A"
+                        html += f"<tr><td><b>{ad['address']}, {ad['city']}</b></td><td>{price_str}</td><td>{val_str}</td></tr>"
                     html += "</table></body></html>"
 
                     msg = MIMEMultipart("alternative")
-                    msg["Subject"] = f"🚨 {len(new_on_market)} Pre-Foreclosure Properties NOW ON MARKET!"
+                    msg["Subject"] = f"🚨 {len(alert_data)} Pre-Foreclosure Properties NOW ON MARKET!"
                     msg["From"] = GMAIL_USER
                     msg["To"] = ALERT_EMAIL or GMAIL_USER
                     msg.attach(MIMEText(html, "html"))
@@ -202,7 +207,7 @@ def run_preforeclosure_scan():
                     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                         server.login(GMAIL_USER, GMAIL_PASSWORD)
                         server.sendmail(GMAIL_USER, ALERT_EMAIL or GMAIL_USER, msg.as_string())
-                    logger.info(f"Alert email sent for {len(new_on_market)} new listings")
+                    logger.info(f"Alert email sent for {len(alert_data)} new listings")
             except Exception as e:
                 logger.error(f"Failed to send alert: {e}")
 
