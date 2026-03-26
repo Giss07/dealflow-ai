@@ -43,7 +43,7 @@ def run_full():
 
 def run_gmail_only():
     """Run dealflow_updater in gmail_only mode (only during 9AM-6PM PST)."""
-    now_pst = datetime.now(PST)
+    now_pst = datetime.now(PST)  # Always use PST-aware time for the hour check
     hour = now_pst.hour
     if hour < 9 or hour > 18:
         logger.info(f"Skipping Gmail check — outside 9AM-6PM PST (currently {hour}:00)")
@@ -225,22 +225,23 @@ if __name__ == "__main__":
     logger.info("DealFlow Worker starting...")
     logger.info(f"Current time PST: {datetime.now(PST).strftime('%Y-%m-%d %H:%M %Z')}")
 
-    # Schedule dealflow_updater
-    schedule.every().day.at("08:00").do(run_full)           # 8AM PST full run
-    schedule.every().hour.at(":00").do(run_gmail_only)      # Hourly Gmail check (9AM-6PM only)
+    # All times in UTC (Railway runs UTC)
+    # PST = UTC - 7 (PDT = UTC - 7 during daylight saving)
+    schedule.every().day.at("15:00").do(run_full)           # 8AM PST = 15:00 UTC
+    schedule.every().hour.at(":00").do(run_gmail_only)      # Hourly Gmail check (9AM-6PM PST only, checked inside func)
 
-    # Schedule DealFlow AI pipeline (Mon & Thu at 7AM) — PAUSED
-    # schedule.every().monday.at("07:00").do(run_dealflow_pipeline)
-    # schedule.every().thursday.at("07:00").do(run_dealflow_pipeline)
+    # Schedule DealFlow AI pipeline (Mon & Thu at 7AM PST = 14:00 UTC) — PAUSED
+    # schedule.every().monday.at("14:00").do(run_dealflow_pipeline)
+    # schedule.every().thursday.at("14:00").do(run_dealflow_pipeline)
 
-    # Pre-foreclosure scan daily at 2AM PST
-    schedule.every().day.at("02:00").do(run_preforeclosure_scan)
+    # Pre-foreclosure scan daily at 2AM PST = 09:00 UTC
+    schedule.every().day.at("09:00").do(run_preforeclosure_scan)
 
-    logger.info("Scheduled:")
-    logger.info("  - 2:00 AM PST daily: Pre-foreclosure Zillow scan")
-    logger.info("  - 8:00 AM PST daily: Full updater run")
-    logger.info("  - Hourly 9AM-6PM PST: Gmail-only counter checks")
-    logger.info("  - Mon & Thu 7AM PST: DealFlow AI scraper pipeline")
+    logger.info("Scheduled (UTC times, Railway server):")
+    logger.info("  - 09:00 UTC (2AM PST): Pre-foreclosure Zillow scan")
+    logger.info("  - 15:00 UTC (8AM PST): Full updater run")
+    logger.info("  - Hourly (9AM-6PM PST): Gmail-only counter checks")
+    logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")
 
     # Run Gmail check immediately on startup
     logger.info("Running initial Gmail check...")
