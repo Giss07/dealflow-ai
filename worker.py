@@ -159,6 +159,9 @@ def run_preforeclosure_scan():
 
                     scanned += 1
 
+                # Commit after each zip to prevent connection timeout
+                db.commit()
+
                 import time
                 time.sleep(3)  # Rate limit between zip codes
 
