@@ -715,7 +715,7 @@ def api_preforeclosure_import():
                 skipped_details.append({"row": row_num, "reason": "No address found", "data": str(dict(row))[:100]})
                 continue
             city = find_col(row, ["city", "situs city"])
-            zip_code = find_col(row, ["zip", "postal", "situs zip"])
+            zip_code = find_col(row, ["zip", "postal", "situs zip"]).replace(".0", "")
             # Dedup
             existing = db.query(PreForeclosure).filter(
                 PreForeclosure.address.ilike(f"%{address}%"),
