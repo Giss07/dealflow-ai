@@ -133,8 +133,17 @@ def run_preforeclosure_scan():
 
                         # Check if it's an auction listing (not a real MLS listing)
                         sub_type = home_info.get("listing_sub_type", {}) or {}
-                        is_auction = bool(sub_type.get("is_foreclosure") or sub_type.get("is_bankOwned")
-                                         or "AUCTION" in home_status or "FORECLOSED" in home_status)
+                        status_text = (matched.get("statusText") or "").upper()
+                        raw_price = home_info.get("price") or matched.get("unformattedPrice")
+                        is_auction = bool(
+                            sub_type.get("is_forAuction")
+                            or sub_type.get("is_foreclosure")
+                            or sub_type.get("is_bankOwned")
+                            or "AUCTION" in home_status
+                            or "AUCTION" in status_text
+                            or "FORECLOSED" in home_status
+                            or (raw_price is not None and float(str(raw_price).replace("$","").replace(",","") or 0) == 0)
+                        )
 
                         if is_auction:
                             pf.mls_status = "auction"
