@@ -9,4 +9,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD sh -c "gunicorn app:app --bind 0.0.0.0:${PORT:-8080} --workers 2"
+CMD sh -c "if [ \"$SERVICE_TYPE\" = 'worker' ]; then python worker.py; else gunicorn app:app --bind 0.0.0.0:${PORT:-8080} --workers 2; fi"
