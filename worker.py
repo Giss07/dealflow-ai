@@ -30,27 +30,46 @@ sys.path.insert(0, os.path.dirname(__file__))
 def run_full():
     """Run dealflow_updater in full mode (every 2 days)."""
     now_pst = datetime.now(PST)
-    # Only run on odd days (1st, 3rd, 5th, etc.) to achieve every-2-days
     if now_pst.day % 2 == 0:
         logger.info(f"Skipping full run — runs every 2 days (next run tomorrow)")
         return
     logger.info(f"=== FULL RUN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
     try:
-        os.system(f"{sys.executable} {os.path.join(os.path.dirname(__file__), 'dealflow_updater.py')} full")
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(__file__), 'dealflow_updater.py'), 'full'],
+            timeout=1800, capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            logger.error(f"Full run exited {result.returncode}: {result.stderr[:500]}")
+        else:
+            logger.info("Full run completed successfully")
+    except subprocess.TimeoutExpired:
+        logger.error("Full run timed out after 30 minutes")
     except Exception as e:
         logger.error(f"Full run failed: {e}")
 
 
 def run_gmail_only():
     """Run dealflow_updater in gmail_only mode (only during 9AM-6PM PST)."""
-    now_pst = datetime.now(PST)  # Always use PST-aware time for the hour check
+    now_pst = datetime.now(PST)
     hour = now_pst.hour
     if hour < 9 or hour > 18:
         logger.info(f"Skipping Gmail check — outside 9AM-6PM PST (currently {hour}:00)")
         return
     logger.info(f"=== GMAIL-ONLY RUN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
     try:
-        os.system(f"{sys.executable} {os.path.join(os.path.dirname(__file__), 'dealflow_updater.py')} gmail_only")
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(__file__), 'dealflow_updater.py'), 'gmail_only'],
+            timeout=300, capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            logger.error(f"Gmail check exited {result.returncode}: {result.stderr[:500]}")
+        else:
+            logger.info("Gmail check completed")
+    except subprocess.TimeoutExpired:
+        logger.error("Gmail check timed out after 5 minutes")
     except Exception as e:
         logger.error(f"Gmail-only run failed: {e}")
 
@@ -267,11 +286,14 @@ if __name__ == "__main__":
     logger.info("  - Hourly (9AM-6PM PST): Gmail-only counter checks")
     logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")
 
-    # Run Gmail check immediately on startup
-    logger.info("Running initial Gmail check...")
-    run_gmail_only()
+    # Skip initial Gmail check on startup — let the schedule handle it
+    # (Previous bug: if gmail check crashes on startup, schedule loop never starts)
+    logger.info("Worker ready. Schedule loop starting...")
 
     # Loop
     while True:
-        schedule.run_pending()
+        try:
+            schedule.run_pending()
+        except Exception as e:
+            logger.error(f"Schedule error: {e}")
         time.sleep(30)
