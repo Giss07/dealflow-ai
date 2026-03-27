@@ -296,6 +296,23 @@ if __name__ == "__main__":
 
     # Skip initial Gmail check on startup — let the schedule handle it
     # (Previous bug: if gmail check crashes on startup, schedule loop never starts)
+    # Start a tiny health server so Railway healthcheck passes
+    import threading
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+        def log_message(self, format, *args):
+            pass  # Suppress access logs
+
+    health_port = int(os.getenv("PORT", 8080))
+    health_server = HTTPServer(("0.0.0.0", health_port), HealthHandler)
+    threading.Thread(target=health_server.serve_forever, daemon=True).start()
+    logger.info(f"Health server on port {health_port}")
+
     logger.info("Worker ready. Schedule loop starting...")
 
     # Loop
