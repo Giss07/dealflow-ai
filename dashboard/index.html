@@ -1217,8 +1217,12 @@
         }
 
         async function archivePf(id, archive) {
-            await fetch(`/api/preforeclosure/${id}/archive`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({archived: archive})});
-            loadPreForeclosure();
+            try {
+                const resp = await fetch(`/api/preforeclosure/${id}/archive`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({archived: archive})});
+                const data = await resp.json();
+                if (data.error) { alert('Archive failed: ' + data.error); return; }
+                loadPreForeclosure();
+            } catch(e) { alert('Archive failed: ' + e.message); }
         }
 
         async function viewPfDeal(pfId) {
