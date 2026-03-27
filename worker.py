@@ -4,11 +4,18 @@ DealFlow Worker — Runs on Railway 24/7.
 - 9AM-6PM PST hourly: Gmail-only (counter offer checks)
 """
 
+import sys
+import os
+
+# Force unbuffered output so Railway sees logs immediately
+sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
+os.environ['PYTHONUNBUFFERED'] = '1'
+
+print("Worker script starting...", flush=True)
+
 from dotenv import load_dotenv
 load_dotenv()
 
-import os
-import sys
 import time
 import logging
 import schedule
@@ -18,6 +25,7 @@ from datetime import datetime
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
 
