@@ -949,16 +949,17 @@ def api_preforeclosure_scan(pf_id):
 
         # Map Zillow status to our status
         # Check for auction listings (not real MLS)
-        sub_type = data.get("hdpData", {}).get("homeInfo", {}).get("listing_sub_type", {}) or {}
+        # Only use statusText and price=0 — sub_type flags are unreliable
         status_text = (data.get("statusText") or "").upper()
+        try:
+            price_num = float(str(price).replace("$","").replace(",","") or 0) if price else 0
+        except (ValueError, TypeError):
+            price_num = 0
         is_auction = bool(
-            sub_type.get("is_forAuction")
-            or sub_type.get("is_foreclosure")
-            or sub_type.get("is_bankOwned")
+            "AUCTION" in status_text
             or "AUCTION" in home_status
-            or "AUCTION" in status_text
             or "FORECLOSED" in home_status
-            or (price is not None and float(str(price).replace("$","").replace(",","") or 0) == 0)
+            or (price is not None and price_num == 0)
         )
 
         if is_auction:
