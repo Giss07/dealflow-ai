@@ -191,6 +191,42 @@ def find_matching_address(email_text, sheet_addresses):
 
     return None
 
+ACCEPTANCE_KEYWORDS = [
+    "bid acceptance", "bid accepted", "bid has been accepted",
+    "offer accepted", "offer has been accepted",
+    "congratulations", "winning bid", "winning bidder",
+    "you have been selected", "your bid has been selected",
+    "accepted your offer", "accepted your bid",
+    "proceed to closing", "proceed with closing",
+    "under contract", "executed contract",
+]
+
+
+def detect_acceptance(email_text):
+    """Check if email contains acceptance language. Returns (keyword, context) or (None, None)."""
+    import re as _re
+    text_lower = email_text.lower()
+    clean_text = _re.sub(r'\s+', ' ', text_lower).strip()
+
+    # Make sure it's not "not accepted" — check rejection first
+    for rej in ["not accepted", "not accept", "cannot accept", "won't accept"]:
+        if rej in clean_text:
+            return None, None
+
+    for kw in ACCEPTANCE_KEYWORDS:
+        pos = clean_text.find(kw)
+        if pos >= 0:
+            start = max(0, pos - 60)
+            end = min(len(clean_text), pos + len(kw) + 90)
+            context = clean_text[start:end].strip()
+            if start > 0:
+                space = context.find(' ')
+                if space > 0 and space < 15:
+                    context = context[space + 1:]
+            return kw, context
+    return None, None
+
+
 REJECTION_KEYWORDS = [
     "won't consider", "will not consider", "not considering",
     "rejected", "reject", "declined", "decline",
@@ -396,40 +432,69 @@ def read_christian_emails(sheet, records):
                                         alerts.append({'type': 'CLOSE', 'address': record.get('Address'), 'purchase_price': purchase_price, 'counter_price': counter_price, 'difference': diff, 'row': row_num, 'alert_col': alert_sent_col})
                                 break
                     else:
-                        # Check if it's a rejection
-                        rejection_kw, rejection_context = detect_rejection(full_text)
-                        if rejection_kw:
-                            print(f"  REJECTION detected: '{rejection_kw}'")
+                        # Check if it's a bid acceptance FIRST
+                        accept_kw, accept_context = detect_acceptance(full_text)
+                        if accept_kw:
+                            print(f"  🎉 ACCEPTANCE detected: '{accept_kw}'")
                             for i, record in enumerate(records):
                                 if record.get('Address', '').strip().lower() == matched_address:
                                     row_num = i + 2
                                     current_status = record.get('Status (/Accepted/Rejected/Counter)', '')
-                                    if current_status not in ['Rejected', 'STP', 'Accepted']:
-                                        sheet.update_cell(row_num, status_col, 'Rejected')
-                                        # Add rejection note
+                                    if current_status not in ['STP', 'Accepted']:
+                                        sheet.update_cell(row_num, status_col, 'Accepted')
                                         existing_notes = record.get('Notes', '')
-                                        rejection_note = f"[Rejected: {rejection_context} — {datetime.now().strftime('%m/%d/%Y')}]"
-                                        new_notes = f"{existing_notes} | {rejection_note}" if existing_notes else rejection_note
+                                        accept_note = f"[ACCEPTED: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
+                                        new_notes = f"{existing_notes} | {accept_note}" if existing_notes else accept_note
                                         sheet.update_cell(row_num, notes_col, new_notes)
-                                        print(f"  Sheet updated to Rejected for row {row_num}!")
-                                        # Add to alerts
+                                        print(f"  Sheet updated to Accepted for row {row_num}!")
                                         try:
                                             alert_sent_col = headers.index('Alert Sent') + 1
                                         except ValueError:
                                             alert_sent_col = None
                                         alerts.append({
-                                            'type': 'REJECTED',
+                                            'type': 'ACCEPTED',
                                             'address': record.get('Address'),
                                             'purchase_price': clean_price(record.get('Purchase Contract Price', '')),
                                             'counter_price': None,
                                             'difference': None,
                                             'row': row_num,
                                             'alert_col': alert_sent_col,
-                                            'reason': rejection_context
+                                            'reason': accept_context
                                         })
                                     break
                         else:
-                            print(f"  Could not extract price from email")
+                            # Check if it's a rejection
+                            rejection_kw, rejection_context = detect_rejection(full_text)
+                            if rejection_kw:
+                                print(f"  REJECTION detected: '{rejection_kw}'")
+                                for i, record in enumerate(records):
+                                    if record.get('Address', '').strip().lower() == matched_address:
+                                        row_num = i + 2
+                                        current_status = record.get('Status (/Accepted/Rejected/Counter)', '')
+                                        if current_status not in ['Rejected', 'STP', 'Accepted']:
+                                            sheet.update_cell(row_num, status_col, 'Rejected')
+                                            existing_notes = record.get('Notes', '')
+                                            rejection_note = f"[Rejected: {rejection_context} — {datetime.now().strftime('%m/%d/%Y')}]"
+                                            new_notes = f"{existing_notes} | {rejection_note}" if existing_notes else rejection_note
+                                            sheet.update_cell(row_num, notes_col, new_notes)
+                                            print(f"  Sheet updated to Rejected for row {row_num}!")
+                                            try:
+                                                alert_sent_col = headers.index('Alert Sent') + 1
+                                            except ValueError:
+                                                alert_sent_col = None
+                                            alerts.append({
+                                                'type': 'REJECTED',
+                                                'address': record.get('Address'),
+                                                'purchase_price': clean_price(record.get('Purchase Contract Price', '')),
+                                                'counter_price': None,
+                                                'difference': None,
+                                                'row': row_num,
+                                                'alert_col': alert_sent_col,
+                                                'reason': rejection_context
+                                            })
+                                        break
+                            else:
+                                print(f"  Could not extract price from email")
                 else:
                     print(f"  No match - ignoring email")
             except Exception as e:
@@ -676,6 +741,21 @@ def send_alerts(alerts, back_on_market=[]):
             html += f"<tr><td><b>{a['address']}</b></td><td>${a['purchase_price']:,}</td><td>${a['counter_price']:,}</td><td style='color:orange;'><b>${a['difference']:,} apart</b></td><td style='color:blue;'><b>${offer_to_net:,}</b></td></tr>"
         html += "</table></body></html>"
         send_email("⚠️ CLOSE DEAL ALERT - Counter Within $30k of Your Offer!", html)
+
+    accepted = [a for a in alerts if a['type'] == 'ACCEPTED']
+    if accepted:
+        html = "<html><body>"
+        html += "<h2 style='color:#22c55e;'>🎉 BID ACCEPTED — DEAL WON!</h2>"
+        html += "<p style='font-size:16px;'>Congratulations! The following bid(s) have been accepted:</p>"
+        html += "<table border='1' cellpadding='8' style='border-collapse:collapse;width:100%;'>"
+        html += "<tr style='background:#166534;color:white;'><th>Address</th><th>Your Offer</th><th>Details</th></tr>"
+        for a in accepted:
+            offer_str = f"${a['purchase_price']:,}" if a.get('purchase_price') else "N/A"
+            html += f"<tr><td><b>{a['address']}</b></td><td>{offer_str}</td><td>{a.get('reason', '')[:150]}</td></tr>"
+        html += "</table>"
+        html += "<p style='color:#22c55e;font-weight:bold;font-size:18px;'>⚡ TAKE IMMEDIATE ACTION — Proceed to closing!</p>"
+        html += "</body></html>"
+        send_email("🎉 BID ACCEPTED — " + ", ".join(a['address'] for a in accepted[:3]), html)
 
     rejected = [a for a in alerts if a['type'] == 'REJECTED']
     if rejected:
