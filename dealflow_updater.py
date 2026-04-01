@@ -193,12 +193,14 @@ def find_matching_address(email_text, sheet_addresses):
 
 ACCEPTANCE_KEYWORDS = [
     "bid acceptance", "bid accepted", "bid has been accepted",
+    "provisionally accepted", "bid has been provisionally accepted",
     "offer accepted", "offer has been accepted",
     "congratulations", "winning bid", "winning bidder",
     "you have been selected", "your bid has been selected",
     "accepted your offer", "accepted your bid",
     "proceed to closing", "proceed with closing",
     "under contract", "executed contract",
+    "bid acceptance notification",
 ]
 
 
@@ -356,13 +358,18 @@ def read_christian_emails(sheet, records):
                     print(f"  Skipping forwarded alert email: {subject[:60]}")
                     continue
 
-                # HUD-specific: extract address from email body
-                # HUD emails have "Address: 988 Laurel Ave, Lindsay, CA 93247"
+                # HUD/bid-specific: extract address from email body or subject
                 hud_address_match = None
-                # Only detect HUD from the original subject (not forwarded/reply chains)
-                # Strip Re:/Fw:/Fwd: prefixes to get original subject
                 clean_subject = re.sub(r'^(re:|fw:|fwd:)\s*', '', subject.lower(), flags=re.IGNORECASE).strip()
-                is_hud = 'hud' in clean_subject and any(kw in clean_subject for kw in ['counter', 'bid'])
+                is_hud = ('hud' in clean_subject and any(kw in clean_subject for kw in ['counter', 'bid'])) \
+                    or 'bid acceptance' in clean_subject \
+                    or 'bid notification' in clean_subject
+
+                # Also extract address from subject format: "case#; 4001 Terra Granada Dr #1A"
+                subject_addr_match = re.search(r'[\d-]+;\s*(\d+\s+[A-Za-z].*?)$', clean_subject)
+                if subject_addr_match:
+                    hud_address_match = subject_addr_match.group(1).strip()
+                    print(f"  Subject address extracted: {hud_address_match}")
                 if is_hud:
                     addr_match = re.search(r'address[:\s]+(\d+[^,\n]+,\s*[^,\n]+,\s*[A-Z]{2}\s*\d{5})', body, re.IGNORECASE) or \
                                  re.search(r'property[:\s]+(\d+[^,\n]+,\s*[^,\n]+,\s*[A-Z]{2}\s*\d{5})', body, re.IGNORECASE) or \
