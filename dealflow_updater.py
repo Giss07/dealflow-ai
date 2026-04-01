@@ -171,22 +171,42 @@ def get_all_addresses(records):
             addresses.append(addr.lower())
     return addresses
 
+def normalize_address(addr):
+    """Normalize address for matching: lowercase, strip unit variations."""
+    a = addr.lower().strip()
+    # Normalize unit indicators
+    a = re.sub(r'\bapt\b\.?', '#', a)
+    a = re.sub(r'\bunit\b\.?', '#', a)
+    a = re.sub(r'\bste\b\.?', '#', a)
+    a = re.sub(r'\bsuite\b\.?', '#', a)
+    return a
+
+
 def find_matching_address(email_text, sheet_addresses):
     email_lower = email_text.lower()
+    email_normalized = normalize_address(email_text)
 
     # First try: look for "Address: <street>" label in HUD emails
     hud_match = re.search(r'address:\s*([^\n\r]+)', email_lower)
     if hud_match:
-        hud_addr = hud_match.group(1).strip()
+        hud_addr = normalize_address(hud_match.group(1).strip())
         for address in sheet_addresses:
-            parts = address.split(',')[0].strip().lower()
+            parts = normalize_address(address.split(',')[0].strip())
             if parts and len(parts) > 5 and parts in hud_addr:
                 return address
 
-    # Second try: look for street address anywhere in email body
+    # Second try: exact match with normalization
     for address in sheet_addresses:
-        parts = address.split(',')[0].strip().lower()
-        if parts and len(parts) > 5 and parts in email_lower:
+        parts = normalize_address(address.split(',')[0].strip())
+        if parts and len(parts) > 5 and parts in email_normalized:
+            return address
+
+    # Third try: match on street number + street name only (ignore unit)
+    for address in sheet_addresses:
+        street = address.split(',')[0].strip().lower()
+        # Get just the street number and name, drop unit
+        street_core = re.sub(r'\s*(apt|unit|ste|suite|#)\s*\S*$', '', street, flags=re.IGNORECASE).strip()
+        if street_core and len(street_core) > 5 and street_core in email_lower:
             return address
 
     return None
@@ -392,6 +412,39 @@ def read_christian_emails(sheet, records):
 
                 if matched_address:
                     print(f"  Match found: {matched_address}")
+
+                    # Check acceptance FIRST — before counter price extraction
+                    # (HUD acceptance emails contain dollar amounts that confuse the counter parser)
+                    accept_kw, accept_context = detect_acceptance(full_text)
+                    if accept_kw:
+                        print(f"  🎉 ACCEPTANCE detected: '{accept_kw}'")
+                        for i, record in enumerate(records):
+                            if record.get('Address', '').strip().lower() == matched_address:
+                                row_num = i + 2
+                                current_status = record.get('Status (/Accepted/Rejected/Counter)', '')
+                                if current_status not in ['STP']:
+                                    sheet.update_cell(row_num, status_col, 'Accepted')
+                                    existing_notes = record.get('Notes', '')
+                                    accept_note = f"[ACCEPTED: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
+                                    new_notes = f"{existing_notes} | {accept_note}" if existing_notes else accept_note
+                                    sheet.update_cell(row_num, notes_col, new_notes)
+                                    print(f"  Sheet updated to Accepted for row {row_num}!")
+                                    try:
+                                        alert_sent_col = headers.index('Alert Sent') + 1
+                                    except ValueError:
+                                        alert_sent_col = None
+                                    alerts.append({
+                                        'type': 'ACCEPTED',
+                                        'address': record.get('Address'),
+                                        'purchase_price': clean_price(record.get('Purchase Contract Price', '')),
+                                        'counter_price': None, 'difference': None,
+                                        'row': row_num, 'alert_col': alert_sent_col,
+                                        'reason': accept_context
+                                    })
+                                break
+                        # Skip to next email — don't process as counter
+                        continue
+
                     counter_price = extract_counter_price(full_text)
                     counter_date = datetime.now().strftime('%m/%d/%Y')
 
@@ -439,38 +492,7 @@ def read_christian_emails(sheet, records):
                                         alerts.append({'type': 'CLOSE', 'address': record.get('Address'), 'purchase_price': purchase_price, 'counter_price': counter_price, 'difference': diff, 'row': row_num, 'alert_col': alert_sent_col})
                                 break
                     else:
-                        # Check if it's a bid acceptance FIRST
-                        accept_kw, accept_context = detect_acceptance(full_text)
-                        if accept_kw:
-                            print(f"  🎉 ACCEPTANCE detected: '{accept_kw}'")
-                            for i, record in enumerate(records):
-                                if record.get('Address', '').strip().lower() == matched_address:
-                                    row_num = i + 2
-                                    current_status = record.get('Status (/Accepted/Rejected/Counter)', '')
-                                    if current_status not in ['STP', 'Accepted']:
-                                        sheet.update_cell(row_num, status_col, 'Accepted')
-                                        existing_notes = record.get('Notes', '')
-                                        accept_note = f"[ACCEPTED: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
-                                        new_notes = f"{existing_notes} | {accept_note}" if existing_notes else accept_note
-                                        sheet.update_cell(row_num, notes_col, new_notes)
-                                        print(f"  Sheet updated to Accepted for row {row_num}!")
-                                        try:
-                                            alert_sent_col = headers.index('Alert Sent') + 1
-                                        except ValueError:
-                                            alert_sent_col = None
-                                        alerts.append({
-                                            'type': 'ACCEPTED',
-                                            'address': record.get('Address'),
-                                            'purchase_price': clean_price(record.get('Purchase Contract Price', '')),
-                                            'counter_price': None,
-                                            'difference': None,
-                                            'row': row_num,
-                                            'alert_col': alert_sent_col,
-                                            'reason': accept_context
-                                        })
-                                    break
-                        else:
-                            # Check if it's a rejection
+                        # Check if it's a rejection
                             rejection_kw, rejection_context = detect_rejection(full_text)
                             if rejection_kw:
                                 print(f"  REJECTION detected: '{rejection_kw}'")
