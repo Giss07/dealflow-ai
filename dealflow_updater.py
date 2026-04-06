@@ -259,6 +259,9 @@ REJECTION_KEYWORDS = [
     "too low", "offer is too", "below asking",
     "not interested", "pass on", "passing on",
     "do not wish to", "does not wish to",
+    "lower than the lowest", "lower than the highest",
+    "highest and best", "best and final",
+    "multiple offers", "come up",
 ]
 
 
@@ -288,24 +291,44 @@ def detect_rejection(email_text):
     return None, None
 
 
+NOT_COUNTER_PHRASES = [
+    "lower than", "below", "higher than", "above",
+    "less than", "more than", "short of", "away from",
+    "lower than the lowest", "lower than the highest",
+    "not enough", "insufficient", "come up", "increase",
+    "multiple offers", "highest and best", "best and final",
+]
+
+
 def extract_counter_price(email_text):
+    text_lower = email_text.lower()
+    clean = re.sub(r'\s+', ' ', text_lower).strip()
+
+    # First check: if the email contains "not a counter" language,
+    # the dollar amounts are feedback, not counter prices
+    for phrase in NOT_COUNTER_PHRASES:
+        if phrase in clean:
+            # Check if a dollar amount is near this phrase (within 50 chars)
+            pos = clean.find(phrase)
+            nearby = clean[max(0, pos-50):pos+len(phrase)+50]
+            if re.search(r'\$[\s]*([\d,]+)', nearby) or re.search(r'([\d,]{4,})', nearby):
+                return None  # Dollar amount is part of feedback, not a counter
+
     patterns = [
         # HUD format: "minimum acceptable net to HUD offer amount for this property as 209,000.00"
-        # Note: email text may have line breaks so we use re.DOTALL
         r'minimum acceptable net to hud offer amount for[\s\S]*?as\s*([\d,]+)',
         r'minimum acceptable[\s\S]*?as\s*([\d,]+)',
-        # Standard counter formats
-        r'counter[^\$]*\$[\s]*([\d,]+)',
-        r'counter offer[^\$]*\$[\s]*([\d,]+)',
+        # Explicit counter offer formats only
+        r'counter\s*(?:offer)?\s*(?:price)?\s*(?:of|at|is|:)?\s*\$[\s]*([\d,]+)',
+        r'counter\s*(?:offer)?\s*(?:price)?\s*(?:of|at|is|:)?\s*([\d,]{6,})',
         r'\$[\s]*([\d,]+)[\s]*counter',
-        r'counter[^\d]*([\d,]+)',
-        r'price[^\$]*\$[\s]*([\d,]+)',
-        r'\$([\d,]+)',
+        r'(?:seller|owner)\s*(?:is\s*)?counter(?:ing|ed)?\s*(?:at|with)?\s*\$[\s]*([\d,]+)',
+        r'counter(?:ed)?\s*(?:at|with)\s*\$[\s]*([\d,]+)',
     ]
     for pattern in patterns:
-        match = re.search(pattern, email_text.lower())
+        match = re.search(pattern, text_lower)
         if match:
-            price_str = match.group(1).replace(',', '').split('.')[0]  # strip decimals
+            price_str = match.group(1).replace(',', '').split('.')[0]
             try:
                 price = int(price_str)
                 if 50000 < price < 5000000:
