@@ -232,7 +232,7 @@
 
     <div class="filters" id="filters-bar">
         <div><label>Zip Code</label><br><select id="filter-zip" onchange="loadDeals()"><option value="">All Zips</option></select></div>
-        <div><label>Score Min</label><br><input type="number" id="filter-score-min" value="60" placeholder="60" min="0" max="100" style="width:80px" onchange="loadDeals()"></div>
+        <div><label>Score Min</label><br><input type="number" id="filter-score-min" value="" placeholder="All" min="0" max="100" style="width:80px" onchange="loadDeals()"></div>
         <div><label>Score Max</label><br><input type="number" id="filter-score-max" placeholder="100" min="0" max="100" style="width:80px" onchange="loadDeals()"></div>
         <div><label>Price Min</label><br><input type="number" id="filter-price-min" placeholder="0" style="width:120px" onchange="loadDeals()"></div>
         <div><label>Price Max</label><br><input type="number" id="filter-price-max" placeholder="900000" style="width:120px" onchange="loadDeals()"></div>
@@ -937,7 +937,7 @@
 
         function clearFilters() {
             document.getElementById('filter-zip').value = '';
-            document.getElementById('filter-score-min').value = '60';
+            document.getElementById('filter-score-min').value = '';
             document.getElementById('filter-score-max').value = '';
             document.getElementById('filter-price-min').value = '';
             document.getElementById('filter-price-max').value = '';
