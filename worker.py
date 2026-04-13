@@ -288,11 +288,11 @@ if __name__ == "__main__":
     # schedule.every().monday.at("14:00").do(run_dealflow_pipeline)
     # schedule.every().thursday.at("14:00").do(run_dealflow_pipeline)
 
-    # Pre-foreclosure scan daily at 2AM PST = 09:00 UTC
-    schedule.every().day.at("09:00").do(run_preforeclosure_scan)
+    # Pre-foreclosure scan daily at 2AM PST = 09:00 UTC — DISABLED to save Apify quota
+    # schedule.every().day.at("09:00").do(run_preforeclosure_scan)
 
     logger.info("Scheduled (UTC times, Railway server):")
-    logger.info("  - 09:00 UTC (2AM PST): Pre-foreclosure Zillow scan")
+    logger.info("  - DISABLED: Pre-foreclosure Zillow scan (saving Apify quota)")
     logger.info("  - 15:00 UTC (8AM PST): Full updater run")
     logger.info("  - Hourly (9AM-6PM PST): Gmail-only counter checks")
     logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")
