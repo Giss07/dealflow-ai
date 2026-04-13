@@ -36,10 +36,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 
 def run_full():
-    """Run dealflow_updater in full mode (every 2 days)."""
+    """Run dealflow_updater in full mode (every 3 days)."""
     now_pst = datetime.now(PST)
-    if now_pst.day % 2 == 0:
-        logger.info(f"Skipping full run — runs every 2 days (next run tomorrow)")
+    if now_pst.day % 3 != 0:
+        logger.info(f"Skipping full run — runs every 3 days (day {now_pst.day})")
         return
     logger.info(f"=== FULL RUN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
     try:
