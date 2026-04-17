@@ -33,10 +33,7 @@ except Exception as e:
     FastMCP = None
 
 if FastMCP:
-    mcp = FastMCP(
-        "DealFlow AI",
-        description="Search California real estate listings, check MLS status, score deals, and submit offers",
-    )
+    mcp = FastMCP("DealFlow AI")
 else:
     mcp = None
 
