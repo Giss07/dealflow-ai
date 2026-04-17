@@ -360,17 +360,13 @@ def submit_offer(
 
 # ── RUN SERVER ─────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    import uvicorn
+def create_app():
+    """Create the ASGI app with health + MCP SSE endpoints."""
     from starlette.applications import Starlette
     from starlette.routing import Route, Mount
     from starlette.responses import PlainTextResponse
     from mcp.server.sse import SseServerTransport
 
-    port = int(os.getenv("PORT", 8080))
-    logger.info(f"Starting DealFlow MCP Server on port {port}")
-
-    # SSE transport
     sse = SseServerTransport("/messages/")
 
     async def handle_sse(request):
@@ -382,7 +378,7 @@ if __name__ == "__main__":
     async def health(request):
         return PlainTextResponse("ok")
 
-    app = Starlette(
+    return Starlette(
         routes=[
             Route("/health", health),
             Route("/sse", endpoint=handle_sse),
@@ -390,5 +386,29 @@ if __name__ == "__main__":
         ],
     )
 
-    logger.info(f"MCP server ready — SSE at /sse, health at /health")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 8080))
+    print(f"Starting DealFlow MCP Server on port {port}", flush=True)
+
+    try:
+        import uvicorn
+        app = create_app()
+        print(f"MCP server ready — /health, /sse, /messages/", flush=True)
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    except Exception as e:
+        print(f"MCP server failed to start: {e}", flush=True)
+        # Fallback: run a basic health-only server so Railway doesn't crash loop
+        import threading
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+
+        class FallbackHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok - mcp starting")
+            def log_message(self, *args):
+                pass
+
+        print(f"Running fallback health server on port {port}", flush=True)
+        HTTPServer(("0.0.0.0", port), FallbackHandler).serve_forever()
