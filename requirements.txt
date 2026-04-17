@@ -8,6 +8,8 @@ pytz==2024.2
 gunicorn==23.0.0
 python-dotenv==1.2.1
 mcp[cli]>=1.0.0
+uvicorn>=0.30.0
+starlette>=0.38.0
 google-auth>=2.0.0
 google-auth-oauthlib>=1.0.0
 google-api-python-client>=2.0.0

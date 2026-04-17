@@ -361,6 +361,34 @@ def submit_offer(
 # ── RUN SERVER ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.routing import Route, Mount
+    from starlette.responses import PlainTextResponse
+    from mcp.server.sse import SseServerTransport
+
     port = int(os.getenv("PORT", 8080))
     logger.info(f"Starting DealFlow MCP Server on port {port}")
-    mcp.run(transport="sse")
+
+    # SSE transport
+    sse = SseServerTransport("/messages/")
+
+    async def handle_sse(request):
+        async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
+            await mcp._mcp_server.run(
+                streams[0], streams[1], mcp._mcp_server.create_initialization_options()
+            )
+
+    async def health(request):
+        return PlainTextResponse("ok")
+
+    app = Starlette(
+        routes=[
+            Route("/health", health),
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse.handle_post_message),
+        ],
+    )
+
+    logger.info(f"MCP server ready — SSE at /sse, health at /health")
+    uvicorn.run(app, host="0.0.0.0", port=port)
