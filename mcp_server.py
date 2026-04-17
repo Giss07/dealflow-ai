@@ -33,6 +33,7 @@ except Exception as e:
     FastMCP = None
 
 if FastMCP:
+    # v2 - removed description arg
     mcp = FastMCP("DealFlow AI")
 else:
     mcp = None
