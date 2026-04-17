@@ -1,52 +1,67 @@
 """
 DealFlow MCP Server — Remote MCP server for Claude to search real estate listings.
-Deployed on Railway, connects to Apify Zillow + DealFlow database.
-Uses SSE transport for remote MCP connections.
 """
 
 import os
 import sys
 import json
-import logging
-import re
-from datetime import datetime
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-print("mcp_server.py: starting imports...", flush=True)
+# Force unbuffered output
+os.environ['PYTHONUNBUFFERED'] = '1'
 
-# Add project root to path
+PORT = int(os.getenv("PORT", 8080))
+
+# ── HEALTH SERVER (starts FIRST, before any other imports) ──────────
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def log_message(self, *args):
+        pass
+
+health_server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+health_thread = threading.Thread(target=health_server.serve_forever, daemon=True)
+health_thread.start()
+print(f"Health server running on port {PORT}", flush=True)
+
+# ── NOW LOAD EVERYTHING ELSE ────────────────────────────────────────
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
 load_dotenv()
 
+import logging
+import re
+from datetime import datetime
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-print("mcp_server.py: importing MCP...", flush=True)
+print("Importing MCP...", flush=True)
 
-# MCP imports (Python 3.10+ only — runs on Railway's Python 3.11)
 try:
     from mcp.server.fastmcp import FastMCP
-    print("mcp_server.py: FastMCP imported OK", flush=True)
-except Exception as e:
-    print(f"mcp_server.py: FastMCP import FAILED: {e}", flush=True)
-    FastMCP = None
-
-if FastMCP:
-    # v2 - removed description arg
+    print("FastMCP imported OK", flush=True)
     mcp = FastMCP("DealFlow AI")
-else:
+    print("FastMCP initialized OK", flush=True)
+except Exception as e:
+    print(f"FastMCP failed: {e}", flush=True)
     mcp = None
 
 
 # ── TOOLS ──────────────────────────────────────────────────────────────
 
 if not mcp:
-    # Dummy decorator if MCP failed to import
     class DummyMCP:
         def tool(self):
             return lambda f: f
     mcp = DummyMCP()
+
 
 @mcp.tool()
 def search_zillow(
@@ -60,7 +75,7 @@ def search_zillow(
     """Search Zillow listings in a California zip code.
 
     Args:
-        zip_code: 5-digit zip code to search (e.g. "92704")
+        zip_code: 5-digit zip code to search
         min_price: Minimum listing price (default 0)
         max_price: Maximum listing price (default 900000)
         min_year: Minimum year built (default 0 = any)
@@ -76,13 +91,9 @@ def search_zillow(
     api_url = "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search/run-sync-get-dataset-items"
 
     try:
-        resp = requests.post(
-            api_url,
-            params={"token": APIFY_API_KEY},
-            json={"zipCodes": [zip_code], "maxItems": 200},
-            headers={"Content-Type": "application/json"},
-            timeout=300,
-        )
+        resp = requests.post(api_url, params={"token": APIFY_API_KEY},
+                             json={"zipCodes": [zip_code], "maxItems": 200},
+                             headers={"Content-Type": "application/json"}, timeout=300)
         if resp.status_code not in (200, 201):
             return json.dumps({"error": f"Apify returned {resp.status_code}", "details": resp.text[:200]})
 
@@ -105,7 +116,6 @@ def search_zillow(
                 price = float(str(price).replace("$", "").replace(",", ""))
             except:
                 continue
-
             if price < min_price or price > max_price:
                 continue
 
@@ -117,37 +127,22 @@ def search_zillow(
 
             address = item.get("addressStreet") or hi.get("streetAddress") or ""
             city = item.get("addressCity") or hi.get("city") or ""
-            sqft = hi.get("livingArea") or item.get("area") or 0
-            beds = hi.get("bedrooms") or item.get("beds")
-            baths = hi.get("bathrooms") or item.get("baths")
-            zestimate = hi.get("zestimate") or item.get("zestimate")
-            days = hi.get("daysOnZillow")
-            home_type = hi.get("homeType", "")
-            zillow_url = "https://www.zillow.com" + item.get("detailUrl", "") if item.get("detailUrl", "").startswith("/") else item.get("detailUrl", "")
 
             listings.append({
                 "address": f"{address}, {city}, CA {zip_code}",
                 "price": price,
-                "bedrooms": beds,
-                "bathrooms": baths,
-                "sqft": sqft,
+                "bedrooms": hi.get("bedrooms"),
+                "bathrooms": hi.get("bathrooms"),
+                "sqft": hi.get("livingArea") or item.get("area"),
                 "year_built": year,
-                "days_on_market": days,
-                "zestimate": zestimate,
-                "home_type": home_type,
-                "zillow_url": zillow_url,
+                "days_on_market": hi.get("daysOnZillow"),
+                "zestimate": hi.get("zestimate"),
+                "home_type": hi.get("homeType", ""),
             })
-
             if len(listings) >= max_results:
                 break
 
-        return json.dumps({
-            "zip_code": zip_code,
-            "total_found": len(listings),
-            "filters": {"price": f"${min_price:,}-${max_price:,}", "year": f"{min_year}-{max_year}"},
-            "listings": listings,
-        }, indent=2)
-
+        return json.dumps({"zip_code": zip_code, "total_found": len(listings), "listings": listings}, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -166,16 +161,12 @@ def check_mls_status(address: str, zip_code: str) -> str:
     if not APIFY_API_KEY:
         return json.dumps({"error": "APIFY_API_KEY not configured"})
 
-    api_url = "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search/run-sync-get-dataset-items"
-
     try:
         resp = requests.post(
-            api_url,
+            "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search/run-sync-get-dataset-items",
             params={"token": APIFY_API_KEY},
             json={"zipCodes": [zip_code], "maxItems": 50},
-            headers={"Content-Type": "application/json"},
-            timeout=300,
-        )
+            headers={"Content-Type": "application/json"}, timeout=300)
         if resp.status_code not in (200, 201):
             return json.dumps({"error": f"Apify returned {resp.status_code}"})
 
@@ -186,43 +177,23 @@ def check_mls_status(address: str, zip_code: str) -> str:
             item_addr = (item.get("addressStreet") or item.get("address") or "").lower()
             if len(addr_parts) >= 2 and addr_parts[0] in item_addr and addr_parts[1] in item_addr:
                 hi = item.get("hdpData", {}).get("homeInfo", {})
-                status_text = (item.get("statusText") or "").upper()
                 home_status = (hi.get("homeStatus") or "").upper()
-                price = hi.get("price") or item.get("unformattedPrice")
-                zestimate = hi.get("zestimate")
-
-                is_auction = "AUCTION" in status_text or (hi.get("listing_sub_type", {}) or {}).get("is_forAuction")
-
                 return json.dumps({
-                    "address": item.get("address", address),
-                    "found": True,
-                    "mls_status": "auction" if is_auction else "on-market" if "FOR_SALE" in home_status else "pending" if "PENDING" in home_status else home_status.lower(),
-                    "price": price,
-                    "zestimate": zestimate,
-                    "bedrooms": hi.get("bedrooms"),
-                    "bathrooms": hi.get("bathrooms"),
-                    "sqft": hi.get("livingArea"),
-                    "year_built": hi.get("yearBuilt"),
+                    "address": item.get("address", address), "found": True,
+                    "mls_status": "on-market" if "FOR_SALE" in home_status else "pending" if "PENDING" in home_status else home_status.lower(),
+                    "price": hi.get("price"), "zestimate": hi.get("zestimate"),
+                    "bedrooms": hi.get("bedrooms"), "bathrooms": hi.get("bathrooms"),
+                    "sqft": hi.get("livingArea"), "year_built": hi.get("yearBuilt"),
                     "days_on_market": hi.get("daysOnZillow"),
-                    "home_type": hi.get("homeType"),
-                    "zillow_url": "https://www.zillow.com" + item.get("detailUrl", ""),
                 }, indent=2)
 
-        return json.dumps({"address": address, "found": False, "message": f"Not found on Zillow in {zip_code} ({len(results)} listings checked)"})
-
+        return json.dumps({"address": address, "found": False, "message": f"Not found in {zip_code}"})
     except Exception as e:
         return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
-def score_deal(
-    price: float,
-    arv: float,
-    sqft: float = 0,
-    year_built: int = 0,
-    days_on_market: int = 0,
-    repair_estimate: float = 0,
-) -> str:
+def score_deal(price: float, arv: float, sqft: float = 0, year_built: int = 0, days_on_market: int = 0, repair_estimate: float = 0) -> str:
     """Score a real estate deal for fix-and-flip profit potential (1-100).
 
     Args:
@@ -238,45 +209,24 @@ def score_deal(
 
     listing = {
         "price": price, "arv": arv, "sqft": sqft,
-        "days_on_zillow": days_on_market if days_on_market else None,
-        "year_built": year_built if year_built else None,
+        "days_on_zillow": days_on_market or None, "year_built": year_built or None,
         "repairs_mid": repair_estimate, "repairs_worst": repair_estimate * 1.3 if repair_estimate else 0,
-        "has_deal_keywords": False, "matched_keywords": [],
-        "photo_grades": {}, "description": "",
+        "has_deal_keywords": False, "matched_keywords": [], "photo_grades": {}, "description": "",
     }
-
     score_result = fallback_score(listing)
-
-    # Calculate offer
     listing["repair_estimate"] = {"total_mid": repair_estimate or 0, "total_worst": repair_estimate * 1.3 if repair_estimate else 0}
     calculate_offer(listing)
     offer = listing.get("offer_analysis", {})
 
-    result = {
-        "score": score_result["score"],
-        "reasoning": score_result["reasoning"],
-        "arv": arv,
-        "price": price,
-        "arv_margin": f"{((arv - price) / arv * 100):.1f}%" if arv > 0 else "N/A",
-    }
-
+    result = {"score": score_result["score"], "reasoning": score_result["reasoning"], "arv": arv, "price": price,
+              "arv_margin": f"{((arv - price) / arv * 100):.1f}%" if arv > 0 else "N/A"}
     if "error" not in offer:
-        result.update({
-            "max_offer": offer.get("max_offer"),
-            "estimated_profit": offer.get("estimated_profit"),
-            "roi_pct": offer.get("roi_pct"),
-            "total_costs": offer.get("total_all_costs"),
-        })
-
+        result.update({"max_offer": offer.get("max_offer"), "estimated_profit": offer.get("estimated_profit"), "roi_pct": offer.get("roi_pct")})
     return json.dumps(result, indent=2)
 
 
 @mcp.tool()
-def get_deals(
-    min_score: int = 0,
-    zip_code: str = "",
-    limit: int = 20,
-) -> str:
+def get_deals(min_score: int = 0, zip_code: str = "", limit: int = 20) -> str:
     """Get deals from the DealFlow database.
 
     Args:
@@ -285,53 +235,25 @@ def get_deals(
         limit: Maximum results (default 20)
     """
     from database import init_db, get_session, Deal
-
     init_db()
     db = get_session()
     try:
-        query = db.query(Deal).filter(
-            (Deal.is_archived == False) | (Deal.is_archived == None),
-            (Deal.is_hidden == False) | (Deal.is_hidden == None),
-        )
+        query = db.query(Deal).filter((Deal.is_archived == False) | (Deal.is_archived == None), (Deal.is_hidden == False) | (Deal.is_hidden == None))
         if min_score:
             query = query.filter(Deal.score >= min_score)
         if zip_code:
             query = query.filter(Deal.zip_code == zip_code)
-
-        query = query.order_by(Deal.score.desc()).limit(limit)
-        deals = query.all()
-
-        results = []
-        for d in deals:
-            results.append({
-                "id": d.id,
-                "address": f"{d.address}, {d.city}, {d.state} {d.zip_code}",
-                "price": d.price,
-                "arv": d.arv,
-                "max_offer": d.max_offer,
-                "estimated_profit": d.estimated_profit,
-                "score": d.score,
-                "score_reasoning": d.score_reasoning,
-                "days_on_market": d.days_on_zillow,
-                "year_built": d.year_built,
-                "source": d.source,
-            })
-
+        deals = query.order_by(Deal.score.desc()).limit(limit).all()
+        results = [{"id": d.id, "address": f"{d.address}, {d.city}, {d.state} {d.zip_code}", "price": d.price,
+                     "arv": d.arv, "max_offer": d.max_offer, "estimated_profit": d.estimated_profit,
+                     "score": d.score, "days_on_market": d.days_on_zillow} for d in deals]
         return json.dumps({"total": len(results), "deals": results}, indent=2)
     finally:
         db.close()
 
 
 @mcp.tool()
-def submit_offer(
-    address: str,
-    city: str,
-    state: str,
-    zip_code: str,
-    offer_amount: float,
-    arv: float,
-    repairs: float = 0,
-) -> str:
+def submit_offer(address: str, city: str, state: str, zip_code: str, offer_amount: float, arv: float, repairs: float = 0) -> str:
     """Submit an offer to the Google Sheet tracker.
 
     Args:
@@ -344,67 +266,18 @@ def submit_offer(
         repairs: Estimated repair cost (0 if unknown)
     """
     from sheets import write_offer_to_sheet
-
-    deal_dict = {
-        "address": address,
-        "city": city,
-        "state": state,
-        "zip_code": zip_code,
-        "arv": arv,
-        "price": offer_amount,
-        "estimated_profit": arv - offer_amount - repairs if repairs else None,
-        "repairs_mid": repairs,
-        "repairs_worst": repairs,
-    }
-
-    result = write_offer_to_sheet(
-        deal_dict,
-        offer_amount=offer_amount,
-        offer_date=datetime.now().strftime("%Y-%m-%d"),
-        offer_status="Submitted",
-        offer_notes="Submitted via MCP",
-    )
-
-    return json.dumps({
-        "success": result,
-        "address": f"{address}, {city}, {state} {zip_code}",
-        "offer_amount": offer_amount,
-        "arv": arv,
-        "repairs": repairs,
-        "message": "Offer written to Google Sheet" if result else "Failed to write to Google Sheet",
-    }, indent=2)
+    deal_dict = {"address": address, "city": city, "state": state, "zip_code": zip_code,
+                 "arv": arv, "price": offer_amount, "repairs_mid": repairs, "repairs_worst": repairs}
+    result = write_offer_to_sheet(deal_dict, offer_amount=offer_amount, offer_date=datetime.now().strftime("%Y-%m-%d"),
+                                  offer_status="Submitted", offer_notes="Submitted via MCP")
+    return json.dumps({"success": result, "address": f"{address}, {city}, {state} {zip_code}", "offer_amount": offer_amount}, indent=2)
 
 
-# ── RUN SERVER ─────────────────────────────────────────────────────────
-
-# ── RUN SERVER ─────────────────────────────────────────────────────────
+# ── START MCP SSE SERVER ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8080))
-    print(f"Starting DealFlow MCP Server on port {port}", flush=True)
+    print("Starting MCP SSE server...", flush=True)
 
-    # Always start with a basic HTTP server first so healthcheck passes immediately
-    import threading
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-
-    mcp_ready = False
-
-    class HealthHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            status = "ready" if mcp_ready else "starting"
-            self.wfile.write(f"ok - {status}".encode())
-        def log_message(self, *args):
-            pass
-
-    # Start health server immediately on PORT
-    health_server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    health_thread = threading.Thread(target=health_server.serve_forever, daemon=True)
-    health_thread.start()
-    print(f"Health server running on port {port}", flush=True)
-
-    # Now try to start the real MCP server on port+1
     try:
         from mcp.server.sse import SseServerTransport
         from starlette.applications import Starlette
@@ -412,47 +285,33 @@ if __name__ == "__main__":
         from starlette.responses import PlainTextResponse
         import uvicorn
 
-        # Reload mcp as the real FastMCP (not the dummy)
         from mcp.server.fastmcp import FastMCP as RealFastMCP
         if isinstance(mcp, RealFastMCP):
-            real_mcp = mcp
-        else:
-            print("MCP tools not registered (FastMCP import failed earlier)", flush=True)
-            real_mcp = None
-
-        if real_mcp and hasattr(real_mcp, '_mcp_server'):
             sse = SseServerTransport("/messages/")
 
             async def handle_sse(request):
                 async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
-                    await real_mcp._mcp_server.run(
-                        streams[0], streams[1], real_mcp._mcp_server.create_initialization_options()
-                    )
+                    await mcp._mcp_server.run(streams[0], streams[1], mcp._mcp_server.create_initialization_options())
 
-            async def sse_health(request):
+            async def health(request):
                 return PlainTextResponse("ok")
 
-            app = Starlette(
-                routes=[
-                    Route("/health", sse_health),
-                    Route("/sse", endpoint=handle_sse),
-                    Mount("/messages/", app=sse.handle_post_message),
-                ],
-            )
+            app = Starlette(routes=[
+                Route("/health", health),
+                Route("/sse", endpoint=handle_sse),
+                Mount("/messages/", app=sse.handle_post_message),
+            ])
 
-            mcp_port = port + 1
-            mcp_ready = True
-            print(f"MCP SSE server starting on port {mcp_port}", flush=True)
-
-            # Stop the basic health server, start Starlette on PORT instead
+            # Stop the basic health server, start Starlette on same port
             health_server.shutdown()
-            uvicorn.run(app, host="0.0.0.0", port=port)
+            print(f"MCP SSE server ready on port {PORT} — /health /sse /messages/", flush=True)
+            uvicorn.run(app, host="0.0.0.0", port=PORT)
         else:
-            print("MCP not available — running health-only mode", flush=True)
+            print("MCP not available — health-only mode", flush=True)
             health_thread.join()
 
     except Exception as e:
-        print(f"MCP server error: {e}", flush=True)
+        print(f"MCP SSE error: {e}", flush=True)
         import traceback
         traceback.print_exc()
         print("Falling back to health-only mode", flush=True)
