@@ -3,7 +3,7 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "sh -c 'if [ \"$SERVICE_TYPE\" = \"worker\" ]; then python worker.py; else gunicorn app:app --bind 0.0.0.0:${PORT:-8080} --workers 2; fi'"
+startCommand = "sh -c 'if [ \"$SERVICE_TYPE\" = \"worker\" ]; then python worker.py; elif [ \"$SERVICE_TYPE\" = \"mcp\" ]; then python mcp_server.py; else gunicorn app:app --bind 0.0.0.0:${PORT:-8080} --workers 2; fi'"
 healthcheckPath = "/health"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
