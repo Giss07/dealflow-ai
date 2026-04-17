@@ -193,33 +193,40 @@ def check_mls_status(address: str, zip_code: str) -> str:
 
 
 @mcp.tool()
-def score_deal(price: float, arv: float, sqft: float = 0, year_built: int = 0, days_on_market: int = 0, repair_estimate: float = 0) -> str:
+def score_deal(price: str, arv: str, sqft: str = "0", year_built: str = "0", days_on_market: str = "0", repair_estimate: str = "0") -> str:
     """Score a real estate deal for fix-and-flip profit potential (1-100).
 
     Args:
-        price: Listing/purchase price
-        arv: After Repair Value
-        sqft: Square footage (0 if unknown)
-        year_built: Year built (0 if unknown)
-        days_on_market: Days on market (0 if unknown)
-        repair_estimate: Estimated repair cost (0 if unknown)
+        price: Listing/purchase price (number)
+        arv: After Repair Value (number)
+        sqft: Square footage (default 0)
+        year_built: Year built (default 0)
+        days_on_market: Days on market (default 0)
+        repair_estimate: Estimated repair cost (default 0)
     """
     from scorer import fallback_score
     from offer_calculator import calculate_offer
 
+    p = float(price)
+    a = float(arv)
+    sq = float(sqft or 0)
+    yb = int(float(year_built or 0))
+    dom = int(float(days_on_market or 0))
+    rep = float(repair_estimate or 0)
+
     listing = {
-        "price": price, "arv": arv, "sqft": sqft,
-        "days_on_zillow": days_on_market or None, "year_built": year_built or None,
-        "repairs_mid": repair_estimate, "repairs_worst": repair_estimate * 1.3 if repair_estimate else 0,
+        "price": p, "arv": a, "sqft": sq,
+        "days_on_zillow": dom or None, "year_built": yb or None,
+        "repairs_mid": rep, "repairs_worst": rep * 1.3 if rep else 0,
         "has_deal_keywords": False, "matched_keywords": [], "photo_grades": {}, "description": "",
     }
     score_result = fallback_score(listing)
-    listing["repair_estimate"] = {"total_mid": repair_estimate or 0, "total_worst": repair_estimate * 1.3 if repair_estimate else 0}
+    listing["repair_estimate"] = {"total_mid": rep, "total_worst": rep * 1.3 if rep else 0}
     calculate_offer(listing)
     offer = listing.get("offer_analysis", {})
 
-    result = {"score": score_result["score"], "reasoning": score_result["reasoning"], "arv": arv, "price": price,
-              "arv_margin": f"{((arv - price) / arv * 100):.1f}%" if arv > 0 else "N/A"}
+    result = {"score": score_result["score"], "reasoning": score_result["reasoning"], "arv": a, "price": p,
+              "arv_margin": f"{((a - p) / a * 100):.1f}%" if a > 0 else "N/A"}
     if "error" not in offer:
         result.update({"max_offer": offer.get("max_offer"), "estimated_profit": offer.get("estimated_profit"), "roi_pct": offer.get("roi_pct")})
     return json.dumps(result, indent=2)
