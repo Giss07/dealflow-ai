@@ -92,8 +92,8 @@ def search_zillow(
 
     try:
         resp = requests.post(api_url, params={"token": APIFY_API_KEY},
-                             json={"zipCodes": [zip_code], "maxItems": 200},
-                             headers={"Content-Type": "application/json"}, timeout=300)
+                             json={"zipCodes": [zip_code], "maxItems": 50},
+                             headers={"Content-Type": "application/json"}, timeout=120)
         if resp.status_code not in (200, 201):
             return json.dumps({"error": f"Apify returned {resp.status_code}", "details": resp.text[:200]})
 
