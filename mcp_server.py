@@ -302,8 +302,12 @@ if __name__ == "__main__":
                 Mount("/messages/", app=sse.handle_post_message),
             ])
 
-            # Stop the basic health server, start Starlette on same port
+            # Stop the basic health server, wait for it to release the port
+            print("Shutting down health server...", flush=True)
             health_server.shutdown()
+            health_server.server_close()
+            import time
+            time.sleep(1)
             print(f"MCP SSE server ready on port {PORT} — /health /sse /messages/", flush=True)
             uvicorn.run(app, host="0.0.0.0", port=PORT)
         else:
