@@ -85,15 +85,19 @@ def search_zillow(
     import requests
 
     APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
+    print(f"search_zillow called: zip={zip_code}, APIFY_KEY={'set' if APIFY_API_KEY else 'MISSING'}", flush=True)
+
     if not APIFY_API_KEY:
-        return json.dumps({"error": "APIFY_API_KEY not configured"})
+        return json.dumps({"error": "APIFY_API_KEY not configured on MCP server. Add it to Railway MCP service Variables."})
 
     api_url = "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search/run-sync-get-dataset-items"
 
     try:
+        print(f"Calling Apify for zip {zip_code}...", flush=True)
         resp = requests.post(api_url, params={"token": APIFY_API_KEY},
                              json={"zipCodes": [zip_code], "maxItems": 50},
                              headers={"Content-Type": "application/json"}, timeout=120)
+        print(f"Apify response: {resp.status_code}", flush=True)
         if resp.status_code not in (200, 201):
             return json.dumps({"error": f"Apify returned {resp.status_code}", "details": resp.text[:200]})
 
@@ -144,7 +148,10 @@ def search_zillow(
 
         return json.dumps({"zip_code": zip_code, "total_found": len(listings), "listings": listings}, indent=2)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        import traceback
+        print(f"search_zillow ERROR: {e}", flush=True)
+        traceback.print_exc()
+        return json.dumps({"error": str(e), "type": type(e).__name__})
 
 
 @mcp.tool()
