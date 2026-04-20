@@ -31,9 +31,9 @@ print("MCP server: FastMCP initialized", flush=True)
 @mcp.tool()
 def search_zillow(
     zip_code: str,
-    min_price: int = 0,
-    max_price: int = 900000,
-    max_results: int = 20,
+    min_price: str = "0",
+    max_price: str = "900000",
+    max_results: str = "20",
 ) -> str:
     """Search Zillow listings in a zip code. Returns active for-sale listings with price, beds, baths, sqft, year built.
 
@@ -44,6 +44,14 @@ def search_zillow(
         max_results: Maximum results to return (default 20)
     """
     import requests
+
+    # Convert string params to numbers
+    try:
+        min_price_n = int(float(min_price or 0))
+        max_price_n = int(float(max_price or 900000))
+        max_results_n = int(float(max_results or 20))
+    except:
+        min_price_n, max_price_n, max_results_n = 0, 900000, 20
 
     APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
     print(f"search_zillow: zip={zip_code}, key={'set' if APIFY_API_KEY else 'MISSING'}", flush=True)
@@ -77,7 +85,7 @@ def search_zillow(
                 price = float(str(price).replace("$", "").replace(",", ""))
             except:
                 continue
-            if price < min_price or price > max_price:
+            if price < min_price_n or price > max_price_n:
                 continue
 
             listings.append({
@@ -91,7 +99,7 @@ def search_zillow(
                 "zestimate": hi.get("zestimate"),
                 "home_type": hi.get("homeType", ""),
             })
-            if len(listings) >= max_results:
+            if len(listings) >= max_results_n:
                 break
 
         print(f"search_zillow: returning {len(listings)} listings", flush=True)
@@ -259,7 +267,9 @@ if __name__ == "__main__":
             )
 
     async def health(request):
-        return PlainTextResponse("ok")
+        apify_set = "yes" if os.getenv("APIFY_API_KEY") else "NO"
+        db_set = "yes" if os.getenv("DATABASE_URL") else "NO"
+        return PlainTextResponse(f"ok | apify={apify_set} db={db_set}")
 
     app = Starlette(
         routes=[
