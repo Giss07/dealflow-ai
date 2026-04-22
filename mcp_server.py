@@ -94,19 +94,26 @@ def check_mls_status(address: str, zip_code: str) -> str:
         r = requests.post(
             "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search/run-sync-get-dataset-items",
             params={"token": key},
-            json={"zipCodes": [zip_code], "maxItems": 50},
+            json={"zipCodes": [zip_code], "maxItems": 20},
             headers={"Content-Type": "application/json"},
-            timeout=120,
+            timeout=45,
         )
+        import time as _t
+        print(f"[check_mls_status] apify {r.status_code}", flush=True)
         if r.status_code not in (200, 201):
-            return f"Error: Apify returned {r.status_code}"
+            return f"Error: Apify returned {r.status_code}: {r.text[:150]}"
 
-        parts = address.lower().split()
-        for item in r.json():
+        data = r.json()
+        parts = address.lower().replace(",", " ").split()
+        match_parts = [p for p in parts if len(p) > 1][:3]
+        print(f"[check_mls_status] matching {match_parts} in {len(data)} listings", flush=True)
+
+        for item in data:
             addr = (item.get("addressStreet") or item.get("address") or "").lower()
-            if len(parts) >= 2 and parts[0] in addr and parts[1] in addr:
+            if len(match_parts) >= 2 and match_parts[0] in addr and match_parts[1] in addr:
                 hi = item.get("hdpData", {}).get("homeInfo", {})
                 st = (hi.get("homeStatus") or "").upper()
+                print(f"[check_mls_status] FOUND: {item.get('address')} = {st}", flush=True)
                 return json.dumps({
                     "found": True,
                     "address": item.get("address", address),
@@ -120,9 +127,14 @@ def check_mls_status(address: str, zip_code: str) -> str:
                     "days": hi.get("daysOnZillow"),
                 })
 
-        return json.dumps({"found": False, "message": f"Not found in {zip_code}"})
+        print(f"[check_mls_status] NOT FOUND", flush=True)
+        return json.dumps({"found": False, "message": f"Not found in {len(data)} listings for {zip_code}"})
 
+    except requests.exceptions.Timeout:
+        print(f"[check_mls_status] TIMEOUT", flush=True)
+        return "Error: Apify timed out after 45s"
     except Exception as e:
+        print(f"[check_mls_status] ERROR: {e}", flush=True)
         return f"Error: {type(e).__name__}: {e}"
 
 
