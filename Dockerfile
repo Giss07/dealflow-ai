@@ -4,7 +4,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Cache bust: v3 — upgrade mcp package
+# Cache bust: v4 — simplified mcp tools
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
