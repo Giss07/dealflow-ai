@@ -228,7 +228,13 @@ if __name__ == "__main__":
 
     async def health(request):
         k = "yes" if os.getenv("APIFY_API_KEY") else "NO"
-        return PlainTextResponse(f"ok apify={k}")
+        sha = "unknown"
+        try:
+            with open(os.path.join(os.path.dirname(__file__), ".build_sha")) as f:
+                sha = f.read().strip()
+        except:
+            pass
+        return PlainTextResponse(f"ok sha={sha} apify={k}")
 
     app = Starlette(routes=[
         Route("/health", health),

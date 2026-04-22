@@ -4,7 +4,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Cache bust: v4 — simplified mcp tools
+# Cache bust: v5
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
