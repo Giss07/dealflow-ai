@@ -96,7 +96,7 @@ def check_mls_status(address: str, zip_code: str) -> str:
             params={"token": key},
             json={"zipCodes": [zip_code], "maxItems": 20},
             headers={"Content-Type": "application/json"},
-            timeout=45,
+            timeout=90,
         )
         import time as _t
         print(f"[check_mls_status] apify {r.status_code}", flush=True)
@@ -132,7 +132,7 @@ def check_mls_status(address: str, zip_code: str) -> str:
 
     except requests.exceptions.Timeout:
         print(f"[check_mls_status] TIMEOUT", flush=True)
-        return "Error: Apify timed out after 45s"
+        return "Error: Apify timed out after 90s"
     except Exception as e:
         print(f"[check_mls_status] ERROR: {e}", flush=True)
         return f"Error: {type(e).__name__}: {e}"
