@@ -4,7 +4,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Cache bust: v8 — back to latest mcp
+# Cache bust: v9 — remove outputSchema
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

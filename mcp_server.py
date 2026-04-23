@@ -23,7 +23,7 @@ mcp = FastMCP("DealFlow AI")
 
 
 @mcp.tool()
-def search_zillow(zip_code: str) -> str:
+def search_zillow(zip_code: str):
     """Search Zillow for homes currently for sale in a California zip code.
     Returns up to 20 active listings with price, beds, baths, sqft, year built, and days on market.
     """
@@ -81,7 +81,7 @@ def search_zillow(zip_code: str) -> str:
 
 
 @mcp.tool()
-def check_mls_status(address: str, zip_code: str) -> str:
+def check_mls_status(address: str, zip_code: str):
     """Check if a specific property address is currently listed for sale on Zillow."""
     import requests
     print(f"[check_mls_status] {address}, {zip_code}", flush=True)
@@ -139,7 +139,7 @@ def check_mls_status(address: str, zip_code: str) -> str:
 
 
 @mcp.tool()
-def score_deal(price: str, arv: str) -> str:
+def score_deal(price: str, arv: str):
     """Score a real estate deal 1-100 for fix-and-flip profit potential. Returns score, reasoning, max offer, and estimated profit."""
     print(f"[score_deal] price={price} arv={arv}", flush=True)
     try:
@@ -172,7 +172,7 @@ def score_deal(price: str, arv: str) -> str:
 
 
 @mcp.tool()
-def get_deals(zip_code: str = "") -> str:
+def get_deals(zip_code: str = ""):
     """Get top 20 deals from the DealFlow database, optionally filtered by zip code."""
     print(f"[get_deals] zip={zip_code}", flush=True)
     try:
@@ -193,7 +193,7 @@ def get_deals(zip_code: str = "") -> str:
 
 
 @mcp.tool()
-def submit_offer(address: str, city: str, zip_code: str, offer_amount: str, arv: str) -> str:
+def submit_offer(address: str, city: str, zip_code: str, offer_amount: str, arv: str):
     """Submit a real estate offer to the Google Sheet tracker."""
     print(f"[submit_offer] {address}, {city} {zip_code} ${offer_amount}", flush=True)
     try:
