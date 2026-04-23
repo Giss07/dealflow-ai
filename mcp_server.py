@@ -236,7 +236,12 @@ if __name__ == "__main__":
                 sha = f.read().strip()
         except:
             pass
-        return PlainTextResponse(f"ok sha={sha} apify={k}")
+        try:
+            import mcp
+            mcpv = getattr(mcp, "__version__", "?")
+        except:
+            mcpv = "?"
+        return PlainTextResponse(f"ok sha={sha} apify={k} mcp={mcpv}")
 
     app = Starlette(routes=[
         Route("/health", health),

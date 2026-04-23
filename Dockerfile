@@ -4,7 +4,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Cache bust: v6 — pin mcp<1.20
+# Cache bust: v7 — pin mcp==1.8.0
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
