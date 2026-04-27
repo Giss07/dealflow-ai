@@ -38,9 +38,9 @@ def search_zillow(zip_code: str):
         r = requests.post(
             "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search/run-sync-get-dataset-items",
             params={"token": key},
-            json={"zipCodes": [zip_code], "maxItems": 50},
+            json={"zipCodes": [zip_code], "maxItems": 25},
             headers={"Content-Type": "application/json"},
-            timeout=120,
+            timeout=55,
         )
         print(f"[search_zillow] apify status={r.status_code}", flush=True)
         if r.status_code not in (200, 201):

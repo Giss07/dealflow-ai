@@ -4,7 +4,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Cache bust: v10 — structured errors + fix get_deals optional param
+# Cache bust: v11 — reduce maxItems to 25 to stay under 60s MCP timeout
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
