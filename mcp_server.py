@@ -32,7 +32,7 @@ def search_zillow(zip_code: str):
 
     key = os.getenv("APIFY_API_KEY", "")
     if not key:
-        return "Error: APIFY_API_KEY not configured on server"
+        return json.dumps({"status": "error", "error": "APIFY_API_KEY not configured on server"})
 
     try:
         r = requests.post(
@@ -44,7 +44,7 @@ def search_zillow(zip_code: str):
         )
         print(f"[search_zillow] apify status={r.status_code}", flush=True)
         if r.status_code not in (200, 201):
-            return f"Error: Apify returned {r.status_code}: {r.text[:200]}"
+            return json.dumps({"status": "error", "error": f"Apify returned HTTP {r.status_code}", "detail": r.text[:300]})
 
         out = []
         for item in r.json():
@@ -73,11 +73,17 @@ def search_zillow(zip_code: str):
                 break
 
         print(f"[search_zillow] returning {len(out)} listings", flush=True)
-        return json.dumps({"zip": zip_code, "count": len(out), "listings": out})
+        return json.dumps({"status": "ok", "zip": zip_code, "count": len(out), "listings": out})
 
+    except requests.exceptions.Timeout:
+        print(f"[search_zillow] TIMEOUT", flush=True)
+        return json.dumps({"status": "error", "error": "Apify timed out after 120s", "zip": zip_code})
+    except requests.exceptions.ConnectionError as e:
+        print(f"[search_zillow] CONNECTION ERROR: {e}", flush=True)
+        return json.dumps({"status": "error", "error": "Connection to Apify failed", "detail": str(e)[:200]})
     except Exception as e:
         print(f"[search_zillow] ERROR: {e}", flush=True)
-        return f"Error: {type(e).__name__}: {e}"
+        return json.dumps({"status": "error", "error": f"{type(e).__name__}: {e}"})
 
 
 @mcp.tool()
@@ -88,7 +94,7 @@ def check_mls_status(address: str, zip_code: str):
 
     key = os.getenv("APIFY_API_KEY", "")
     if not key:
-        return "Error: APIFY_API_KEY not configured"
+        return json.dumps({"status": "error", "error": "APIFY_API_KEY not configured"})
 
     try:
         r = requests.post(
@@ -98,10 +104,9 @@ def check_mls_status(address: str, zip_code: str):
             headers={"Content-Type": "application/json"},
             timeout=90,
         )
-        import time as _t
         print(f"[check_mls_status] apify {r.status_code}", flush=True)
         if r.status_code not in (200, 201):
-            return f"Error: Apify returned {r.status_code}: {r.text[:150]}"
+            return json.dumps({"status": "error", "error": f"Apify returned HTTP {r.status_code}", "detail": r.text[:200]})
 
         data = r.json()
         parts = address.lower().replace(",", " ").split()
@@ -132,10 +137,10 @@ def check_mls_status(address: str, zip_code: str):
 
     except requests.exceptions.Timeout:
         print(f"[check_mls_status] TIMEOUT", flush=True)
-        return "Error: Apify timed out after 90s"
+        return json.dumps({"status": "error", "error": "Apify timed out after 90s", "address": address})
     except Exception as e:
         print(f"[check_mls_status] ERROR: {e}", flush=True)
-        return f"Error: {type(e).__name__}: {e}"
+        return json.dumps({"status": "error", "error": f"{type(e).__name__}: {e}"})
 
 
 @mcp.tool()
@@ -168,12 +173,12 @@ def score_deal(price: str, arv: str):
         return json.dumps(out)
 
     except Exception as e:
-        return f"Error: {type(e).__name__}: {e}"
+        return json.dumps({"status": "error", "error": f"{type(e).__name__}: {e}"})
 
 
 @mcp.tool()
-def get_deals(zip_code: str = ""):
-    """Get top 20 deals from the DealFlow database, optionally filtered by zip code."""
+def get_deals(zip_code: str):
+    """Get top 20 deals from the DealFlow database. Pass a zip code to filter, or pass empty string for all deals."""
     print(f"[get_deals] zip={zip_code}", flush=True)
     try:
         from database import init_db, get_session, Deal
@@ -187,9 +192,10 @@ def get_deals(zip_code: str = ""):
                 "arv": d.arv, "offer": d.max_offer, "profit": d.estimated_profit,
                 "score": d.score} for d in deals]
         db.close()
-        return json.dumps({"count": len(out), "deals": out})
+        return json.dumps({"status": "ok", "count": len(out), "deals": out})
     except Exception as e:
-        return f"Error: {type(e).__name__}: {e}"
+        print(f"[get_deals] ERROR: {e}", flush=True)
+        return json.dumps({"status": "error", "error": f"{type(e).__name__}: {e}"})
 
 
 @mcp.tool()
@@ -204,9 +210,10 @@ def submit_offer(address: str, city: str, zip_code: str, offer_amount: str, arv:
              "arv": a, "price": amt, "repairs_mid": 0, "repairs_worst": 0},
             offer_amount=amt, offer_date=datetime.now().strftime("%Y-%m-%d"),
             offer_status="Submitted", offer_notes="Via MCP")
-        return json.dumps({"success": ok, "address": f"{address}, {city} {zip_code}", "offer": amt})
+        return json.dumps({"status": "ok", "success": ok, "address": f"{address}, {city} {zip_code}", "offer": amt})
     except Exception as e:
-        return f"Error: {type(e).__name__}: {e}"
+        print(f"[submit_offer] ERROR: {e}", flush=True)
+        return json.dumps({"status": "error", "error": f"{type(e).__name__}: {e}"})
 
 
 # ── SERVER ─────────────────────────────────────────────────────────────

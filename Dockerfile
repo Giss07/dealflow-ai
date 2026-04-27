@@ -4,7 +4,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Cache bust: v9 — remove outputSchema
+# Cache bust: v10 — structured errors + fix get_deals optional param
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
