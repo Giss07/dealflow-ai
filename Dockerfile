@@ -4,7 +4,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Cache bust: v11 — reduce maxItems to 25 to stay under 60s MCP timeout
+# Cache bust: v12 — add streamable HTTP /mcp endpoint
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

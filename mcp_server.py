@@ -410,14 +410,7 @@ if __name__ == "__main__":
     from starlette.responses import PlainTextResponse
     import uvicorn
 
-    sse = SseServerTransport("/messages/")
-
-    async def handle_sse(request):
-        from starlette.responses import Response
-        async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
-            await mcp._mcp_server.run(streams[0], streams[1], mcp._mcp_server.create_initialization_options())
-        return Response()
-
+    # --- Health endpoint (shared by both transports) ---
     async def health(request):
         k = "yes" if os.getenv("APIFY_API_KEY") else "NO"
         sha = "unknown"
@@ -427,18 +420,57 @@ if __name__ == "__main__":
         except:
             pass
         try:
-            import mcp
-            mcpv = getattr(mcp, "__version__", "?")
+            import mcp as _mcp
+            mcpv = getattr(_mcp, "__version__", "?")
         except:
             mcpv = "?"
         cache_zips = list(_apify_cache.keys())
         return PlainTextResponse(f"ok sha={sha} apify={k} mcp={mcpv} cached={cache_zips}")
 
-    app = Starlette(routes=[
-        Route("/health", health),
-        Route("/sse", endpoint=handle_sse, methods=["GET"]),
-        Mount("/messages/", app=sse.handle_post_message),
-    ])
+    # --- Legacy SSE transport (kept for rollback, remove once /mcp is proven) ---
+    sse = SseServerTransport("/messages/")
 
-    logger.info(f"MCP server on port {PORT} — /health /sse /messages/")
+    async def handle_sse(request):
+        from starlette.responses import Response
+        async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
+            await mcp._mcp_server.run(streams[0], streams[1], mcp._mcp_server.create_initialization_options())
+        return Response()
+
+    # --- Streamable HTTP transport at /mcp (stateless, survives deploys) ---
+    # Uses the low-level Server.streamable_http_app() which returns a full
+    # Starlette app with session management built in. We add our custom
+    # routes (health, SSE) alongside the /mcp endpoint.
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        # Disable DNS rebinding protection — server runs on Railway, not localhost
+        security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
+
+        app = mcp._mcp_server.streamable_http_app(
+            streamable_http_path="/mcp",
+            json_response=False,
+            stateless_http=True,
+            transport_security=security,
+            host="0.0.0.0",
+            custom_starlette_routes=[
+                Route("/health", health),
+                Route("/sse", endpoint=handle_sse, methods=["GET"]),
+                Mount("/messages/", app=sse.handle_post_message),
+            ],
+        )
+        logger.info(f"MCP server on port {PORT} — /mcp (streamable HTTP) + /sse (legacy) + /health")
+
+    except Exception as e:
+        # Fallback: if streamable HTTP isn't available in this SDK version,
+        # use the SSE-only server (same as before)
+        logger.warning(f"Streamable HTTP not available ({e}), falling back to SSE-only")
+        app = Starlette(routes=[
+            Route("/health", health),
+            Route("/sse", endpoint=handle_sse, methods=["GET"]),
+            Mount("/messages/", app=sse.handle_post_message),
+        ])
+        logger.info(f"MCP server on port {PORT} — /sse + /health (SSE-only fallback)")
+
     uvicorn.run(app, host="0.0.0.0", port=PORT)
