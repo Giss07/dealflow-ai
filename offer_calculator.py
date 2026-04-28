@@ -21,14 +21,34 @@ BUYERS_AGENT_RATE = 0.02     # 2% of ARV
 TARGET_PROFIT_RATE = 0.10    # 10% of ARV
 
 
-def calculate_offer(listing):
+def calculate_offer(listing, overrides=None):
     """
     Calculate max offer and full profit analysis.
 
     MAX OFFER formula (solve iteratively):
     ARV - Repairs - TotalHolding - TotalSelling - Closing(1% Purchase) - TargetProfit(10% ARV) = Purchase
     Where Holding depends on Loan = Purchase + Repairs, Interest = Loan * 12% / 4
+
+    overrides dict can replace default constants:
+      hold_months, interest_rate, selling_cost_pct, target_profit_pct
     """
+    ov = overrides or {}
+
+    hold_months = ov.get("hold_months", HOLD_MONTHS)
+    interest_rate = ov.get("interest_rate", INTEREST_RATE)
+    target_profit_rate = ov.get("target_profit_pct", TARGET_PROFIT_RATE)
+
+    # selling_cost_pct overrides the sum of listing + buyer agent + closing sell
+    if "selling_cost_pct" in ov:
+        sell_pct = ov["selling_cost_pct"]
+        listing_agent_rate = sell_pct * 0.4   # ~2% of the 5%
+        buyers_agent_rate = sell_pct * 0.4    # ~2% of the 5%
+        closing_sell_rate = sell_pct * 0.2    # ~1% of the 5%
+    else:
+        listing_agent_rate = LISTING_AGENT_RATE
+        buyers_agent_rate = BUYERS_AGENT_RATE
+        closing_sell_rate = CLOSING_SELL_RATE
+
     arv = listing.get("arv")
     repair_data = listing.get("repair_estimate", {})
     repairs_mid = repair_data.get("total_mid", 0)
@@ -39,31 +59,34 @@ def calculate_offer(listing):
         return listing
 
     # --- SELLING COSTS (fixed, based on ARV) ---
-    closing_sell = arv * CLOSING_SELL_RATE
-    listing_agent = arv * LISTING_AGENT_RATE
-    buyers_agent = arv * BUYERS_AGENT_RATE
+    closing_sell = arv * closing_sell_rate
+    listing_agent = arv * listing_agent_rate
+    buyers_agent = arv * buyers_agent_rate
     total_selling = STAGING_MARKETING + closing_sell + listing_agent + buyers_agent
 
     # --- TARGET PROFIT ---
-    target_profit = arv * TARGET_PROFIT_RATE
+    target_profit = arv * target_profit_rate
 
     # --- SOLVE FOR MAX OFFER ITERATIVELY ---
     # ARV = Purchase + Closing(1%P) + Repairs + Holding(depends on P) + Selling + Profit
-    # Holding Interest = (Purchase + Repairs) * 0.12 / 4 = (P + R) * 0.03
+    # Holding Interest = (Purchase + Repairs) * interest_rate * hold_months/12
     # Fixed holding = taxes + insurance + utilities
-    property_tax = PROPERTY_TAX_ANNUAL / 4  # 3 months
-    insurance = INSURANCE_MONTHLY * HOLD_MONTHS
-    utilities = UTILITIES_MONTHLY * HOLD_MONTHS
+    hold_fraction = hold_months / 12.0
+    interest_factor = interest_rate * hold_fraction
+    property_tax = PROPERTY_TAX_ANNUAL * hold_fraction
+    insurance = INSURANCE_MONTHLY * hold_months
+    utilities = UTILITIES_MONTHLY * hold_months
     fixed_holding = property_tax + insurance + utilities
 
     # Algebra:
-    # ARV = P + 0.01P + R + (P+R)*0.03 + fixed_holding + total_selling + target_profit
-    # ARV = P + 0.01P + R + 0.03P + 0.03R + fixed_holding + total_selling + target_profit
-    # ARV = P(1 + 0.01 + 0.03) + R(1 + 0.03) + fixed_holding + total_selling + target_profit
-    # ARV = 1.04P + 1.03R + fixed_holding + total_selling + target_profit
-    # P = (ARV - 1.03R - fixed_holding - total_selling - target_profit) / 1.04
+    # ARV = P + 0.01P + R + (P+R)*interest_factor + fixed_holding + total_selling + target_profit
+    # ARV = P(1 + 0.01 + interest_factor) + R(1 + interest_factor) + fixed_holding + total_selling + target_profit
+    # P = (ARV - (1+interest_factor)*R - fixed_holding - total_selling - target_profit) / (1 + 0.01 + interest_factor)
 
-    purchase_price = (arv - 1.03 * repairs_mid - fixed_holding - total_selling - target_profit) / 1.04
+    p_divisor = 1 + CLOSING_RATE + interest_factor
+    r_factor = 1 + interest_factor
+
+    purchase_price = (arv - r_factor * repairs_mid - fixed_holding - total_selling - target_profit) / p_divisor
     purchase_price = max(0, round(purchase_price))
 
     # Now compute all costs with the solved purchase price
@@ -73,7 +96,7 @@ def calculate_offer(listing):
     total_renovation = repairs_mid
 
     loan_amount = purchase_price + repairs_mid
-    interest = loan_amount * INTEREST_RATE / 4  # 3 months = annual/4
+    interest = loan_amount * interest_factor
     total_holding = interest + property_tax + insurance + utilities
 
     total_all_costs = total_acquisition + total_renovation + total_holding + total_selling
@@ -82,7 +105,7 @@ def calculate_offer(listing):
     roi = (estimated_profit / total_all_costs * 100) if total_all_costs > 0 else 0
 
     # Also compute worst case
-    purchase_worst = (arv - 1.03 * repairs_worst - fixed_holding - total_selling - target_profit) / 1.04
+    purchase_worst = (arv - r_factor * repairs_worst - fixed_holding - total_selling - target_profit) / p_divisor
     purchase_worst = max(0, round(purchase_worst))
 
     analysis = {
@@ -100,7 +123,7 @@ def calculate_offer(listing):
 
         # HOLDING (itemized)
         "loan_amount": round(loan_amount),
-        "interest_rate": INTEREST_RATE,
+        "interest_rate": interest_rate,
         "private_money_interest": round(interest),
         "property_taxes": round(property_tax),
         "insurance": round(insurance),
