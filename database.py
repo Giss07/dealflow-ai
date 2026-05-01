@@ -137,6 +137,13 @@ class PreForeclosure(Base):
     linked_deal_id = Column(Integer)  # ID of Deal created from this property
     date_added = Column(DateTime, default=datetime.utcnow)
 
+    # MLS monitoring fields (added for mls-monitoring feature)
+    listed_at = Column(DateTime)              # Set when Monitoring → On Market
+    previous_mls_status = Column(String(50))  # Previous status for transition detection
+    zillow_url = Column(Text)                 # Manual Zillow URL override for address matching
+    scan_error_count = Column(Integer, default=0)
+    last_scan_error = Column(Text)            # Last error message (why scan failed)
+
 
 def preforeclosure_to_dict(pf):
     return {
@@ -158,6 +165,11 @@ def preforeclosure_to_dict(pf):
         "is_archived": pf.is_archived or False,
         "linked_deal_id": pf.linked_deal_id,
         "date_added": pf.date_added.isoformat() if pf.date_added else None,
+        "listed_at": pf.listed_at.isoformat() if pf.listed_at else None,
+        "previous_mls_status": pf.previous_mls_status,
+        "zillow_url": pf.zillow_url,
+        "scan_error_count": pf.scan_error_count or 0,
+        "last_scan_error": pf.last_scan_error,
     }
 
 

@@ -651,7 +651,7 @@ def api_preforeclosure_update(pf_id):
         if not pf:
             return jsonify({"error": "Not found"}), 404
         data = request.get_json() or {}
-        for field in ["address", "city", "state", "zip_code", "property_type", "source_list", "auction_date", "notes", "mls_status"]:
+        for field in ["address", "city", "state", "zip_code", "property_type", "source_list", "auction_date", "notes", "mls_status", "zillow_url"]:
             if field in data:
                 setattr(pf, field, data[field])
         if "estimated_value" in data:
@@ -897,11 +897,14 @@ def api_preforeclosure_scan(pf_id):
         }
 
         prev_status = pf.mls_status
+        pf.previous_mls_status = prev_status
         pf.last_scanned = dt.utcnow()
 
         if not zip_code:
             pf.ai_notes = "No zip code — cannot search Zillow"
             pf.mls_status = "unknown"
+            pf.scan_error_count = (pf.scan_error_count or 0) + 1
+            pf.last_scan_error = "No zip code"
             db.commit()
             return jsonify(preforeclosure_to_dict(pf))
 
@@ -1009,6 +1012,11 @@ def api_preforeclosure_scan(pf_id):
         pf.ai_notes = " | ".join(notes_parts)
 
         pf.is_new = (prev_status != "on-market" and pf.mls_status == "on-market")
+        if pf.is_new:
+            pf.listed_at = dt.utcnow()
+        # Clear error tracking on successful scan
+        pf.scan_error_count = 0
+        pf.last_scan_error = None
 
         db.commit()
         logger.info(f"Scan result for {pf.address}: {pf.mls_status} | {pf.ai_notes[:80]}")
@@ -1020,6 +1028,86 @@ def api_preforeclosure_scan(pf_id):
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()
+
+
+@app.route("/api/preforeclosure/<int:pf_id>/set-url", methods=["POST"])
+def api_preforeclosure_set_url(pf_id):
+    """Set or clear a Zillow URL override for a pre-foreclosure property."""
+    db = get_session()
+    try:
+        pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
+        if not pf:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json() or {}
+        pf.zillow_url = data.get("zillow_url", "").strip() or None
+        db.commit()
+        return jsonify(preforeclosure_to_dict(pf))
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/<int:pf_id>/dismiss", methods=["POST"])
+def api_preforeclosure_dismiss(pf_id):
+    """Dismiss the 'new listing' flag for a property (mark as seen)."""
+    db = get_session()
+    try:
+        pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
+        if not pf:
+            return jsonify({"error": "Not found"}), 404
+        pf.is_new = False
+        db.commit()
+        return jsonify(preforeclosure_to_dict(pf))
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/dismiss-all", methods=["POST"])
+def api_preforeclosure_dismiss_all():
+    """Dismiss all 'new listing' flags."""
+    db = get_session()
+    try:
+        count = db.query(PreForeclosure).filter(PreForeclosure.is_new == True).update({"is_new": False})
+        db.commit()
+        return jsonify({"dismissed": count})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/new-count")
+def api_preforeclosure_new_count():
+    """Get count of properties with is_new=True (for badge display)."""
+    db = get_session()
+    try:
+        count = db.query(PreForeclosure).filter(
+            PreForeclosure.is_new == True,
+            (PreForeclosure.is_archived == False) | (PreForeclosure.is_archived == None),
+        ).count()
+        return jsonify({"count": count})
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/run-scan", methods=["POST"])
+def api_preforeclosure_run_scan():
+    """Trigger a full pre-foreclosure MLS scan on demand."""
+    import threading
+    def _run():
+        try:
+            from worker import run_preforeclosure_scan
+            run_preforeclosure_scan()
+        except Exception as e:
+            logger.error(f"Manual scan trigger failed: {e}")
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"status": "started", "message": "MLS scan started in background"})
 
 
 @app.route("/api/tracker")

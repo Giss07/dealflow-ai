@@ -83,13 +83,30 @@ def run_gmail_only():
 
 
 def run_preforeclosure_scan():
-    """Scan ALL pre-foreclosure properties on Zillow daily at 2AM PST."""
+    """Scan pre-foreclosure properties on Zillow for MLS status changes.
+
+    Runs every 3 days. Groups properties by zip code to minimize Apify calls.
+    Detects Monitoring → On Market transitions and sends email + sets is_new flag.
+
+    Config env vars:
+      MLS_CHECKER_ENABLED: "true" (default) or "false" — kill switch
+      MLS_BATCH_SIZE: max properties per run (default: all)
+      MLS_DELAY_SECONDS: delay between zip code searches (default: 3)
+    """
+    # Kill switch
+    if os.getenv("MLS_CHECKER_ENABLED", "true").lower() == "false":
+        logger.info("MLS checker disabled via MLS_CHECKER_ENABLED=false, skipping")
+        return
+
     now_pst = datetime.now(PST)
     logger.info(f"=== PRE-FORECLOSURE SCAN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
+
+    batch_size = int(os.getenv("MLS_BATCH_SIZE", "0")) or None  # 0 = unlimited
+    delay_seconds = int(os.getenv("MLS_DELAY_SECONDS", "3"))
+
     try:
         import requests as req
-        from database import init_db, get_session, PreForeclosure, preforeclosure_to_dict
-        from urllib.parse import quote_plus
+        from database import init_db, get_session, PreForeclosure
         from datetime import datetime as dt
 
         APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
@@ -99,8 +116,13 @@ def run_preforeclosure_scan():
 
         init_db()
         db = get_session()
-        properties = db.query(PreForeclosure).filter(PreForeclosure.mls_status != "offer-submitted").all()
-        logger.info(f"Scanning {len(properties)} pre-foreclosure properties...")
+        query = db.query(PreForeclosure).filter(
+            (PreForeclosure.is_archived == False) | (PreForeclosure.is_archived == None)
+        ).filter(PreForeclosure.mls_status != "offer-submitted")
+        if batch_size:
+            query = query.limit(batch_size)
+        properties = query.all()
+        logger.info(f"Scanning {len(properties)} pre-foreclosure properties (batch_size={batch_size or 'all'}, delay={delay_seconds}s)...")
 
         # Group by zip code to minimize Apify calls
         by_zip = {}
@@ -111,6 +133,8 @@ def run_preforeclosure_scan():
             by_zip[z].append(pf)
 
         scanned = 0
+        errors = 0
+        apify_calls = 0
         new_on_market = []
 
         for zip_code, pf_list in by_zip.items():
@@ -118,104 +142,77 @@ def run_preforeclosure_scan():
                 for pf in pf_list:
                     pf.ai_notes = "No zip code — cannot search"
                     pf.last_scanned = dt.utcnow()
+                    pf.scan_error_count = (pf.scan_error_count or 0) + 1
+                    pf.last_scan_error = "No zip code"
                 continue
 
             logger.info(f"  Searching zip {zip_code} ({len(pf_list)} properties)...")
             api_url = "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search/run-sync-get-dataset-items"
             payload = {"zipCodes": [zip_code], "maxItems": 50}
 
-            try:
-                resp = req.post(api_url, params={"token": APIFY_API_KEY}, json=payload,
-                                headers={"Content-Type": "application/json"}, timeout=300)
-                if resp.status_code not in (200, 201):
-                    logger.error(f"  Apify error {resp.status_code} for zip {zip_code}: {resp.text[:200]}")
-                    for pf in pf_list:
-                        pf.ai_notes = f"Apify error {resp.status_code}"
-                        pf.last_scanned = dt.utcnow()
-                    continue
-
-                all_results = resp.json()
-                logger.info(f"  Got {len(all_results)} Zillow listings for {zip_code}")
-
-                for pf in pf_list:
-                    street_parts = pf.address.lower().split()
-                    matched = None
-                    for item in all_results:
-                        item_addr = (item.get("addressStreet") or item.get("address") or "").lower()
-                        if len(street_parts) >= 2 and street_parts[0] in item_addr and street_parts[1] in item_addr:
-                            matched = item
-                            break
-
-                    prev_status = pf.mls_status
-                    pf.last_scanned = dt.utcnow()
-
-                    if not matched:
-                        pf.mls_status = "unknown"
-                        pf.ai_notes = f"Not found on Zillow ({len(all_results)} listings in {zip_code})"
+            # Retry with backoff for Apify calls
+            all_results = None
+            for attempt in range(3):
+                try:
+                    apify_calls += 1
+                    resp = req.post(api_url, params={"token": APIFY_API_KEY}, json=payload,
+                                    headers={"Content-Type": "application/json"}, timeout=120)
+                    if resp.status_code == 429:
+                        wait = 2 ** (attempt + 1)
+                        logger.warning(f"  Apify rate limited (429), waiting {wait}s")
+                        time.sleep(wait)
+                        continue
+                    if resp.status_code not in (200, 201):
+                        logger.error(f"  Apify error {resp.status_code} for zip {zip_code}: {resp.text[:200]}")
+                        for pf in pf_list:
+                            pf.last_scanned = dt.utcnow()
+                            pf.scan_error_count = (pf.scan_error_count or 0) + 1
+                            pf.last_scan_error = f"Apify HTTP {resp.status_code}"
+                        break
+                    all_results = resp.json()
+                    break
+                except req.exceptions.Timeout:
+                    logger.warning(f"  Apify timeout attempt {attempt+1}/3 for zip {zip_code}")
+                    if attempt < 2:
+                        time.sleep(2 ** attempt)
                     else:
-                        home_info = matched.get("hdpData", {}).get("homeInfo", {})
-                        home_status = (home_info.get("homeStatus") or matched.get("statusType") or "").upper()
-                        price = home_info.get("price") or matched.get("unformattedPrice")
-                        zestimate = home_info.get("zestimate") or matched.get("zestimate")
+                        for pf in pf_list:
+                            pf.last_scanned = dt.utcnow()
+                            pf.scan_error_count = (pf.scan_error_count or 0) + 1
+                            pf.last_scan_error = "Apify timeout after 3 attempts"
+                except req.exceptions.ConnectionError as e:
+                    logger.warning(f"  Apify connection error attempt {attempt+1}/3: {e}")
+                    if attempt < 2:
+                        time.sleep(2 ** attempt)
+                    else:
+                        for pf in pf_list:
+                            pf.last_scanned = dt.utcnow()
+                            pf.scan_error_count = (pf.scan_error_count or 0) + 1
+                            pf.last_scan_error = f"Connection error: {str(e)[:100]}"
 
-                        # Check if it's an auction listing (not a real MLS listing)
-                        # Only use statusText and price=0 as indicators
-                        # Do NOT use sub_type flags alone — pre-foreclosure properties
-                        # listed by agents can have is_forAuction=True
-                        status_text = (matched.get("statusText") or "").upper()
-                        raw_price = home_info.get("price") or matched.get("unformattedPrice")
-                        try:
-                            price_num = float(str(raw_price).replace("$","").replace(",","") or 0)
-                        except (ValueError, TypeError):
-                            price_num = 0
-                        is_auction = bool(
-                            "AUCTION" in status_text
-                            or "AUCTION" in home_status
-                            or "FORECLOSED" in home_status
-                            or (raw_price is not None and price_num == 0)
-                        )
-
-                        if is_auction:
-                            pf.mls_status = "auction"
-                        elif "FOR_SALE" in home_status:
-                            pf.mls_status = "on-market"
-                        elif "PENDING" in home_status or "OTHER" in home_status:
-                            pf.mls_status = "on-market"
-                        elif "FORECLOSURE" in home_status or "PRE_FORECLOSURE" in home_status:
-                            pf.mls_status = "pre-foreclosure"
-                        else:
-                            pf.mls_status = "unknown"
-
-                        if price:
-                            try: pf.mls_price = float(str(price).replace("$","").replace(",",""))
-                            except: pass
-                        if zestimate:
-                            try: pf.estimated_value = float(zestimate)
-                            except: pass
-
-                        notes = [f"Zillow: {home_status}"]
-                        if price: notes.append(f"${float(str(price).replace('$','').replace(',','')):,.0f}")
-                        if zestimate: notes.append(f"Zest: ${float(zestimate):,.0f}")
-                        pf.ai_notes = " | ".join(notes)
-
-                    pf.is_new = (prev_status != "on-market" and pf.mls_status == "on-market")
-                    if pf.is_new:
-                        new_on_market.append(pf)
-                        logger.info(f"  🚨 NEW ON MARKET: {pf.address}, {pf.city}")
-
-                    scanned += 1
-
-                # Commit after each zip to prevent connection timeout
+            if all_results is None:
                 db.commit()
+                continue
 
-                import time
-                time.sleep(3)  # Rate limit between zip codes
+            logger.info(f"  Got {len(all_results)} Zillow listings for {zip_code}")
 
-            except Exception as e:
-                logger.error(f"  Error scanning zip {zip_code}: {e}")
-                for pf in pf_list:
-                    pf.ai_notes = f"Scan error: {str(e)[:100]}"
+            for pf in pf_list:
+                try:
+                    _scan_single_property(pf, all_results, zip_code, new_on_market)
+                    # Clear error tracking on success
+                    pf.scan_error_count = 0
+                    pf.last_scan_error = None
+                    scanned += 1
+                except Exception as e:
+                    logger.error(f"  Error processing {pf.address}: {e}")
                     pf.last_scanned = dt.utcnow()
+                    pf.scan_error_count = (pf.scan_error_count or 0) + 1
+                    pf.last_scan_error = f"{type(e).__name__}: {str(e)[:100]}"
+                    errors += 1
+
+            # Commit after each zip to prevent connection timeout
+            db.commit()
+            time.sleep(delay_seconds)
 
         # Save alert data before closing session
         alert_data = []
@@ -225,43 +222,137 @@ def run_preforeclosure_scan():
         db.commit()
         db.close()
 
-        logger.info(f"Pre-foreclosure scan complete: {scanned} scanned, {len(new_on_market)} new on market")
+        logger.info(f"Pre-foreclosure scan complete: {scanned} scanned, {errors} errors, {apify_calls} Apify calls, {len(new_on_market)} new on market")
 
         # Send alert for newly listed properties
         if alert_data:
-            try:
-                from alerts import GMAIL_USER, GMAIL_PASSWORD, ALERT_EMAIL
-                if GMAIL_USER and GMAIL_PASSWORD:
-                    import smtplib
-                    from email.mime.text import MIMEText
-                    from email.mime.multipart import MIMEMultipart
-
-                    html = "<html><body>"
-                    html += "<h2 style='color:#22c55e;'>🚨 Pre-Foreclosure NOW ON MARKET!</h2>"
-                    html += "<p>These pre-foreclosure properties just appeared on Zillow:</p>"
-                    html += "<table border='1' cellpadding='8' style='border-collapse:collapse;'>"
-                    html += "<tr style='background:#166534;color:white;'><th>Address</th><th>Price</th><th>Value</th></tr>"
-                    for ad in alert_data:
-                        price_str = f"${ad['mls_price']:,.0f}" if ad.get('mls_price') else "N/A"
-                        val_str = f"${ad['estimated_value']:,.0f}" if ad.get('estimated_value') else "N/A"
-                        html += f"<tr><td><b>{ad['address']}, {ad['city']}</b></td><td>{price_str}</td><td>{val_str}</td></tr>"
-                    html += "</table></body></html>"
-
-                    msg = MIMEMultipart("alternative")
-                    msg["Subject"] = f"🚨 {len(alert_data)} Pre-Foreclosure Properties NOW ON MARKET!"
-                    msg["From"] = GMAIL_USER
-                    msg["To"] = ALERT_EMAIL or GMAIL_USER
-                    msg.attach(MIMEText(html, "html"))
-
-                    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                        server.login(GMAIL_USER, GMAIL_PASSWORD)
-                        server.sendmail(GMAIL_USER, ALERT_EMAIL or GMAIL_USER, msg.as_string())
-                    logger.info(f"Alert email sent for {len(alert_data)} new listings")
-            except Exception as e:
-                logger.error(f"Failed to send alert: {e}")
+            _send_new_listing_alert(alert_data)
 
     except Exception as e:
         logger.error(f"Pre-foreclosure scan failed: {e}", exc_info=True)
+
+
+def _scan_single_property(pf, all_results, zip_code, new_on_market):
+    """Process a single pre-foreclosure property against Zillow results.
+
+    Updates: mls_status, previous_mls_status, listed_at, is_new, mls_price,
+    ai_notes, last_scanned, scan_error_count, last_scan_error.
+    Does NOT auto-populate estimated_value.
+    """
+    from datetime import datetime as dt
+
+    street_parts = pf.address.lower().split()
+    matched = None
+    for item in all_results:
+        item_addr = (item.get("addressStreet") or item.get("address") or "").lower()
+        if len(street_parts) >= 2 and street_parts[0] in item_addr and street_parts[1] in item_addr:
+            matched = item
+            break
+
+    # Save previous status for transition detection
+    prev_status = pf.mls_status
+    pf.previous_mls_status = prev_status
+    pf.last_scanned = dt.utcnow()
+
+    if not matched:
+        # Not found — set to Monitoring (shown as "Monitoring" in dashboard)
+        pf.mls_status = "unknown"
+        pf.ai_notes = f"Not found on Zillow ({len(all_results)} listings in {zip_code})"
+        return
+
+    home_info = matched.get("hdpData", {}).get("homeInfo", {})
+    home_status = (home_info.get("homeStatus") or matched.get("statusType") or "").upper()
+    price = home_info.get("price") or matched.get("unformattedPrice")
+    zestimate = home_info.get("zestimate") or matched.get("zestimate")
+
+    # Check if it's an auction listing (not a real MLS listing)
+    status_text = (matched.get("statusText") or "").upper()
+    raw_price = home_info.get("price") or matched.get("unformattedPrice")
+    try:
+        price_num = float(str(raw_price).replace("$", "").replace(",", "") or 0)
+    except (ValueError, TypeError):
+        price_num = 0
+    is_auction = bool(
+        "AUCTION" in status_text
+        or "AUCTION" in home_status
+        or "FORECLOSED" in home_status
+        or (raw_price is not None and price_num == 0)
+    )
+
+    if is_auction:
+        pf.mls_status = "auction"
+    elif "FOR_SALE" in home_status:
+        pf.mls_status = "on-market"
+    elif "PENDING" in home_status or "OTHER" in home_status:
+        pf.mls_status = "on-market"
+    elif "FORECLOSURE" in home_status or "PRE_FORECLOSURE" in home_status:
+        pf.mls_status = "pre-foreclosure"
+    else:
+        pf.mls_status = "unknown"
+
+    # Update price (NOT estimated_value — user requirement)
+    if price:
+        try:
+            pf.mls_price = float(str(price).replace("$", "").replace(",", ""))
+        except (ValueError, TypeError):
+            pass
+
+    # Build notes
+    notes = [f"Zillow: {home_status}"]
+    if price:
+        try:
+            notes.append(f"${float(str(price).replace('$','').replace(',','')):,.0f}")
+        except (ValueError, TypeError):
+            pass
+    if zestimate:
+        try:
+            notes.append(f"Zest: ${float(zestimate):,.0f}")
+        except (ValueError, TypeError):
+            pass
+    pf.ai_notes = " | ".join(notes)
+
+    # Detect Monitoring → On Market transition
+    is_new_listing = (prev_status != "on-market" and pf.mls_status == "on-market")
+    pf.is_new = is_new_listing
+    if is_new_listing:
+        pf.listed_at = dt.utcnow()
+        new_on_market.append(pf)
+        logger.info(f"  NEW ON MARKET: {pf.address}, {pf.city}")
+
+
+def _send_new_listing_alert(alert_data):
+    """Send email alert for newly listed pre-foreclosure properties."""
+    try:
+        from alerts import GMAIL_USER, GMAIL_PASSWORD, ALERT_EMAIL
+        if not GMAIL_USER or not GMAIL_PASSWORD:
+            return
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        html = "<html><body>"
+        html += "<h2 style='color:#22c55e;'>Pre-Foreclosure NOW ON MARKET!</h2>"
+        html += "<p>These pre-foreclosure properties just appeared on Zillow:</p>"
+        html += "<table border='1' cellpadding='8' style='border-collapse:collapse;'>"
+        html += "<tr style='background:#166534;color:white;'><th>Address</th><th>Price</th><th>Value</th></tr>"
+        for ad in alert_data:
+            price_str = f"${ad['mls_price']:,.0f}" if ad.get('mls_price') else "N/A"
+            val_str = f"${ad['estimated_value']:,.0f}" if ad.get('estimated_value') else "N/A"
+            html += f"<tr><td><b>{ad['address']}, {ad['city']}</b></td><td>{price_str}</td><td>{val_str}</td></tr>"
+        html += "</table></body></html>"
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"{len(alert_data)} Pre-Foreclosure Properties NOW ON MARKET!"
+        msg["From"] = GMAIL_USER
+        msg["To"] = ALERT_EMAIL or GMAIL_USER
+        msg.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_USER, GMAIL_PASSWORD)
+            server.sendmail(GMAIL_USER, ALERT_EMAIL or GMAIL_USER, msg.as_string())
+        logger.info(f"Alert email sent for {len(alert_data)} new listings")
+    except Exception as e:
+        logger.error(f"Failed to send alert: {e}")
 
 
 def run_dealflow_pipeline():
@@ -288,11 +379,13 @@ if __name__ == "__main__":
     # schedule.every().monday.at("14:00").do(run_dealflow_pipeline)
     # schedule.every().thursday.at("14:00").do(run_dealflow_pipeline)
 
-    # Pre-foreclosure scan daily at 2AM PST = 09:00 UTC — DISABLED to save Apify quota
-    # schedule.every().day.at("09:00").do(run_preforeclosure_scan)
+    # Pre-foreclosure MLS scan — every 3 days at 2AM PST = 09:00 UTC
+    # Controlled by MLS_CHECKER_ENABLED env var (default: true)
+    schedule.every(3).days.at("09:00").do(run_preforeclosure_scan)
 
+    mls_enabled = os.getenv("MLS_CHECKER_ENABLED", "true").lower() != "false"
     logger.info("Scheduled (UTC times, Railway server):")
-    logger.info("  - DISABLED: Pre-foreclosure Zillow scan (saving Apify quota)")
+    logger.info(f"  - Every 3 days 09:00 UTC (2AM PST): Pre-foreclosure MLS scan ({'ENABLED' if mls_enabled else 'DISABLED via env'})")
     logger.info("  - 15:00 UTC (8AM PST): Full updater run")
     logger.info("  - Hourly (9AM-6PM PST): Gmail-only counter checks")
     logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")

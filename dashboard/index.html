@@ -215,6 +215,7 @@
         <div class="tab" data-tab="offers" onclick="switchTab('offers')">My Offers <span class="badge" id="tab-offers-count">0</span></div>
         <div class="tab" data-tab="archived" onclick="switchTab('archived')">Archived <span class="badge" id="tab-archived-count">0</span></div>
         <div class="tab" data-tab="preforeclosure" onclick="switchTab('preforeclosure')">Pre-Foreclosure <span class="badge" id="tab-pf-count" style="background:#dc2626;">0</span></div>
+        <div class="tab" data-tab="preforeclosure" onclick="switchTab('preforeclosure');setPfFilter('new')" id="tab-new-listings" style="display:none;">New Listings <span class="badge" id="tab-new-count" style="background:#22c55e;color:#000;">0</span></div>
         <div class="tab" data-tab="tracker" onclick="switchTab('tracker')">Tracker <span class="badge" style="background:#8b5cf6;">Sheet</span></div>
     </div>
 
@@ -396,18 +397,22 @@
 
         async function updateTabCounts() {
             try {
-                const [active, archived, offers, pending, pf] = await Promise.all([
+                const [active, archived, offers, pending, pf, newCount] = await Promise.all([
                     fetch('/api/deals?tab=active').then(r => r.json()),
                     fetch('/api/deals?tab=archived').then(r => r.json()),
                     fetch('/api/deals?tab=offers').then(r => r.json()),
                     fetch('/api/deals?tab=pending').then(r => r.json()),
                     fetch('/api/preforeclosure').then(r => r.json()),
+                    fetch('/api/preforeclosure/new-count').then(r => r.json()),
                 ]);
                 document.getElementById('tab-active-count').textContent = active.length;
                 document.getElementById('tab-archived-count').textContent = archived.length;
                 document.getElementById('tab-offers-count').textContent = offers.length;
                 document.getElementById('tab-pending-count').textContent = pending.length;
                 document.getElementById('tab-pf-count').textContent = Array.isArray(pf) ? pf.length : 0;
+                const nc = newCount.count || 0;
+                document.getElementById('tab-new-count').textContent = nc;
+                document.getElementById('tab-new-listings').style.display = nc > 0 ? '' : 'none';
             } catch(e) {}
         }
 
@@ -1038,17 +1043,21 @@
                 pfBar.style.cssText = 'padding:12px 30px;background:#1e293b;border-bottom:1px solid #334155;display:flex;gap:10px;flex-wrap:wrap;align-items:center;';
                 filtersBar.parentNode.insertBefore(pfBar, filtersBar.nextSibling);
             }
+            const newBadge = pfData.filter(p => p.is_new).length;
             pfBar.innerHTML = `
                 <button class="score-filter-btn ${pfFilter==='all'?'active':''}" onclick="setPfFilter('all')">All</button>
+                <button class="score-filter-btn ${pfFilter==='new'?'active':''}" onclick="setPfFilter('new')" style="${pfFilter==='new'?'background:#22c55e;border-color:#22c55e;color:#000;':''}">New ${newBadge > 0 ? '<span style="background:#000;color:#22c55e;padding:1px 5px;border-radius:8px;font-size:10px;margin-left:4px;">'+newBadge+'</span>' : ''}</button>
                 <button class="score-filter-btn ${pfFilter==='on-market'?'active':''}" onclick="setPfFilter('on-market')" style="${pfFilter==='on-market'?'background:#22c55e;border-color:#22c55e;':''}">On Market</button>
                 <button class="score-filter-btn ${pfFilter==='pre-foreclosure'?'active':''}" onclick="setPfFilter('pre-foreclosure')" style="${pfFilter==='pre-foreclosure'?'background:#f97316;border-color:#f97316;':''}">Pre-Foreclosure</button>
                 <button class="score-filter-btn ${pfFilter==='auction'?'active':''}" onclick="setPfFilter('auction')" style="${pfFilter==='auction'?'background:#eab308;border-color:#eab308;':''}">Auction</button>
                 <input type="text" placeholder="Search address..." value="${pfSearch}" oninput="pfSearch=this.value;renderPfRows()" style="background:#334155;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:6px;font-size:14px;width:200px;">
                 <button id="btn-pf-archived" onclick="togglePfArchived()" style="background:#475569;color:#e2e8f0;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Show Archived</button>
+                ${newBadge > 0 ? '<button onclick="dismissAllNew()" style="background:#854d0e;color:#fbbf24;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Dismiss All New</button>' : ''}
                 <div style="flex:1;"></div>
                 <label for="pf-csv-input" style="background:#475569;color:#e2e8f0;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Import CSV</label>
                 <input type="file" id="pf-csv-input" accept=".csv" style="display:none;" onchange="importPfCSV(this.files[0])">
                 <button onclick="openPfAddModal()" style="background:#3b82f6;color:white;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">+ Add Property</button>
+                <button onclick="runMlsScan()" id="btn-run-scan" style="background:#f59e0b;color:#000;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">Run Check Now</button>
                 <button onclick="scanAllPf()" style="background:#00e5a0;color:#000;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">Scan All MLS</button>
             `;
             pfBar.style.display = 'flex';
@@ -1060,7 +1069,7 @@
 
             try {
                 const params = new URLSearchParams();
-                if (pfFilter !== 'all') params.set('status', pfFilter);
+                if (pfFilter !== 'all' && pfFilter !== 'new') params.set('status', pfFilter);
                 if (pfShowArchived) params.set('show_archived', '1');
                 const resp = await fetch('/api/preforeclosure?' + params.toString());
                 pfData = await resp.json();
@@ -1070,7 +1079,16 @@
             }
         }
 
-        function setPfFilter(f) { pfFilter = f; loadPreForeclosure(); }
+        function setPfFilter(f) {
+            pfFilter = f;
+            if (f === 'new') {
+                // "new" is a client-side filter on is_new, load all data
+                pfFilter = 'new';
+                loadPreForeclosure();
+            } else {
+                loadPreForeclosure();
+            }
+        }
 
         function pfStatusBadge(status) {
             const map = {
@@ -1089,6 +1107,9 @@
             const cards = document.getElementById('deal-cards');
             const empty = document.getElementById('empty-state');
             let rows = pfData;
+            if (pfFilter === 'new') {
+                rows = rows.filter(p => p.is_new);
+            }
             if (pfSearch) {
                 const q = pfSearch.toLowerCase();
                 rows = rows.filter(p => (p.address||'').toLowerCase().includes(q) || (p.city||'').toLowerCase().includes(q));
@@ -1109,9 +1130,11 @@
                     <td>${pfStatusBadge(p.mls_status||'unknown')}</td>
                     <td style="font-size:12px;color:#94a3b8;">${checked}</td>
                     <td>
-                        <div style="display:flex;gap:6px;">
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             <button onclick="scanPf(${p.id})" title="Scan MLS" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#8635;</button>
                             ${p.mls_status === 'on-market' ? `<button onclick="viewPfDeal(${p.id})" title="View Deal" style="padding:4px 10px;border-radius:6px;border:none;background:#22c55e;color:#000;cursor:pointer;font-size:11px;font-weight:600;">View Deal</button>` : `<button onclick="togglePfOffer(${p.id},'${p.mls_status}')" title="Mark Offer" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#9998;</button>`}
+                            <button onclick="setZillowUrl(${p.id})" title="${p.zillow_url ? 'URL set: '+p.zillow_url.substring(0,30)+'...' : 'Set Zillow URL'}" style="width:28px;height:28px;border-radius:6px;border:1px solid ${p.zillow_url ? '#3b82f6' : '#334155'};background:${p.zillow_url ? 'rgba(59,130,246,.15)' : 'transparent'};color:${p.zillow_url ? '#3b82f6' : '#94a3b8'};cursor:pointer;font-size:13px;">&#128279;</button>
+                            ${p.is_new ? `<button onclick="dismissNew(${p.id})" title="Dismiss" style="padding:4px 8px;border-radius:6px;border:none;background:#854d0e;color:#fbbf24;cursor:pointer;font-size:10px;font-weight:600;">Seen</button>` : ''}
                             <button onclick="archivePf(${p.id},${!p.is_archived})" title="${p.is_archived ? 'Restore' : 'Archive'}" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:${p.is_archived ? '#475569' : 'transparent'};color:${p.is_archived ? '#fbbf24' : '#94a3b8'};cursor:pointer;font-size:13px;">${p.is_archived ? '↩' : '✕'}</button>
                         </div>
                     </td>
@@ -1150,6 +1173,41 @@
                 await new Promise(r => setTimeout(r, 500));
             }
             alert('Scan complete');
+        }
+
+        async function runMlsScan() {
+            const btn = document.getElementById('btn-run-scan');
+            btn.textContent = 'Running...';
+            btn.disabled = true;
+            try {
+                const resp = await fetch('/api/preforeclosure/run-scan', {method:'POST'});
+                const data = await resp.json();
+                alert(data.message || 'Scan started in background. Refresh in a few minutes to see results.');
+            } catch(e) { alert('Failed to start scan'); }
+            btn.textContent = 'Run Check Now';
+            btn.disabled = false;
+        }
+
+        async function dismissNew(id) {
+            await fetch('/api/preforeclosure/' + id + '/dismiss', {method:'POST'});
+            loadPreForeclosure();
+            updateTabCounts();
+        }
+
+        async function dismissAllNew() {
+            await fetch('/api/preforeclosure/dismiss-all', {method:'POST'});
+            loadPreForeclosure();
+            updateTabCounts();
+        }
+
+        async function setZillowUrl(id) {
+            const url = prompt('Paste Zillow URL for this property (leave blank to clear):');
+            if (url === null) return;
+            await fetch('/api/preforeclosure/' + id + '/set-url', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({zillow_url: url})
+            });
+            loadPreForeclosure();
         }
 
         async function togglePfOffer(id, current) {
