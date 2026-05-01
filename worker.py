@@ -258,6 +258,7 @@ def _scan_single_property(pf, all_results, zip_code, new_on_market):
         # Not found — set to Monitoring (shown as "Monitoring" in dashboard)
         pf.mls_status = "unknown"
         pf.ai_notes = f"Not found on Zillow ({len(all_results)} listings in {zip_code})"
+        pf.is_new = False  # Clear stale new flag
         return
 
     home_info = matched.get("hdpData", {}).get("homeInfo", {})
