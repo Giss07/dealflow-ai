@@ -1,72 +1,105 @@
 # MLS Monitoring Branch — Status Notes
 
 **Branch:** `mls-monitoring`
-**Last updated:** 2026-05-01
-**Status:** PAUSED — not merged, not deployed
+**Last updated:** 2026-05-04
+**Status:** LOCAL TESTING COMPLETE — deployment paused pending Apify detail-scraper recovery
 
-## What's built
+## What's built and tested
 
-- **5 new DB columns** on `preforeclosures`: `listed_at`, `previous_mls_status`, `zillow_url`, `scan_error_count`, `last_scan_error`
-- **Migration script:** `migrate_mls_monitoring.py` (safe to re-run)
-- **Refactored worker scan** (`worker.py`): retry + backoff, per-property error tracking, kill switch (`MLS_CHECKER_ENABLED`), configurable batch size + delay, every-3-day schedule
-- **6 new API endpoints** (`app.py`): set zillow URL, dismiss new, dismiss all, new count, manual trigger
-- **Dashboard UI** (`dashboard/index.html`): New Listings badge tab, New filter, Dismiss buttons, Run Check Now, Zillow URL per row
-- **Local test passed:** 7 properties scanned, 0 errors, correct results
+### Worker (worker.py)
+- `run_preforeclosure_scan(property_ids)` — accepts list of IDs, returns summary with actual_cost
+- `estimate_scan_cost(property_ids)` — cost breakdown before scan runs
+- `_scan_single_property()` — zip-search pass, returns True/False for match
+- `_apply_zillow_match()` — shared status mapping for both zip-search and detail-scraper
+- `_detail_fallback_pass()` — second pass using zillow-detail-scraper ($0.003/call)
+- `_send_new_listing_alert()` — email on Monitoring -> On Market transition
+- `MLS_AUTO_SCAN_ENABLED` (default false) — schedule only registers if true
+- `MLS_DETAIL_FALLBACK_ENABLED` (default true) — enables detail-scraper second pass
+- `MLS_DELAY_SECONDS` (default 3) — delay between Apify calls
+- Error handling: only increments scan_error_count on real failures, not clean not-found
+- Cost tracking: actual_cost returned in summary for toast display
+- TODO in code: replace 70% not-found assumption with historical rate from scan data
 
-## What's missing
+### API (app.py)
+- `POST /api/preforeclosure/scan-selected` — scans specific IDs, returns summary
+- `POST /api/preforeclosure/scan-cost-estimate` — returns cost breakdown + SHOW_COST_PREVIEW
+- `POST /api/preforeclosure/<id>/set-url` — set Zillow URL override
+- `POST /api/preforeclosure/<id>/dismiss` — mark new listing as seen
+- `POST /api/preforeclosure/dismiss-all` — dismiss all new flags
+- `GET /api/preforeclosure/new-count` — badge count
+- `POST /api/preforeclosure/scan/<id>` — single-property scan (existing, updated)
 
-### Hybrid detail-scraper fallback (the reason we paused)
-The zip-search actor (`maxcopell~zillow-zip-search`) returns a **truncated subset** of listings per zip code. High-density zips (100+ listings) systematically miss properties. Confirmed: 9120 S Van Ness Ave in 90047 is actively listed on Zillow but doesn't appear in the actor's 111 results.
+### Dashboard (index.html)
+- Checkboxes on each row + Select All in header
+- "Scan Selected (N)" button — disabled when nothing selected
+- Cost confirmation modal before scan (zip + detail cost breakdown)
+- Summary toast on completion with actual cost
+- "New Listings" badge tab (auto-hides when 0)
+- "New" filter button with count
+- "Dismiss All New" button
+- Per-row Zillow URL button (blue when URL set)
+- Per-row "Seen" dismiss button for new listings
+- Selected rows highlighted blue
 
-**Planned fix:** After the zip-search pass, run a second pass using `maxcopell~zillow-detail-scraper` ($0.003/call) for properties that came back "not found." This catches misses reliably.
+### Schema (database.py + migrate_mls_monitoring.py)
+- 5 new columns: listed_at, previous_mls_status, zillow_url, scan_error_count, last_scan_error
+- Migration script safe to re-run
 
-### Error handling refinement
-`scan_error_count` should only increment on **lookup failures** (timeouts, 429s, malformed addresses), NOT on "confirmed not listed" (both scrapers ran clean, no match). This was designed but not coded.
+## Local test results (2026-05-04)
 
-## Cost concern (why we paused)
-
-| | Zip-only | Hybrid (zip + detail fallback) |
-|---|---|---|
-| Calls/run | ~80 | ~640 |
-| Cost/run | $23 | $25 |
-| Cost/month (every 3 days) | $232 | $249 |
-
-The $249/month total was too high to commit to without more validation.
-
-## Ideas for reducing cost
-
-### Tiered scanning by auction date
-Instead of scanning all 800 properties every 3 days:
-- **Tier 1 — auction within 30 days:** scan every 3 days (most likely to list soon)
-- **Tier 2 — auction within 90 days:** scan weekly
-- **Tier 3 — auction 90+ days out or no date:** scan monthly
-
-This could cut the effective property count per run from 800 to ~200, reducing cost by ~75%.
-
-### Other ideas
-- Use a cheaper/different actor
-- Only scan properties that have never been found (skip confirmed-not-listed after N clean scans)
-- Rate-limit the detail fallback to top N highest-value properties
-
-## Key files
-
-| File | What changed |
+| Test | Result |
 |---|---|
-| `database.py` | 5 new columns + updated `preforeclosure_to_dict` |
-| `worker.py` | Refactored scan, extracted `_scan_single_property`, `_send_new_listing_alert` |
-| `app.py` | 6 new endpoints, updated PUT + single scan |
-| `dashboard/index.html` | New Listings badge, filters, dismiss, Run Check Now, Zillow URL |
-| `migrate_mls_monitoring.py` | Schema migration (new file) |
+| 1. Checkbox UI (select, select-all, filter clears selection) | PASS |
+| 2. Scan Selected button (count updates, disabled when empty) | PASS |
+| 3. Cost preview modal (zip + detail breakdown, confirm/cancel) | PASS |
+| 4. Scan execution + summary toast (with actual cost) | PASS |
+| 5. Single-row scan (per-row refresh button) | PASS |
+
+## Blocking issue: Apify detail-scraper outage
+
+- `maxcopell~zillow-detail-scraper` started returning HTTP 400 (run FAILED) at ~22:33 UTC (3:33 PM PST) on 2026-05-04
+- Last successful run: 16:26 UTC (9:26 AM PST) same day — 26 consecutive successes before that
+- Appears to be a temporary actor outage, not our code
+- Our error handling correctly classifies this as a real error (scan_error_count increments)
+- `MLS_DETAIL_FALLBACK_ENABLED=false` set in local .env to avoid errors during testing
+- **Do not deploy until detail-scraper is confirmed working again**
+
+## Zip-search truncation (known limitation)
+
+- `maxcopell~zillow-zip-search` returns a truncated subset for high-density zips
+- Confirmed: 9120 S Van Ness Ave (90047) not in 111 zip-search results despite being on Zillow
+- This is why the detail-scraper fallback exists — it catches these misses
+- Without fallback, expect ~70% not-found rate from zip-search alone
+
+## Cost math
+
+| | Per call | Calls/run (800 props) | Cost/run |
+|---|---|---|---|
+| Zip search | $0.29 | ~80 (grouped by zip) | $23.20 |
+| Detail fallback | $0.003 | ~560 (70% not-found) | $1.68 |
+| **Total** | | **~640** | **$24.88** |
+
+Manual-only scanning — no monthly commitment. Cost is per-use.
 
 ## Env vars (add to Railway when deploying)
 
 | Var | Default | Purpose |
 |---|---|---|
-| `MLS_CHECKER_ENABLED` | `true` | Kill switch |
-| `MLS_BATCH_SIZE` | `0` (all) | Max properties per run |
+| `MLS_AUTO_SCAN_ENABLED` | `false` | Enable scheduled every-3-day scan |
+| `MLS_DETAIL_FALLBACK_ENABLED` | `true` | Enable detail-scraper second pass |
 | `MLS_DELAY_SECONDS` | `3` | Delay between Apify calls |
-| `MLS_DETAIL_FALLBACK_ENABLED` | `true` | Enable detail-scraper second pass (not yet implemented) |
+| `SHOW_COST_PREVIEW` | `true` | Show cost confirmation modal before scan |
+
+## Deployment checklist (when ready)
+
+1. Confirm `maxcopell~zillow-detail-scraper` is working (test via Apify console or API)
+2. Set `MLS_DETAIL_FALLBACK_ENABLED=true` in local .env
+3. Re-test scan with detail fallback on a few properties
+4. Run migration on Railway: `python migrate_mls_monitoring.py`
+5. Merge mls-monitoring to main and deploy
+6. Test scan-selected with 5-10 properties on production data
+7. Verify detail fallback catches properties missed by zip-search
 
 ## Safe to deploy main
 
-The `main` branch has the scan **commented out** (`# schedule.every().day.at("09:00").do(run_preforeclosure_scan)`). Deploying main will NOT trigger any pre-foreclosure scanning.
+The `main` branch has the scan commented out and none of the mls-monitoring code. Deploying main will NOT trigger any pre-foreclosure scanning.

@@ -2,6 +2,7 @@
 DealFlow Worker — Runs on Railway 24/7.
 - 8AM PST: Full run (Gmail + Zillow + Alerts)
 - 9AM-6PM PST hourly: Gmail-only (counter offer checks)
+- Pre-foreclosure MLS scan: manual only by default (MLS_AUTO_SCAN_ENABLED=true to schedule)
 """
 
 import sys
@@ -33,6 +34,17 @@ PST = pytz.timezone("America/Los_Angeles")
 
 # Add current dir to path so imports work
 sys.path.insert(0, os.path.dirname(__file__))
+
+# ── Apify cost constants ──────────────────────────────────────────────
+# Measured from actual billing data (2026-05-01):
+#   zillow-zip-search:    avg $0.29/call
+#   zillow-detail-scraper: avg $0.003/call
+COST_ZIP_SEARCH = 0.29
+COST_DETAIL_SCRAPER = 0.003
+# TODO: Replace the 70% not-found assumption with actual historical
+# not-found rate computed from scan_error_count + last_scanned data
+# once we accumulate enough scan history.
+NOT_FOUND_RATE_ESTIMATE = 0.70
 
 
 def run_full():
@@ -82,27 +94,77 @@ def run_gmail_only():
         logger.error(f"Gmail-only run failed: {e}")
 
 
-def run_preforeclosure_scan():
+def estimate_scan_cost(property_ids):
+    """Estimate Apify cost for scanning a set of properties.
+
+    Returns dict with cost breakdown. Uses a hardcoded 70% not-found rate
+    from zip search for the detail-scraper fallback estimate.
+    """
+    from database import init_db, get_session, PreForeclosure
+    init_db()
+    db = get_session()
+    try:
+        properties = db.query(PreForeclosure).filter(PreForeclosure.id.in_(property_ids)).all()
+        has_url = sum(1 for pf in properties if pf.zillow_url)
+        # Only count zips from properties that will actually go through zip search
+        zips = set(pf.zip_code for pf in properties
+                   if pf.zip_code and pf.zip_code != "unknown" and not pf.zillow_url)
+
+        zip_calls = len(zips)
+        # Properties with zillow_url skip zip search and go straight to detail scraper
+        zip_search_properties = len(properties) - has_url
+        # TODO: Replace NOT_FOUND_RATE_ESTIMATE with actual historical rate
+        # from accumulated scan data once we have enough history.
+        estimated_not_found = int(zip_search_properties * NOT_FOUND_RATE_ESTIMATE)
+        detail_calls = estimated_not_found + has_url
+
+        detail_enabled = os.getenv("MLS_DETAIL_FALLBACK_ENABLED", "true").lower() != "false"
+        if not detail_enabled:
+            detail_calls = has_url  # Only properties with explicit URLs
+
+        zip_cost = zip_calls * COST_ZIP_SEARCH
+        detail_cost = detail_calls * COST_DETAIL_SCRAPER
+        total_cost = zip_cost + detail_cost
+
+        return {
+            "property_count": len(properties),
+            "unique_zips": zip_calls,
+            "properties_with_url": has_url,
+            "estimated_zip_calls": zip_calls,
+            "estimated_detail_calls": detail_calls,
+            "zip_cost": round(zip_cost, 2),
+            "detail_cost": round(detail_cost, 2),
+            "total_cost": round(total_cost, 2),
+            "detail_fallback_enabled": detail_enabled,
+            "not_found_rate_assumption": NOT_FOUND_RATE_ESTIMATE,
+        }
+    finally:
+        db.close()
+
+
+def run_preforeclosure_scan(property_ids=None):
     """Scan pre-foreclosure properties on Zillow for MLS status changes.
 
-    Runs every 3 days. Groups properties by zip code to minimize Apify calls.
-    Detects Monitoring → On Market transitions and sends email + sets is_new flag.
+    Args:
+        property_ids: Required list of property IDs to scan.
+                      Pass None only from the auto-scheduler (scans all).
+
+    Groups properties by zip code to minimize Apify calls.
+    Detects Monitoring -> On Market transitions and sends email + sets is_new flag.
+    After zip-search pass, runs detail-scraper fallback for "not found" properties.
+
+    Returns dict with scan results summary.
 
     Config env vars:
-      MLS_CHECKER_ENABLED: "true" (default) or "false" — kill switch
-      MLS_BATCH_SIZE: max properties per run (default: all)
-      MLS_DELAY_SECONDS: delay between zip code searches (default: 3)
+      MLS_AUTO_SCAN_ENABLED: "false" (default) — set to "true" to enable scheduled scans
+      MLS_DELAY_SECONDS: delay between Apify calls (default: 3)
+      MLS_DETAIL_FALLBACK_ENABLED: "true" (default) — enable detail-scraper second pass
     """
-    # Kill switch
-    if os.getenv("MLS_CHECKER_ENABLED", "true").lower() == "false":
-        logger.info("MLS checker disabled via MLS_CHECKER_ENABLED=false, skipping")
-        return
-
     now_pst = datetime.now(PST)
     logger.info(f"=== PRE-FORECLOSURE SCAN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
 
-    batch_size = int(os.getenv("MLS_BATCH_SIZE", "0")) or None  # 0 = unlimited
     delay_seconds = int(os.getenv("MLS_DELAY_SECONDS", "3"))
+    detail_fallback = os.getenv("MLS_DETAIL_FALLBACK_ENABLED", "true").lower() != "false"
 
     try:
         import requests as req
@@ -112,30 +174,33 @@ def run_preforeclosure_scan():
         APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
         if not APIFY_API_KEY:
             logger.error("APIFY_API_KEY not set, skipping pre-foreclosure scan")
-            return
+            return {"error": "APIFY_API_KEY not set"}
 
         init_db()
         db = get_session()
-        query = db.query(PreForeclosure).filter(
-            (PreForeclosure.is_archived == False) | (PreForeclosure.is_archived == None)
-        ).filter(PreForeclosure.mls_status != "offer-submitted")
-        if batch_size:
-            query = query.limit(batch_size)
-        properties = query.all()
-        logger.info(f"Scanning {len(properties)} pre-foreclosure properties (batch_size={batch_size or 'all'}, delay={delay_seconds}s)...")
+
+        if property_ids:
+            properties = db.query(PreForeclosure).filter(PreForeclosure.id.in_(property_ids)).all()
+        else:
+            # Auto-scheduler path: scan all non-archived, non-offer-submitted
+            properties = db.query(PreForeclosure).filter(
+                (PreForeclosure.is_archived == False) | (PreForeclosure.is_archived == None)
+            ).filter(PreForeclosure.mls_status != "offer-submitted").all()
+
+        logger.info(f"Scanning {len(properties)} pre-foreclosure properties (delay={delay_seconds}s, detail_fallback={detail_fallback})...")
 
         # Group by zip code to minimize Apify calls
         by_zip = {}
         for pf in properties:
             z = pf.zip_code or "unknown"
-            if z not in by_zip:
-                by_zip[z] = []
-            by_zip[z].append(pf)
+            by_zip.setdefault(z, []).append(pf)
 
         scanned = 0
         errors = 0
         apify_calls = 0
+        actual_cost = 0.0
         new_on_market = []
+        not_found = []  # Properties that need detail-scraper fallback
 
         for zip_code, pf_list in by_zip.items():
             if zip_code == "unknown":
@@ -144,9 +209,21 @@ def run_preforeclosure_scan():
                     pf.last_scanned = dt.utcnow()
                     pf.scan_error_count = (pf.scan_error_count or 0) + 1
                     pf.last_scan_error = "No zip code"
+                    errors += 1
+                db.commit()
                 continue
 
-            logger.info(f"  Searching zip {zip_code} ({len(pf_list)} properties)...")
+            # Separate properties with zillow_url (skip zip search, go to detail)
+            url_props = [pf for pf in pf_list if pf.zillow_url]
+            zip_props = [pf for pf in pf_list if not pf.zillow_url]
+
+            # Properties with URLs go directly to the detail fallback list
+            not_found.extend(url_props)
+
+            if not zip_props:
+                continue
+
+            logger.info(f"  Searching zip {zip_code} ({len(zip_props)} properties)...")
             api_url = "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search/run-sync-get-dataset-items"
             payload = {"zipCodes": [zip_code], "maxItems": 50}
 
@@ -155,6 +232,7 @@ def run_preforeclosure_scan():
             for attempt in range(3):
                 try:
                     apify_calls += 1
+                    actual_cost += COST_ZIP_SEARCH
                     resp = req.post(api_url, params={"token": APIFY_API_KEY}, json=payload,
                                     headers={"Content-Type": "application/json"}, timeout=120)
                     if resp.status_code == 429:
@@ -164,10 +242,11 @@ def run_preforeclosure_scan():
                         continue
                     if resp.status_code not in (200, 201):
                         logger.error(f"  Apify error {resp.status_code} for zip {zip_code}: {resp.text[:200]}")
-                        for pf in pf_list:
+                        for pf in zip_props:
                             pf.last_scanned = dt.utcnow()
                             pf.scan_error_count = (pf.scan_error_count or 0) + 1
                             pf.last_scan_error = f"Apify HTTP {resp.status_code}"
+                            errors += 1
                         break
                     all_results = resp.json()
                     break
@@ -176,19 +255,21 @@ def run_preforeclosure_scan():
                     if attempt < 2:
                         time.sleep(2 ** attempt)
                     else:
-                        for pf in pf_list:
+                        for pf in zip_props:
                             pf.last_scanned = dt.utcnow()
                             pf.scan_error_count = (pf.scan_error_count or 0) + 1
                             pf.last_scan_error = "Apify timeout after 3 attempts"
+                            errors += 1
                 except req.exceptions.ConnectionError as e:
                     logger.warning(f"  Apify connection error attempt {attempt+1}/3: {e}")
                     if attempt < 2:
                         time.sleep(2 ** attempt)
                     else:
-                        for pf in pf_list:
+                        for pf in zip_props:
                             pf.last_scanned = dt.utcnow()
                             pf.scan_error_count = (pf.scan_error_count or 0) + 1
                             pf.last_scan_error = f"Connection error: {str(e)[:100]}"
+                            errors += 1
 
             if all_results is None:
                 db.commit()
@@ -196,12 +277,16 @@ def run_preforeclosure_scan():
 
             logger.info(f"  Got {len(all_results)} Zillow listings for {zip_code}")
 
-            for pf in pf_list:
+            for pf in zip_props:
                 try:
-                    _scan_single_property(pf, all_results, zip_code, new_on_market)
-                    # Clear error tracking on success
-                    pf.scan_error_count = 0
-                    pf.last_scan_error = None
+                    found = _scan_single_property(pf, all_results, zip_code, new_on_market)
+                    if found:
+                        # Matched in zip search — clear error tracking
+                        pf.scan_error_count = 0
+                        pf.last_scan_error = None
+                    else:
+                        # Not found in zip search — queue for detail fallback
+                        not_found.append(pf)
                     scanned += 1
                 except Exception as e:
                     logger.error(f"  Error processing {pf.address}: {e}")
@@ -210,34 +295,64 @@ def run_preforeclosure_scan():
                     pf.last_scan_error = f"{type(e).__name__}: {str(e)[:100]}"
                     errors += 1
 
-            # Commit after each zip to prevent connection timeout
             db.commit()
             time.sleep(delay_seconds)
+
+        # ── Pass 2: Detail-scraper fallback for "not found" properties ──
+        if not_found and detail_fallback:
+            logger.info(f"  Detail fallback: {len(not_found)} properties to check...")
+            detail_results = _detail_fallback_pass(
+                not_found, db, APIFY_API_KEY, delay_seconds, new_on_market
+            )
+            apify_calls += detail_results["calls"]
+            actual_cost += detail_results["calls"] * COST_DETAIL_SCRAPER
+            scanned += detail_results["scanned"]
+            errors += detail_results["errors"]
+        elif not_found:
+            logger.info(f"  Detail fallback disabled, {len(not_found)} properties unchecked")
+            # Still update last_scanned for these — don't increment error count
+            from datetime import datetime as dt
+            for pf in not_found:
+                pf.last_scanned = dt.utcnow()
+                # Don't touch scan_error_count — clean not-found is not an error
+            db.commit()
 
         # Save alert data before closing session
         alert_data = []
         for pf in new_on_market:
-            alert_data.append({"address": pf.address, "city": pf.city, "mls_price": pf.mls_price, "estimated_value": pf.estimated_value})
+            alert_data.append({"address": pf.address, "city": pf.city,
+                               "mls_price": pf.mls_price, "estimated_value": pf.estimated_value})
 
         db.commit()
         db.close()
 
-        logger.info(f"Pre-foreclosure scan complete: {scanned} scanned, {errors} errors, {apify_calls} Apify calls, {len(new_on_market)} new on market")
+        summary = {
+            "scanned": scanned,
+            "errors": errors,
+            "apify_calls": apify_calls,
+            "actual_cost": round(actual_cost, 2),
+            "new_on_market": len(new_on_market),
+            "detail_fallback_checked": len(not_found) if detail_fallback else 0,
+        }
+        logger.info(f"Pre-foreclosure scan complete: {summary}")
 
         # Send alert for newly listed properties
         if alert_data:
             _send_new_listing_alert(alert_data)
 
+        return summary
+
     except Exception as e:
         logger.error(f"Pre-foreclosure scan failed: {e}", exc_info=True)
+        return {"error": str(e)}
 
 
 def _scan_single_property(pf, all_results, zip_code, new_on_market):
-    """Process a single pre-foreclosure property against Zillow results.
+    """Process a single pre-foreclosure property against Zillow zip-search results.
 
-    Updates: mls_status, previous_mls_status, listed_at, is_new, mls_price,
-    ai_notes, last_scanned, scan_error_count, last_scan_error.
+    Returns True if matched, False if not found (needs detail fallback).
     Does NOT auto-populate estimated_value.
+    Does NOT increment scan_error_count on clean not-found.
     """
     from datetime import datetime as dt
 
@@ -255,20 +370,30 @@ def _scan_single_property(pf, all_results, zip_code, new_on_market):
     pf.last_scanned = dt.utcnow()
 
     if not matched:
-        # Not found — set to Monitoring (shown as "Monitoring" in dashboard)
-        pf.mls_status = "unknown"
-        pf.ai_notes = f"Not found on Zillow ({len(all_results)} listings in {zip_code})"
+        # Not found in zip search — don't update status yet, detail fallback will handle it
         pf.is_new = False  # Clear stale new flag
-        return
+        return False
+
+    _apply_zillow_match(pf, matched, prev_status, new_on_market)
+    return True
+
+
+def _apply_zillow_match(pf, matched, prev_status, new_on_market):
+    """Apply a Zillow match result to a PreForeclosure record.
+
+    Shared by both zip-search and detail-scraper paths.
+    """
+    from datetime import datetime as dt
 
     home_info = matched.get("hdpData", {}).get("homeInfo", {})
-    home_status = (home_info.get("homeStatus") or matched.get("statusType") or "").upper()
-    price = home_info.get("price") or matched.get("unformattedPrice")
+    home_status = (home_info.get("homeStatus") or matched.get("homeStatus")
+                   or matched.get("statusType") or "").upper()
+    price = home_info.get("price") or matched.get("price") or matched.get("unformattedPrice")
     zestimate = home_info.get("zestimate") or matched.get("zestimate")
 
-    # Check if it's an auction listing (not a real MLS listing)
+    # Check if it's an auction listing
     status_text = (matched.get("statusText") or "").upper()
-    raw_price = home_info.get("price") or matched.get("unformattedPrice")
+    raw_price = price
     try:
         price_num = float(str(raw_price).replace("$", "").replace(",", "") or 0)
     except (ValueError, TypeError):
@@ -282,12 +407,14 @@ def _scan_single_property(pf, all_results, zip_code, new_on_market):
 
     if is_auction:
         pf.mls_status = "auction"
-    elif "FOR_SALE" in home_status:
+    elif "FOR_SALE" in home_status or "ACTIVE" in home_status:
         pf.mls_status = "on-market"
-    elif "PENDING" in home_status or "OTHER" in home_status:
+    elif "PENDING" in home_status or "OTHER" in home_status or "UNDER_CONTRACT" in home_status:
         pf.mls_status = "on-market"
     elif "FORECLOSURE" in home_status or "PRE_FORECLOSURE" in home_status:
         pf.mls_status = "pre-foreclosure"
+    elif "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
+        pf.mls_status = "unknown"
     else:
         pf.mls_status = "unknown"
 
@@ -312,13 +439,121 @@ def _scan_single_property(pf, all_results, zip_code, new_on_market):
             pass
     pf.ai_notes = " | ".join(notes)
 
-    # Detect Monitoring → On Market transition
+    # Detect Monitoring -> On Market transition
     is_new_listing = (prev_status != "on-market" and pf.mls_status == "on-market")
     pf.is_new = is_new_listing
     if is_new_listing:
         pf.listed_at = dt.utcnow()
         new_on_market.append(pf)
         logger.info(f"  NEW ON MARKET: {pf.address}, {pf.city}")
+
+
+def _detail_fallback_pass(properties, db, apify_api_key, delay_seconds, new_on_market):
+    """Second pass: use zillow-detail-scraper for properties not found in zip search.
+
+    Uses zillow_url if set, otherwise builds a search URL from the address.
+    Only increments scan_error_count on actual lookup failures, NOT on clean not-found.
+    """
+    import requests as req
+    import re
+    from datetime import datetime as dt
+
+    DETAIL_API = "https://api.apify.com/v2/acts/maxcopell~zillow-detail-scraper/run-sync-get-dataset-items"
+    calls = 0
+    scanned = 0
+    errors = 0
+
+    for i, pf in enumerate(properties):
+        # Build the URL to look up
+        if pf.zillow_url:
+            lookup_url = pf.zillow_url
+            logger.info(f"  Detail [{i+1}/{len(properties)}] {pf.address} (using saved URL)")
+        else:
+            # Build Zillow search URL from address
+            full_addr = f"{pf.address}, {pf.city}, {pf.state or 'CA'} {pf.zip_code or ''}"
+            clean = full_addr.strip().lower()
+            clean = re.sub(r'[^a-z0-9\s]', '', clean)
+            slug = clean.replace(' ', '-')
+            lookup_url = f"https://www.zillow.com/homes/{slug}_rb/"
+            logger.info(f"  Detail [{i+1}/{len(properties)}] {pf.address} -> {lookup_url}")
+
+        prev_status = pf.mls_status
+        pf.previous_mls_status = prev_status
+        pf.last_scanned = dt.utcnow()
+
+        # Retry with backoff
+        result_item = None
+        lookup_error = None
+        for attempt in range(3):
+            try:
+                calls += 1
+                payload = {
+                    "startUrls": [{"url": lookup_url}],
+                    "maxItems": 1,
+                    "proxyConfiguration": {
+                        "useApifyProxy": True,
+                        "apifyProxyGroups": ["BUYPROXIES94952"]
+                    }
+                }
+                resp = req.post(DETAIL_API, params={"token": apify_api_key},
+                                json=payload, headers={"Content-Type": "application/json"},
+                                timeout=120)
+
+                if resp.status_code == 429:
+                    wait = 2 ** (attempt + 1)
+                    logger.warning(f"  Detail scraper rate limited, waiting {wait}s")
+                    time.sleep(wait)
+                    continue
+
+                if resp.status_code not in (200, 201):
+                    lookup_error = f"Detail scraper HTTP {resp.status_code}"
+                    break
+
+                data = resp.json()
+                if data and isinstance(data, list) and len(data) > 0:
+                    result_item = data[0]
+                break
+
+            except req.exceptions.Timeout:
+                lookup_error = "Detail scraper timeout"
+                logger.warning(f"  Detail timeout attempt {attempt+1}/3 for {pf.address}")
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+            except req.exceptions.ConnectionError as e:
+                lookup_error = f"Connection error: {str(e)[:80]}"
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+
+        if lookup_error:
+            # Actual failure — increment error count
+            pf.scan_error_count = (pf.scan_error_count or 0) + 1
+            pf.last_scan_error = lookup_error
+            pf.mls_status = "unknown"
+            pf.ai_notes = f"Detail lookup failed: {lookup_error}"
+            errors += 1
+        elif result_item:
+            # Found via detail scraper
+            _apply_zillow_match(pf, result_item, prev_status, new_on_market)
+            pf.scan_error_count = 0
+            pf.last_scan_error = None
+            scanned += 1
+        else:
+            # Clean not-found: scraper ran fine but property isn't listed
+            # Do NOT increment scan_error_count — this is normal for pre-foreclosures
+            pf.mls_status = "unknown"
+            pf.ai_notes = "Not found on Zillow (zip search + detail scraper)"
+            pf.is_new = False
+            scanned += 1
+
+        # Commit in batches of 10
+        if (i + 1) % 10 == 0:
+            db.commit()
+
+        time.sleep(delay_seconds)
+
+    db.commit()
+    logger.info(f"  Detail fallback complete: {scanned} scanned, {errors} errors, {calls} Apify calls")
+    return {"scanned": scanned, "errors": errors, "calls": calls}
 
 
 def _send_new_listing_alert(alert_data):
@@ -380,19 +615,18 @@ if __name__ == "__main__":
     # schedule.every().monday.at("14:00").do(run_dealflow_pipeline)
     # schedule.every().thursday.at("14:00").do(run_dealflow_pipeline)
 
-    # Pre-foreclosure MLS scan — every 3 days at 2AM PST = 09:00 UTC
-    # Controlled by MLS_CHECKER_ENABLED env var (default: true)
-    schedule.every(3).days.at("09:00").do(run_preforeclosure_scan)
+    # Pre-foreclosure MLS scan — disabled by default, manual-only via dashboard
+    # Set MLS_AUTO_SCAN_ENABLED=true to enable automatic every-3-day scanning
+    mls_auto = os.getenv("MLS_AUTO_SCAN_ENABLED", "false").lower() == "true"
+    if mls_auto:
+        schedule.every(3).days.at("09:00").do(run_preforeclosure_scan)
 
-    mls_enabled = os.getenv("MLS_CHECKER_ENABLED", "true").lower() != "false"
     logger.info("Scheduled (UTC times, Railway server):")
-    logger.info(f"  - Every 3 days 09:00 UTC (2AM PST): Pre-foreclosure MLS scan ({'ENABLED' if mls_enabled else 'DISABLED via env'})")
+    logger.info(f"  - Pre-foreclosure MLS scan: {'ENABLED every 3 days 09:00 UTC' if mls_auto else 'MANUAL ONLY (MLS_AUTO_SCAN_ENABLED=false)'}")
     logger.info("  - 15:00 UTC (8AM PST): Full updater run")
     logger.info("  - Hourly (9AM-6PM PST): Gmail-only counter checks")
     logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")
 
-    # Skip initial Gmail check on startup — let the schedule handle it
-    # (Previous bug: if gmail check crashes on startup, schedule loop never starts)
     # Start a tiny health server so Railway healthcheck passes
     import threading
     from http.server import HTTPServer, BaseHTTPRequestHandler
