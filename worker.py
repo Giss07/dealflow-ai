@@ -464,18 +464,17 @@ def _detail_fallback_pass(properties, db, apify_api_key, delay_seconds, new_on_m
     errors = 0
 
     for i, pf in enumerate(properties):
-        # Build the URL to look up
-        if pf.zillow_url:
-            lookup_url = pf.zillow_url
+        # Build the lookup input
+        # If zillow_url is set, use startUrls (direct property page).
+        # Otherwise use the addresses field — the actor resolves the
+        # address to a ZPID internally. The old /homes/_rb/ search URL
+        # format no longer works with this actor.
+        use_url = bool(pf.zillow_url)
+        if use_url:
             logger.info(f"  Detail [{i+1}/{len(properties)}] {pf.address} (using saved URL)")
         else:
-            # Build Zillow search URL from address
-            full_addr = f"{pf.address}, {pf.city}, {pf.state or 'CA'} {pf.zip_code or ''}"
-            clean = full_addr.strip().lower()
-            clean = re.sub(r'[^a-z0-9\s]', '', clean)
-            slug = clean.replace(' ', '-')
-            lookup_url = f"https://www.zillow.com/homes/{slug}_rb/"
-            logger.info(f"  Detail [{i+1}/{len(properties)}] {pf.address} -> {lookup_url}")
+            lookup_addr = f"{pf.address}, {pf.city}, {pf.state or 'CA'} {pf.zip_code or ''}"
+            logger.info(f"  Detail [{i+1}/{len(properties)}] {pf.address} -> addresses lookup")
 
         prev_status = pf.mls_status
         pf.previous_mls_status = prev_status
@@ -487,14 +486,24 @@ def _detail_fallback_pass(properties, db, apify_api_key, delay_seconds, new_on_m
         for attempt in range(3):
             try:
                 calls += 1
-                payload = {
-                    "startUrls": [{"url": lookup_url}],
-                    "maxItems": 1,
-                    "proxyConfiguration": {
-                        "useApifyProxy": True,
-                        "apifyProxyGroups": ["BUYPROXIES94952"]
+                if use_url:
+                    payload = {
+                        "startUrls": [{"url": pf.zillow_url}],
+                        "maxItems": 1,
+                        "proxyConfiguration": {
+                            "useApifyProxy": True,
+                            "apifyProxyGroups": ["BUYPROXIES94952"]
+                        }
                     }
-                }
+                else:
+                    payload = {
+                        "addresses": [lookup_addr],
+                        "maxItems": 1,
+                        "proxyConfiguration": {
+                            "useApifyProxy": True,
+                            "apifyProxyGroups": ["BUYPROXIES94952"]
+                        }
+                    }
                 resp = req.post(DETAIL_API, params={"token": apify_api_key},
                                 json=payload, headers={"Content-Type": "application/json"},
                                 timeout=120)
