@@ -1096,18 +1096,40 @@ def api_preforeclosure_new_count():
         db.close()
 
 
-@app.route("/api/preforeclosure/run-scan", methods=["POST"])
-def api_preforeclosure_run_scan():
-    """Trigger a full pre-foreclosure MLS scan on demand."""
-    import threading
-    def _run():
-        try:
-            from worker import run_preforeclosure_scan
-            run_preforeclosure_scan()
-        except Exception as e:
-            logger.error(f"Manual scan trigger failed: {e}")
-    threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"status": "started", "message": "MLS scan started in background"})
+@app.route("/api/preforeclosure/scan-cost-estimate", methods=["POST"])
+def api_preforeclosure_scan_cost_estimate():
+    """Estimate Apify cost for scanning a set of properties."""
+    data = request.get_json() or {}
+    property_ids = data.get("property_ids", [])
+    if not property_ids:
+        return jsonify({"error": "property_ids array required"}), 400
+    try:
+        from worker import estimate_scan_cost
+        estimate = estimate_scan_cost(property_ids)
+        estimate["show_cost_preview"] = os.getenv("SHOW_COST_PREVIEW", "true").lower() != "false"
+        return jsonify(estimate)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/preforeclosure/scan-selected", methods=["POST"])
+def api_preforeclosure_scan_selected():
+    """Scan specific properties by ID. Returns results synchronously.
+
+    Request body: {"property_ids": [1, 2, 3]}
+    Returns scan summary with actual_cost for the toast.
+    """
+    data = request.get_json() or {}
+    property_ids = data.get("property_ids", [])
+    if not property_ids:
+        return jsonify({"error": "property_ids array required"}), 400
+    try:
+        from worker import run_preforeclosure_scan
+        summary = run_preforeclosure_scan(property_ids=property_ids)
+        return jsonify(summary)
+    except Exception as e:
+        logger.error(f"Scan-selected failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/tracker")
