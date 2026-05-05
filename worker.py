@@ -633,20 +633,28 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
 
     # ── Map response fields to PreForeclosure model ──
 
-    # MLS status
+    # MLS status — safe-default logic:
+    # "on-market" ONLY when agent-listed MLS, NOT auction.
+    # Default to "pre-foreclosure" or "auction" when ambiguous.
     home_status = (result_data.get("homeStatus") or "").upper()
-    if "FOR_SALE" in home_status:
-        pf.mls_status = "on-market"
-    elif "PENDING" in home_status:
-        pf.mls_status = "on-market"
-    elif "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
+    listing_type = (result_data.get("listingTypeDimension") or "").lower()
+    listing_source = (result_data.get("listingDataSource") or "").lower()
+    is_agent_listed = "by agent" in listing_type
+    is_auction_source = "auction" in listing_source
+
+    if "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
         pf.mls_status = "unknown"
-    elif "OFF_MARKET" in home_status:
-        pf.mls_status = "unknown"
+    elif "FOR_SALE" in home_status or "PENDING" in home_status:
+        if is_agent_listed and not is_auction_source:
+            pf.mls_status = "on-market"
+        else:
+            pf.mls_status = "auction"
     elif "FORECLOSURE" in home_status or "PRE_FORECLOSURE" in home_status:
         pf.mls_status = "pre-foreclosure"
-    else:
+    elif "OFF_MARKET" in home_status:
         pf.mls_status = "unknown"
+    else:
+        pf.mls_status = "pre-foreclosure"  # Default: safer than on-market
 
     # Price
     price = result_data.get("price")

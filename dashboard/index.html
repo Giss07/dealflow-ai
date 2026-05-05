@@ -1271,7 +1271,7 @@
                 const chevron = expanded ? '&#9660;' : '&#9654;';
                 return `<tr style="${sel ? 'background:rgba(59,130,246,.08);' : ''}">
                     <td><input type="checkbox" id="pf-cb-${p.id}" ${sel?'checked':''} onclick="togglePfSelect(${p.id})" style="cursor:pointer;"></td>
-                    <td><div style="font-weight:500;">${p.address}${p.is_new ? ' <span style="background:#00e5a0;color:#000;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;">NEW</span>' : ''}</div><div style="color:#94a3b8;font-size:12px;">${p.city}${p.state ? ', '+p.state : ''} ${p.zip_code||''}</div></td>
+                    <td><div style="font-weight:500;">${p.address}${p.is_new ? ' <span style="background:#00e5a0;color:#000;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;">NEW</span>' : ''}${!p.listing_type_dimension ? ' <span title="Incomplete data — re-scan recommended" style="background:rgba(234,179,8,.15);color:#eab308;font-size:9px;font-weight:600;padding:2px 5px;border-radius:3px;cursor:help;">⚠ Needs scan</span>' : ''}</div><div style="color:#94a3b8;font-size:12px;">${p.city}${p.state ? ', '+p.state : ''} ${p.zip_code||''}</div></td>
                     <td><span style="font-size:10px;padding:2px 7px;border-radius:3px;background:#334155;color:#94a3b8;">${p.property_type||'SFR'}</span></td>
                     <td style="font-family:monospace;font-size:13px;">${val}</td>
                     <td style="font-size:12px;color:#94a3b8;">${auc}</td>
