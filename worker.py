@@ -36,16 +36,19 @@ PST = pytz.timezone("America/Los_Angeles")
 # Add current dir to path so imports work
 sys.path.insert(0, os.path.dirname(__file__))
 
-# ── Apify cost constants ──────────────────────────────────────────────
-# Measured from actual billing data (2026-05-01):
-#   zillow-zip-search:    avg $0.29/call
-#   zillow-detail-scraper: avg $0.003/call
+# ── API cost constants ────────────────────────────────────────────────
+# Apify (measured from actual billing data, 2026-05-01):
 COST_ZIP_SEARCH = 0.29
 COST_DETAIL_SCRAPER = 0.003
 # TODO: Replace the 70% not-found assumption with actual historical
 # not-found rate computed from scan_error_count + last_scanned data
 # once we accumulate enough scan history.
 NOT_FOUND_RATE_ESTIMATE = 0.70
+
+# OpenWeb Ninja Real-Time Zillow Data API:
+#   $0.0025 per call, direct address lookup, 1-2s response time
+#   Free tier: 100 requests/month — keep dev scans to <=5 properties
+COST_OPENWEB_NINJA = 0.0025
 
 
 def run_full():
@@ -96,24 +99,35 @@ def run_gmail_only():
 
 
 def estimate_scan_cost(property_ids):
-    """Estimate Apify cost for scanning a set of properties.
+    """Estimate cost for scanning a set of properties.
 
-    Returns dict with cost breakdown. Uses a hardcoded 70% not-found rate
-    from zip search for the detail-scraper fallback estimate.
+    Uses OpenWeb Ninja pricing when USE_OPENWEB_NINJA=true (simple: N × $0.0025),
+    otherwise Apify pricing with zip/detail split.
     """
     from database import init_db, get_session, PreForeclosure
+    use_openweb = os.getenv("USE_OPENWEB_NINJA", "false").lower() == "true"
     init_db()
     db = get_session()
     try:
         properties = db.query(PreForeclosure).filter(PreForeclosure.id.in_(property_ids)).all()
+        count = len(properties)
+
+        if use_openweb:
+            total = count * COST_OPENWEB_NINJA
+            return {
+                "property_count": count,
+                "provider": "openweb_ninja",
+                "estimated_calls": count,
+                "cost_per_call": COST_OPENWEB_NINJA,
+                "total_cost": round(total, 2),
+            }
+
+        # Apify path
         has_url = sum(1 for pf in properties if pf.zillow_url)
-        # Only count zips from properties that will actually go through zip search
         zips = set(pf.zip_code for pf in properties
                    if pf.zip_code and pf.zip_code != "unknown" and not pf.zillow_url)
-
         zip_calls = len(zips)
-        # Properties with zillow_url skip zip search and go straight to detail scraper
-        zip_search_properties = len(properties) - has_url
+        zip_search_properties = count - has_url
         # TODO: Replace NOT_FOUND_RATE_ESTIMATE with actual historical rate
         # from accumulated scan data once we have enough history.
         estimated_not_found = int(zip_search_properties * NOT_FOUND_RATE_ESTIMATE)
@@ -121,14 +135,15 @@ def estimate_scan_cost(property_ids):
 
         detail_enabled = os.getenv("MLS_DETAIL_FALLBACK_ENABLED", "true").lower() != "false"
         if not detail_enabled:
-            detail_calls = has_url  # Only properties with explicit URLs
+            detail_calls = has_url
 
         zip_cost = zip_calls * COST_ZIP_SEARCH
         detail_cost = detail_calls * COST_DETAIL_SCRAPER
         total_cost = zip_cost + detail_cost
 
         return {
-            "property_count": len(properties),
+            "property_count": count,
+            "provider": "apify",
             "unique_zips": zip_calls,
             "properties_with_url": has_url,
             "estimated_zip_calls": zip_calls,
@@ -236,16 +251,13 @@ def run_preforeclosure_scan(property_ids=None, job_id=None):
 
     delay_seconds = int(os.getenv("MLS_DELAY_SECONDS", "3"))
     detail_fallback = os.getenv("MLS_DETAIL_FALLBACK_ENABLED", "true").lower() != "false"
+    use_openweb = os.getenv("USE_OPENWEB_NINJA", "false").lower() == "true"
+    OPENWEB_KEY = os.getenv("OPENWEB_NINJA_API_KEY", "")
 
     try:
         import requests as req
         from database import init_db, get_session, PreForeclosure
         from datetime import datetime as dt
-
-        APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
-        if not APIFY_API_KEY:
-            logger.error("APIFY_API_KEY not set, skipping pre-foreclosure scan")
-            return {"error": "APIFY_API_KEY not set"}
 
         init_db()
         db = get_session()
@@ -253,12 +265,72 @@ def run_preforeclosure_scan(property_ids=None, job_id=None):
         if property_ids:
             properties = db.query(PreForeclosure).filter(PreForeclosure.id.in_(property_ids)).all()
         else:
-            # Auto-scheduler path: scan all non-archived, non-offer-submitted
             properties = db.query(PreForeclosure).filter(
                 (PreForeclosure.is_archived == False) | (PreForeclosure.is_archived == None)
             ).filter(PreForeclosure.mls_status != "offer-submitted").all()
 
-        logger.info(f"Scanning {len(properties)} pre-foreclosure properties (delay={delay_seconds}s, detail_fallback={detail_fallback})...")
+        # ── OpenWeb Ninja path (feature flag) ──
+        if use_openweb and OPENWEB_KEY:
+            # FREE TIER SAFEGUARD: Basic plan = 100 req/month.
+            # For development, keep scans to <=5 properties.
+            if len(properties) > 10:
+                logger.warning(f"OpenWeb Ninja: scanning {len(properties)} properties. "
+                               f"Free tier is 100 req/month — consider using MLS_BATCH_SIZE or selecting fewer properties.")
+
+            logger.info(f"Scanning {len(properties)} properties via OpenWeb Ninja (delay={delay_seconds}s)...")
+            scanned = 0
+            errors = 0
+            apify_calls = 0  # reused field name for consistency in summary
+            actual_cost = 0.0
+            new_on_market = []
+
+            for i, pf in enumerate(properties):
+                try:
+                    found = _scan_via_openweb_ninja(pf, OPENWEB_KEY, delay_seconds, new_on_market)
+                    apify_calls += 1
+                    actual_cost += COST_OPENWEB_NINJA
+                    if found:
+                        pf.scan_error_count = 0
+                        pf.last_scan_error = None
+                    scanned += 1
+                except Exception as e:
+                    logger.error(f"  Error processing {pf.address}: {e}")
+                    pf.last_scanned = dt.utcnow()
+                    pf.scan_error_count = (pf.scan_error_count or 0) + 1
+                    pf.last_scan_error = f"{type(e).__name__}: {str(e)[:100]}"
+                    errors += 1
+
+                # Commit + update job progress every property
+                db.commit()
+                _update_job_progress(job_id, db, scanned=scanned, errors=errors,
+                                     actual_cost=round(actual_cost, 4),
+                                     new_on_market=len(new_on_market))
+                if i < len(properties) - 1:
+                    time.sleep(delay_seconds)
+
+            alert_data = [{"address": pf.address, "city": pf.city,
+                           "mls_price": pf.mls_price, "estimated_value": pf.estimated_value}
+                          for pf in new_on_market]
+            db.commit()
+            db.close()
+
+            summary = {
+                "scanned": scanned, "errors": errors,
+                "apify_calls": apify_calls, "actual_cost": round(actual_cost, 4),
+                "new_on_market": len(new_on_market), "provider": "openweb_ninja",
+            }
+            logger.info(f"Pre-foreclosure scan complete: {summary}")
+            if alert_data:
+                _send_new_listing_alert(alert_data)
+            return summary
+
+        # ── Apify path (existing) ──
+        APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
+        if not APIFY_API_KEY:
+            logger.error("No API key configured (APIFY_API_KEY or OPENWEB_NINJA_API_KEY)")
+            return {"error": "No API key configured"}
+
+        logger.info(f"Scanning {len(properties)} pre-foreclosure properties via Apify (delay={delay_seconds}s, detail_fallback={detail_fallback})...")
 
         # Group by zip code to minimize Apify calls
         by_zip = {}
@@ -450,6 +522,202 @@ def _scan_single_property(pf, all_results, zip_code, new_on_market):
 
     _apply_zillow_match(pf, matched, prev_status, new_on_market)
     return True
+
+
+def _parse_date_safe(value):
+    """Parse a date string to datetime. Returns None if unparseable.
+
+    Handles: "2026-05-01", "2026-05-01T12:00:00", "05/01/2026", epoch ints.
+    All date fields from OpenWeb Ninja should go through this — store NULL
+    rather than unparseable strings.
+    """
+    if not value:
+        return None
+    from datetime import datetime as dt
+    if isinstance(value, (int, float)):
+        try:
+            return dt.utcfromtimestamp(value / 1000 if value > 1e12 else value)
+        except (ValueError, OSError):
+            return None
+    value = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f",
+                "%m/%d/%Y", "%m-%d-%Y", "%Y/%m/%d"):
+        try:
+            return dt.strptime(value, fmt)
+        except ValueError:
+            continue
+    logger.warning(f"Could not parse date: {value!r}")
+    return None
+
+
+def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
+    """Scan a single property via OpenWeb Ninja Real-Time Zillow Data API.
+
+    Direct address lookup — no zip grouping, no address matching needed.
+    Populates MLS status, foreclosure data, and property details.
+    Returns True if data found, False if not found.
+    Does NOT increment scan_error_count on clean not-found.
+
+    FREE TIER WARNING: Basic plan has only 100 requests/month.
+    Keep dev/test scans to <=5 properties to preserve quota.
+    """
+    import requests as req
+    from datetime import datetime as dt
+
+    full_addr = f"{pf.address}, {pf.city}, {pf.state or 'CA'} {pf.zip_code or ''}".strip()
+    logger.info(f"  OpenWeb [{pf.id}] {full_addr}")
+
+    prev_status = pf.mls_status
+    pf.previous_mls_status = prev_status
+    pf.last_scanned = dt.utcnow()
+
+    # Retry with backoff
+    result_data = None
+    lookup_error = None
+    for attempt in range(3):
+        try:
+            resp = req.get(
+                "https://api.openwebninja.com/realtime-zillow-data/property-details-address",
+                params={"address": full_addr},
+                headers={"x-api-key": api_key},
+                timeout=30,
+            )
+            if resp.status_code == 429:
+                wait = 2 ** (attempt + 1)
+                logger.warning(f"  OpenWeb rate limited (429), waiting {wait}s")
+                time.sleep(wait)
+                continue
+            if resp.status_code == 404:
+                # Property not found — clean not-found, not an error
+                break
+            if resp.status_code not in (200, 201):
+                lookup_error = f"OpenWeb HTTP {resp.status_code}"
+                break
+
+            body = resp.json()
+            data = body.get("data") or body
+            if not data or not data.get("zpid"):
+                # Empty/invalid response — treat as not found
+                break
+            result_data = data
+            break
+
+        except req.exceptions.Timeout:
+            lookup_error = "OpenWeb timeout"
+            logger.warning(f"  OpenWeb timeout attempt {attempt+1}/3 for {pf.address}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+        except req.exceptions.ConnectionError as e:
+            lookup_error = f"Connection error: {str(e)[:80]}"
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+        except (ValueError, KeyError) as e:
+            lookup_error = f"Response parse error: {str(e)[:80]}"
+            break
+
+    if lookup_error:
+        # Real failure — increment error count
+        pf.scan_error_count = (pf.scan_error_count or 0) + 1
+        pf.last_scan_error = lookup_error
+        pf.ai_notes = f"OpenWeb lookup failed: {lookup_error}"
+        logger.error(f"  OpenWeb FAILED for {pf.address}: {lookup_error}")
+        return False
+
+    if not result_data:
+        # Clean not-found — property not on Zillow. NOT an error.
+        pf.mls_status = "unknown"
+        pf.ai_notes = "Not found on Zillow (OpenWeb Ninja)"
+        pf.is_new = False
+        return False
+
+    # ── Map response fields to PreForeclosure model ──
+
+    # MLS status
+    home_status = (result_data.get("homeStatus") or "").upper()
+    if "FOR_SALE" in home_status:
+        pf.mls_status = "on-market"
+    elif "PENDING" in home_status:
+        pf.mls_status = "on-market"
+    elif "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
+        pf.mls_status = "unknown"
+    elif "OFF_MARKET" in home_status:
+        pf.mls_status = "unknown"
+    elif "FORECLOSURE" in home_status or "PRE_FORECLOSURE" in home_status:
+        pf.mls_status = "pre-foreclosure"
+    else:
+        pf.mls_status = "unknown"
+
+    # Price
+    price = result_data.get("price")
+    if price:
+        try:
+            pf.mls_price = float(price)
+        except (ValueError, TypeError):
+            pass
+
+    # Zillow URL (auto-populate from hdpUrl)
+    hdp_url = result_data.get("hdpUrl")
+    if hdp_url and not pf.zillow_url:
+        pf.zillow_url = f"https://www.zillow.com{hdp_url}" if hdp_url.startswith("/") else hdp_url
+
+    # Foreclosure data
+    pf.foreclosing_bank = result_data.get("foreclosingBank") or pf.foreclosing_bank
+    pf.foreclosure_default_description = result_data.get("foreclosureDefaultDescription") or pf.foreclosure_default_description
+    pf.foreclosure_default_filing_date = _parse_date_safe(result_data.get("foreclosureDefaultFilingDate")) or pf.foreclosure_default_filing_date
+    pf.foreclosure_auction_filing_date = _parse_date_safe(result_data.get("foreclosureAuctionFilingDate")) or pf.foreclosure_auction_filing_date
+    pf.foreclosure_auction_city = result_data.get("foreclosureAuctionCity") or pf.foreclosure_auction_city
+    pf.foreclosure_auction_location = result_data.get("foreclosureAuctionLocation") or pf.foreclosure_auction_location
+    pf.foreclosure_auction_time = _parse_date_safe(result_data.get("foreclosureAuctionTime")) or pf.foreclosure_auction_time
+    pf.foreclosure_unpaid_balance = _safe_float(result_data.get("foreclosureUnpaidBalance")) or pf.foreclosure_unpaid_balance
+    pf.foreclosure_past_due_balance = _safe_float(result_data.get("foreclosurePastDueBalance")) or pf.foreclosure_past_due_balance
+    pf.foreclosure_loan_amount = _safe_float(result_data.get("foreclosureLoanAmount")) or pf.foreclosure_loan_amount
+    pf.foreclosure_loan_originator = result_data.get("foreclosureLoanOriginator") or pf.foreclosure_loan_originator
+    pf.foreclosure_loan_date = _parse_date_safe(result_data.get("foreclosureLoanDate")) or pf.foreclosure_loan_date
+    pf.foreclosure_judicial_type = result_data.get("foreclosureJudicialType") or pf.foreclosure_judicial_type
+
+    # Property/listing data
+    pf.last_sold_price = _safe_float(result_data.get("lastSoldPrice")) or pf.last_sold_price
+    pf.year_built = result_data.get("yearBuilt") if isinstance(result_data.get("yearBuilt"), int) else pf.year_built
+    pf.listing_type_dimension = result_data.get("listingTypeDimension") or pf.listing_type_dimension
+    pf.price_change = _safe_float(result_data.get("priceChange")) or pf.price_change
+    pf.price_change_date = _parse_date_safe(result_data.get("priceChangeDateString")) or pf.price_change_date
+    pf.days_on_zillow = result_data.get("daysOnZillow") if isinstance(result_data.get("daysOnZillow"), int) else pf.days_on_zillow
+
+    # Build notes
+    notes = [f"Zillow: {home_status}"]
+    if price:
+        notes.append(f"${float(price):,.0f}")
+    zest = result_data.get("zestimate")
+    if zest:
+        notes.append(f"Zest: ${float(zest):,.0f}")
+    if result_data.get("foreclosingBank"):
+        notes.append(f"Bank: {result_data['foreclosingBank']}")
+    pf.ai_notes = " | ".join(notes)
+
+    # Clear error tracking on success
+    pf.scan_error_count = 0
+    pf.last_scan_error = None
+
+    # Detect Monitoring -> On Market transition
+    is_new_listing = (prev_status != "on-market" and pf.mls_status == "on-market")
+    pf.is_new = is_new_listing
+    if is_new_listing:
+        pf.listed_at = dt.utcnow()
+        new_on_market.append(pf)
+        logger.info(f"  NEW ON MARKET: {pf.address}, {pf.city}")
+
+    return True
+
+
+def _safe_float(value):
+    """Convert a value to float, returning None on failure."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def _apply_zillow_match(pf, matched, prev_status, new_on_market):

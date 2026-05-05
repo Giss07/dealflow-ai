@@ -1029,6 +1029,9 @@
         let pfFilter = 'all';
         let pfSearch = '';
         let pfSelected = new Set();
+        let pfSort = 'default';
+        let pfAuctionFilter = 'all';
+        let pfExpandedId = null;
 
         function getPfSelectedCount() { return pfSelected.size; }
         function updateScanBtn() {
@@ -1087,6 +1090,19 @@
                 <button class="score-filter-btn ${pfFilter==='on-market'?'active':''}" onclick="setPfFilter('on-market')" style="${pfFilter==='on-market'?'background:#22c55e;border-color:#22c55e;':''}">On Market</button>
                 <button class="score-filter-btn ${pfFilter==='pre-foreclosure'?'active':''}" onclick="setPfFilter('pre-foreclosure')" style="${pfFilter==='pre-foreclosure'?'background:#f97316;border-color:#f97316;':''}">Pre-Foreclosure</button>
                 <button class="score-filter-btn ${pfFilter==='auction'?'active':''}" onclick="setPfFilter('auction')" style="${pfFilter==='auction'?'background:#eab308;border-color:#eab308;':''}">Auction</button>
+                <span style="color:#64748b;font-size:11px;margin-left:4px;">Sort:</span>
+                <select onchange="pfSort=this.value;renderPfRows()" style="background:#334155;border:1px solid #475569;color:#e2e8f0;padding:6px 8px;border-radius:6px;font-size:12px;cursor:pointer;">
+                    <option value="default" ${pfSort==='default'?'selected':''}>Default</option>
+                    <option value="auction" ${pfSort==='auction'?'selected':''}>Auction (soonest)</option>
+                    <option value="dom" ${pfSort==='dom'?'selected':''}>Days on Zillow</option>
+                </select>
+                <span style="color:#64748b;font-size:11px;margin-left:4px;">Auction:</span>
+                <select onchange="pfAuctionFilter=this.value;renderPfRows()" style="background:#334155;border:1px solid #475569;color:#e2e8f0;padding:6px 8px;border-radius:6px;font-size:12px;cursor:pointer;">
+                    <option value="all" ${pfAuctionFilter==='all'?'selected':''}>All</option>
+                    <option value="30" ${pfAuctionFilter==='30'?'selected':''}>< 30 days</option>
+                    <option value="60" ${pfAuctionFilter==='60'?'selected':''}>< 60 days</option>
+                    <option value="90" ${pfAuctionFilter==='90'?'selected':''}>< 90 days</option>
+                </select>
                 <input type="text" placeholder="Search address..." value="${pfSearch}" oninput="pfSearch=this.value;renderPfRows()" style="background:#334155;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:6px;font-size:14px;width:200px;">
                 <button id="btn-pf-archived" onclick="togglePfArchived()" style="background:#475569;color:#e2e8f0;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Show Archived</button>
                 ${newBadge > 0 ? '<button onclick="dismissAllNew()" style="background:#854d0e;color:#fbbf24;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Dismiss All New</button>' : ''}
@@ -1136,17 +1152,111 @@
             return `<span style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:500;${style}"><span style="width:5px;height:5px;border-radius:50%;background:currentColor;"></span>${label}</span>`;
         }
 
+        function pfDetailPanel(p) {
+            const d = (v) => v || '—';
+            const money = (v) => v != null ? '$' + Number(v).toLocaleString() : '—';
+            const date = (v) => v ? new Date(v).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '—';
+            const zlink = p.zillow_url ? `<a href="${p.zillow_url}" target="_blank" style="color:#3b82f6;text-decoration:underline;font-size:12px;">View on Zillow</a>` : '—';
+
+            return `<tr id="pf-detail-${p.id}" style="background:#0f172a;"><td colspan="8" style="padding:0;">
+                <div style="padding:16px 24px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;font-size:12px;color:#cbd5e1;">
+                    <div>
+                        <div style="font-weight:600;color:#f59e0b;margin-bottom:8px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Foreclosure</div>
+                        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;">
+                            <span style="color:#64748b;">Bank</span><span>${d(p.foreclosing_bank)}</span>
+                            <span style="color:#64748b;">Default</span><span>${d(p.foreclosure_default_description)}</span>
+                            <span style="color:#64748b;">Default Filed</span><span>${date(p.foreclosure_default_filing_date)}</span>
+                            <span style="color:#64748b;">Auction Date</span><span>${date(p.foreclosure_auction_time)}</span>
+                            <span style="color:#64748b;">Auction City</span><span>${d(p.foreclosure_auction_city)}</span>
+                            <span style="color:#64748b;">Location</span><span>${d(p.foreclosure_auction_location)}</span>
+                            <span style="color:#64748b;">Judicial</span><span>${d(p.foreclosure_judicial_type)}</span>
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-weight:600;color:#22c55e;margin-bottom:8px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Financial</div>
+                        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;">
+                            <span style="color:#64748b;">Unpaid Bal.</span><span>${money(p.foreclosure_unpaid_balance)}</span>
+                            <span style="color:#64748b;">Past Due</span><span>${money(p.foreclosure_past_due_balance)}</span>
+                            <span style="color:#64748b;">Loan Amt</span><span>${money(p.foreclosure_loan_amount)}</span>
+                            <span style="color:#64748b;">Loan Orig.</span><span>${d(p.foreclosure_loan_originator)}</span>
+                            <span style="color:#64748b;">Loan Date</span><span>${date(p.foreclosure_loan_date)}</span>
+                            <span style="color:#64748b;">Last Sold</span><span>${money(p.last_sold_price)}</span>
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-weight:600;color:#3b82f6;margin-bottom:8px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Property</div>
+                        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;">
+                            <span style="color:#64748b;">Year Built</span><span>${p.year_built || '—'}</span>
+                            <span style="color:#64748b;">Days on Zillow</span><span>${p.days_on_zillow != null ? p.days_on_zillow : '—'}</span>
+                            <span style="color:#64748b;">Price Change</span><span>${p.price_change != null ? money(p.price_change) : '—'}</span>
+                            <span style="color:#64748b;">Change Date</span><span>${date(p.price_change_date)}</span>
+                            <span style="color:#64748b;">Listing Type</span><span>${d(p.listing_type_dimension)}</span>
+                            <span style="color:#64748b;">Zillow</span><span>${zlink}</span>
+                        </div>
+                    </div>
+                </div>
+            </td></tr>`;
+        }
+
+        function togglePfDetail(id) {
+            if (pfExpandedId === id) {
+                pfExpandedId = null;
+            } else {
+                pfExpandedId = id;
+            }
+            renderPfRows();
+        }
+
         function renderPfRows() {
             const tbody = document.getElementById('deals-body');
             const cards = document.getElementById('deal-cards');
             const empty = document.getElementById('empty-state');
             let rows = pfData;
+
+            // Status filter
             if (pfFilter === 'new') {
                 rows = rows.filter(p => p.is_new);
             }
+            // Search filter
             if (pfSearch) {
                 const q = pfSearch.toLowerCase();
                 rows = rows.filter(p => (p.address||'').toLowerCase().includes(q) || (p.city||'').toLowerCase().includes(q));
+            }
+            // Parse MM/DD/YYYY auction_date string to Date. Returns null on failure.
+            function parseAuctionDate(s) {
+                if (!s || typeof s !== 'string') return null;
+                const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+                if (!m) { return null; }
+                const d = new Date(parseInt(m[3]), parseInt(m[1])-1, parseInt(m[2]));
+                return isNaN(d.getTime()) ? null : d;
+            }
+            // Auction date filter (future-only: auction_date >= today AND <= today + N days)
+            if (pfAuctionFilter !== 'all') {
+                const days = parseInt(pfAuctionFilter);
+                const today = new Date(); today.setHours(0,0,0,0);
+                const cutoff = new Date(today); cutoff.setDate(cutoff.getDate() + days);
+                rows = rows.filter(p => {
+                    const ad = parseAuctionDate(p.auction_date);
+                    if (!ad) return false;
+                    return ad >= today && ad <= cutoff;
+                });
+            }
+            // Sort
+            if (pfSort === 'auction') {
+                rows = [...rows].sort((a, b) => {
+                    const da = parseAuctionDate(a.auction_date);
+                    const db = parseAuctionDate(b.auction_date);
+                    if (!da && !db) return 0;
+                    if (!da) return 1;
+                    if (!db) return -1;
+                    return da - db;
+                });
+            } else if (pfSort === 'dom') {
+                rows = [...rows].sort((a, b) => {
+                    const da = a.days_on_zillow ?? -1;
+                    const db2 = b.days_on_zillow ?? -1;
+                    return db2 - da;
+                });
             }
 
             if (!rows.length) { tbody.innerHTML = ''; cards.innerHTML = ''; empty.style.display = 'block'; return; }
@@ -1157,6 +1267,8 @@
                 const checked = p.last_scanned ? new Date(p.last_scanned).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : 'Never';
                 const auc = p.auction_date || '—';
                 const sel = pfSelected.has(p.id);
+                const expanded = pfExpandedId === p.id;
+                const chevron = expanded ? '&#9660;' : '&#9654;';
                 return `<tr style="${sel ? 'background:rgba(59,130,246,.08);' : ''}">
                     <td><input type="checkbox" id="pf-cb-${p.id}" ${sel?'checked':''} onclick="togglePfSelect(${p.id})" style="cursor:pointer;"></td>
                     <td><div style="font-weight:500;">${p.address}${p.is_new ? ' <span style="background:#00e5a0;color:#000;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;">NEW</span>' : ''}</div><div style="color:#94a3b8;font-size:12px;">${p.city}${p.state ? ', '+p.state : ''} ${p.zip_code||''}</div></td>
@@ -1167,6 +1279,7 @@
                     <td style="font-size:12px;color:#94a3b8;">${checked}</td>
                     <td>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                            <button onclick="togglePfDetail(${p.id})" title="Details" style="width:28px;height:28px;border-radius:6px;border:1px solid ${expanded ? '#3b82f6' : '#334155'};background:${expanded ? 'rgba(59,130,246,.15)' : 'transparent'};color:${expanded ? '#3b82f6' : '#94a3b8'};cursor:pointer;font-size:11px;">${chevron}</button>
                             <button onclick="scanPf(${p.id})" title="Scan MLS" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#8635;</button>
                             ${p.mls_status === 'on-market' ? `<button onclick="viewPfDeal(${p.id})" title="View Deal" style="padding:4px 10px;border-radius:6px;border:none;background:#22c55e;color:#000;cursor:pointer;font-size:11px;font-weight:600;">View Deal</button>` : `<button onclick="togglePfOffer(${p.id},'${p.mls_status}')" title="Mark Offer" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#9998;</button>`}
                             <button onclick="setZillowUrl(${p.id})" title="${p.zillow_url ? 'URL set: '+p.zillow_url.substring(0,30)+'...' : 'Set Zillow URL'}" style="width:28px;height:28px;border-radius:6px;border:1px solid ${p.zillow_url ? '#3b82f6' : '#334155'};background:${p.zillow_url ? 'rgba(59,130,246,.15)' : 'transparent'};color:${p.zillow_url ? '#3b82f6' : '#94a3b8'};cursor:pointer;font-size:13px;">&#128279;</button>
@@ -1174,18 +1287,24 @@
                             <button onclick="archivePf(${p.id},${!p.is_archived})" title="${p.is_archived ? 'Restore' : 'Archive'}" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:${p.is_archived ? '#475569' : 'transparent'};color:${p.is_archived ? '#fbbf24' : '#94a3b8'};cursor:pointer;font-size:13px;">${p.is_archived ? '↩' : '✕'}</button>
                         </div>
                     </td>
-                </tr>`;
+                </tr>${expanded ? pfDetailPanel(p) : ''}`;
             }).join('');
 
             // Mobile cards
             cards.innerHTML = rows.map(p => {
                 const val = p.estimated_value ? '$' + Math.round(p.estimated_value).toLocaleString() : '—';
                 const sel = pfSelected.has(p.id);
+                const expanded = pfExpandedId === p.id;
                 return `<div class="deal-card" style="${sel ? 'border-color:#3b82f6;' : ''}">
                     <div class="deal-card-header">
-                        <div style="display:flex;align-items:center;gap:8px;"><input type="checkbox" ${sel?'checked':''} onclick="togglePfSelect(${p.id})" style="cursor:pointer;"><div class="deal-card-address">${p.address}, ${p.city||''} ${p.zip_code||''}</div></div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" ${sel?'checked':''} onclick="togglePfSelect(${p.id})" style="cursor:pointer;">
+                            <button onclick="togglePfDetail(${p.id})" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:11px;padding:0;">${expanded ? '&#9660;' : '&#9654;'}</button>
+                            <div class="deal-card-address">${p.address}, ${p.city||''} ${p.zip_code||''}</div>
+                        </div>
                         ${pfStatusBadge(p.mls_status||'unknown')}
                     </div>
+                    ${expanded ? `<div style="padding:8px 0;font-size:11px;color:#94a3b8;border-top:1px solid #334155;margin-top:8px;">${pfDetailPanel(p).replace(/<tr[^>]*>|<\/tr>/g,'').replace(/<td[^>]*>|<\/td>/g,'')}</div>` : ''}
                     <div class="deal-card-grid"><span class="lbl">Value</span><span class="val">${val}</span><span class="lbl">Type</span><span class="val">${p.property_type||'SFR'}</span><span class="lbl">Auction</span><span class="val">${p.auction_date||'—'}</span></div>
                     <div class="deal-card-actions">
                         <button class="btn-action" onclick="scanPf(${p.id})" style="background:#00e5a0;color:#000;">Scan</button>

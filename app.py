@@ -863,20 +863,33 @@ def api_preforeclosure_create_deal(pf_id):
 
 @app.route("/api/preforeclosure/scan/<int:pf_id>", methods=["POST"])
 def api_preforeclosure_scan(pf_id):
-    """Scan a single property for MLS status using Apify Zillow scraper."""
+    """Scan a single property. Uses OpenWeb Ninja if USE_OPENWEB_NINJA=true, else Apify."""
     from datetime import datetime as dt
-    from urllib.parse import quote_plus
-    import requests as req
-
-    APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
-    if not APIFY_API_KEY:
-        return jsonify({"error": "APIFY_API_KEY not set"}), 500
 
     db = get_session()
     try:
         pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
         if not pf:
             return jsonify({"error": "Not found"}), 404
+
+        # OpenWeb Ninja path
+        use_openweb = os.getenv("USE_OPENWEB_NINJA", "false").lower() == "true"
+        openweb_key = os.getenv("OPENWEB_NINJA_API_KEY", "")
+        if use_openweb and openweb_key:
+            from worker import _scan_via_openweb_ninja
+            new_on_market = []
+            _scan_via_openweb_ninja(pf, openweb_key, 0, new_on_market)
+            db.commit()
+            logger.info(f"OpenWeb scan for {pf.address}: {pf.mls_status}")
+            return jsonify(preforeclosure_to_dict(pf))
+
+        # Apify path (existing)
+        from urllib.parse import quote_plus
+        import requests as req
+
+        APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
+        if not APIFY_API_KEY:
+            return jsonify({"error": "No API key configured"}), 500
 
         full_addr = f"{pf.address}, {pf.city}, {pf.state} {pf.zip_code}"
 

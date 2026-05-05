@@ -140,9 +140,32 @@ class PreForeclosure(Base):
     # MLS monitoring fields (added for mls-monitoring feature)
     listed_at = Column(DateTime)              # Set when Monitoring → On Market
     previous_mls_status = Column(String(50))  # Previous status for transition detection
-    zillow_url = Column(Text)                 # Manual Zillow URL override for address matching
+    zillow_url = Column(Text)                 # Manual Zillow URL override / auto-populated from scan
     scan_error_count = Column(Integer, default=0)
     last_scan_error = Column(Text)            # Last error message (why scan failed)
+
+    # Foreclosure data (from OpenWeb Ninja / Zillow)
+    foreclosing_bank = Column(Text)
+    foreclosure_default_description = Column(Text)
+    foreclosure_default_filing_date = Column(DateTime)
+    foreclosure_auction_filing_date = Column(DateTime)
+    foreclosure_auction_city = Column(Text)
+    foreclosure_auction_location = Column(Text)
+    foreclosure_auction_time = Column(DateTime)
+    foreclosure_unpaid_balance = Column(Float)
+    foreclosure_past_due_balance = Column(Float)
+    foreclosure_loan_amount = Column(Float)
+    foreclosure_loan_originator = Column(Text)
+    foreclosure_loan_date = Column(DateTime)
+    foreclosure_judicial_type = Column(Text)
+
+    # Property/listing data (from OpenWeb Ninja / Zillow)
+    last_sold_price = Column(Float)
+    year_built = Column(Integer)
+    listing_type_dimension = Column(Text)
+    price_change = Column(Float)
+    price_change_date = Column(DateTime)
+    days_on_zillow = Column(Integer)
 
 
 def preforeclosure_to_dict(pf):
@@ -170,6 +193,27 @@ def preforeclosure_to_dict(pf):
         "zillow_url": pf.zillow_url,
         "scan_error_count": pf.scan_error_count or 0,
         "last_scan_error": pf.last_scan_error,
+        # Foreclosure data
+        "foreclosing_bank": pf.foreclosing_bank,
+        "foreclosure_default_description": pf.foreclosure_default_description,
+        "foreclosure_default_filing_date": pf.foreclosure_default_filing_date.isoformat() if pf.foreclosure_default_filing_date else None,
+        "foreclosure_auction_filing_date": pf.foreclosure_auction_filing_date.isoformat() if pf.foreclosure_auction_filing_date else None,
+        "foreclosure_auction_city": pf.foreclosure_auction_city,
+        "foreclosure_auction_location": pf.foreclosure_auction_location,
+        "foreclosure_auction_time": pf.foreclosure_auction_time.isoformat() if pf.foreclosure_auction_time else None,
+        "foreclosure_unpaid_balance": pf.foreclosure_unpaid_balance,
+        "foreclosure_past_due_balance": pf.foreclosure_past_due_balance,
+        "foreclosure_loan_amount": pf.foreclosure_loan_amount,
+        "foreclosure_loan_originator": pf.foreclosure_loan_originator,
+        "foreclosure_loan_date": pf.foreclosure_loan_date.isoformat() if pf.foreclosure_loan_date else None,
+        "foreclosure_judicial_type": pf.foreclosure_judicial_type,
+        # Property/listing data
+        "last_sold_price": pf.last_sold_price,
+        "year_built": pf.year_built,
+        "listing_type_dimension": pf.listing_type_dimension,
+        "price_change": pf.price_change,
+        "price_change_date": pf.price_change_date.isoformat() if pf.price_change_date else None,
+        "days_on_zillow": pf.days_on_zillow,
     }
 
 
