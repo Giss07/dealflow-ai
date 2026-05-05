@@ -173,6 +173,42 @@ def preforeclosure_to_dict(pf):
     }
 
 
+class ScanJob(Base):
+    __tablename__ = "scan_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    status = Column(String(20), default="pending")  # pending, running, completed, failed
+    property_ids = Column(Text)       # JSON array of IDs
+    total = Column(Integer, default=0)
+    scanned = Column(Integer, default=0)
+    new_on_market = Column(Integer, default=0)
+    errors = Column(Integer, default=0)
+    actual_cost = Column(Float, default=0)
+    result = Column(Text)             # Final summary JSON
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    expires_at = Column(DateTime)     # Max runtime (created + 2hr)
+
+
+def scan_job_to_dict(job):
+    return {
+        "id": job.id,
+        "status": job.status,
+        "total": job.total or 0,
+        "scanned": job.scanned or 0,
+        "new_on_market": job.new_on_market or 0,
+        "errors": job.errors or 0,
+        "actual_cost": job.actual_cost or 0,
+        "result": json.loads(job.result) if job.result else None,
+        "error_message": job.error_message,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+
+
 class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
 

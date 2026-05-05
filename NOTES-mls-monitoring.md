@@ -1,8 +1,8 @@
 # MLS Monitoring Branch — Status Notes
 
 **Branch:** `mls-monitoring`
-**Last updated:** 2026-05-04
-**Status:** LOCAL TESTING COMPLETE — deployment paused pending Apify detail-scraper recovery
+**Last updated:** 2026-05-04 (evening)
+**Status:** ASYNC SYSTEM BUILT + LOCALLY TESTED — ready for production deploy after review
 
 ## What's built and tested
 
@@ -90,15 +90,48 @@ Manual-only scanning — no monthly commitment. Cost is per-use.
 | `MLS_DELAY_SECONDS` | `3` | Delay between Apify calls |
 | `SHOW_COST_PREVIEW` | `true` | Show cost confirmation modal before scan |
 
+## Architecture: Async scan system
+
+Production had request timeouts on bulk scans because the scan ran
+synchronously in the Flask request handler. Railway's reverse proxy
+killed the connection before Apify calls completed.
+
+Fix: async job queue via database.
+
+- Dashboard creates a `scan_jobs` row (status=pending), returns immediately
+- Worker polls `scan_jobs` every 30s, picks up pending jobs
+- Worker runs the scan, updates progress (scanned, errors, cost) per zip batch
+- Dashboard polls `GET /api/scan-jobs/<id>` every 3s for progress
+- On completion: toast with summary + actual cost
+- On 3 consecutive poll failures: visible alert instead of silent swallow
+- Persistent "Scan running..." badge visible from any tab
+- Page refresh / tab switch resumes polling via `checkForActiveJob()`
+- Duplicate protection: API returns 409 if a job is already pending/running
+- Max runtime: 2 hours (expires_at), worker marks stale jobs as failed
+
+### Production status
+- Production currently has the OLD sync code (broken on bulk scans)
+- `preforeclosures` table has the 5 new columns (migrated)
+- `scan_jobs` table does NOT exist on Railway yet — needs migration
+- Env vars already set on Railway (MLS_AUTO_SCAN_ENABLED, etc.)
+
+### Next steps to deploy
+1. Review async code one more time
+2. Run one local end-to-end test
+3. Run scan_jobs migration on Railway:
+   `DATABASE_URL="postgresql://..." python migrate_scan_jobs.py`
+4. Merge mls-monitoring to main
+5. Push to Railway
+6. Test scan-selected with 5-10 properties on production data
+
 ## Deployment checklist (when ready)
 
 1. Confirm `maxcopell~zillow-detail-scraper` is working (test via Apify console or API)
-2. Set `MLS_DETAIL_FALLBACK_ENABLED=true` in local .env
-3. Re-test scan with detail fallback on a few properties
-4. Run migration on Railway: `python migrate_mls_monitoring.py`
-5. Merge mls-monitoring to main and deploy
-6. Test scan-selected with 5-10 properties on production data
-7. Verify detail fallback catches properties missed by zip-search
+2. Run scan_jobs migration on Railway: `DATABASE_URL="..." python migrate_scan_jobs.py`
+3. Merge mls-monitoring to main and push
+4. Test scan-selected with 5-10 properties on production data
+5. Verify detail fallback catches properties missed by zip-search
+6. Verify progress polling works through Railway's proxy
 
 ## Safe to deploy main
 
