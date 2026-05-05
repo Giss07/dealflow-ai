@@ -739,4 +739,4 @@ if __name__ == "__main__":
             check_pending_scan_jobs()
         except Exception as e:
             logger.error(f"Scan job check error: {e}")
-        time.sleep(30)
+        time.sleep(5)
