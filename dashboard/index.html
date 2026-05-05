@@ -217,7 +217,9 @@
         <div class="tab" data-tab="preforeclosure" onclick="switchTab('preforeclosure')">Pre-Foreclosure <span class="badge" id="tab-pf-count" style="background:#dc2626;">0</span></div>
         <div class="tab" data-tab="preforeclosure" onclick="switchTab('preforeclosure');setPfFilter('new')" id="tab-new-listings" style="display:none;">New Listings <span class="badge" id="tab-new-count" style="background:#22c55e;color:#000;">0</span></div>
         <div class="tab" data-tab="tracker" onclick="switchTab('tracker')">Tracker <span class="badge" style="background:#8b5cf6;">Sheet</span></div>
+        <div id="scan-running-badge" style="display:none;margin-left:auto;padding:4px 12px;border-radius:20px;background:rgba(59,130,246,.15);color:#3b82f6;border:1px solid rgba(59,130,246,.25);font-size:11px;font-weight:500;animation:pulse 2s infinite;">Scan running...</div>
     </div>
+    <style>#scan-running-badge { animation: pulse 2s infinite; } @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.5;} }</style>
 
     <div style="padding:10px 30px;background:#1e293b;border-bottom:1px solid #334155;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <span style="color:#94a3b8;font-size:12px;text-transform:uppercase;margin-right:4px;">Quick Filter:</span>
@@ -1109,6 +1111,8 @@
                 pfData = await resp.json();
                 renderPfRows();
                 updateScanBtn();
+                // Resume polling if a scan job is active
+                if (!scanPollInterval) checkForActiveJob();
             } catch(e) {
                 tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:#fca5a5;">Failed to load</td></tr>';
             }
@@ -1205,6 +1209,9 @@
             } catch(e) { alert('Scan failed'); }
         }
 
+        let activeScanJobId = null;
+        let scanPollInterval = null;
+
         async function scanSelectedPf() {
             const ids = [...pfSelected];
             if (!ids.length) return;
@@ -1225,32 +1232,131 @@
                 if (!confirm(`Scan ${ids.length} properties? (Could not load cost estimate)`)) return;
             }
 
-            // Run scan with progress
-            const btn = document.getElementById('btn-scan-selected');
-            btn.disabled = true;
-            btn.textContent = `Scanning 0 of ${ids.length}...`;
-
+            // Create async scan job
             try {
-                const resp = await fetch('/api/preforeclosure/scan-selected', {
+                const resp = await fetch('/api/scan-jobs', {
                     method:'POST', headers:{'Content-Type':'application/json'},
                     body: JSON.stringify({property_ids: ids})
                 });
-                const result = await resp.json();
+                if (!resp.ok && resp.status !== 409) {
+                    const body = await resp.text();
+                    console.error('scan-jobs POST failed:', resp.status, resp.headers.get('content-type'), body.substring(0, 200));
+                    alert('Failed to start scan: server returned ' + resp.status);
+                    return;
+                }
+                const data = await resp.json();
+                if (data.error) {
+                    if (resp.status === 409 && data.job) {
+                        startScanPolling(data.job.id, data.job.total);
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                    return;
+                }
+                pfSelected.clear();
+                startScanPolling(data.id, data.total);
+            } catch(e) {
+                console.error('scan-jobs POST exception:', e);
+                alert('Failed to start scan: ' + e.message);
+            }
+        }
 
-                if (result.error) {
-                    alert('Scan error: ' + result.error);
-                } else {
-                    const monitoring = result.scanned - result.new_on_market;
-                    const toast = `Scanned ${result.scanned} properties: ${result.new_on_market} newly on-market, ${monitoring} still monitoring, ${result.errors} errors. Cost: $${result.actual_cost.toFixed(2)}`;
-                    alert(toast);
+        let pollFailCount = 0;
+
+        function startScanPolling(jobId, total) {
+            activeScanJobId = jobId;
+            pollFailCount = 0;
+            const btn = document.getElementById('btn-scan-selected');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = `Scanning 0 of ${total}...`;
+            }
+            showScanBadge(true);
+
+            if (scanPollInterval) clearInterval(scanPollInterval);
+            scanPollInterval = setInterval(() => pollScanJob(jobId, total), 3000);
+        }
+
+        async function pollScanJob(jobId, total) {
+            try {
+                const resp = await fetch('/api/scan-jobs/' + jobId);
+                if (!resp.ok) {
+                    const body = await resp.text();
+                    console.error('scan-jobs poll failed:', resp.status, resp.headers.get('content-type'), body.substring(0, 200));
+                    pollFailCount++;
+                    if (pollFailCount >= 3) {
+                        clearInterval(scanPollInterval);
+                        scanPollInterval = null;
+                        showScanBadge(false);
+                        const btn = document.getElementById('btn-scan-selected');
+                        if (btn) { btn.textContent = 'Scan Selected'; btn.disabled = false; }
+                        alert('Lost connection to scan job after 3 failures (HTTP ' + resp.status + '). Please refresh the page.');
+                    }
+                    return;
+                }
+                pollFailCount = 0;
+                const job = await resp.json();
+
+                const btn = document.getElementById('btn-scan-selected');
+                const badge = document.getElementById('scan-running-badge');
+
+                if (job.status === 'pending') {
+                    if (btn) btn.textContent = `Waiting for worker...`;
+                    if (badge) badge.textContent = 'Scan pending...';
+                } else if (job.status === 'running') {
+                    const newTxt = job.new_on_market > 0 ? ` (${job.new_on_market} new)` : '';
+                    if (btn) btn.textContent = `Scanning ${job.scanned} of ${job.total}...${newTxt}`;
+                    if (badge) badge.textContent = `Scanning ${job.scanned}/${job.total}...`;
+                } else if (job.status === 'completed' || job.status === 'failed') {
+                    clearInterval(scanPollInterval);
+                    scanPollInterval = null;
+                    activeScanJobId = null;
+                    showScanBadge(false);
+
+                    if (job.status === 'completed') {
+                        const monitoring = job.scanned - job.new_on_market;
+                        alert(`Scanned ${job.scanned} properties: ${job.new_on_market} newly on-market, ${monitoring} still monitoring, ${job.errors} errors. Cost: $${job.actual_cost.toFixed(2)}`);
+                    } else {
+                        alert('Scan failed: ' + (job.error_message || 'Unknown error'));
+                    }
+
+                    if (btn) { btn.textContent = 'Scan Selected'; btn.disabled = false; }
+                    loadPreForeclosure();
+                    updateTabCounts();
                 }
             } catch(e) {
-                alert('Scan failed: ' + e.message);
+                console.error('scan-jobs poll exception:', e);
+                pollFailCount++;
+                if (pollFailCount >= 3) {
+                    clearInterval(scanPollInterval);
+                    scanPollInterval = null;
+                    showScanBadge(false);
+                    const btn = document.getElementById('btn-scan-selected');
+                    if (btn) { btn.textContent = 'Scan Selected'; btn.disabled = false; }
+                    alert('Lost connection to scan job. The scan may still be running on the server. Please refresh the page.');
+                }
             }
+        }
 
-            pfSelected.clear();
-            loadPreForeclosure();
-            updateTabCounts();
+        function showScanBadge(show) {
+            const badge = document.getElementById('scan-running-badge');
+            if (badge) badge.style.display = show ? '' : 'none';
+        }
+
+        async function checkForActiveJob() {
+            try {
+                const resp = await fetch('/api/scan-jobs/latest');
+                if (!resp.ok) {
+                    console.error('scan-jobs/latest failed:', resp.status, (await resp.text()).substring(0, 200));
+                    return;
+                }
+                const data = await resp.json();
+                if (data.job && (data.job.status === 'pending' || data.job.status === 'running')) {
+                    startScanPolling(data.job.id, data.job.total);
+                }
+            } catch(e) {
+                console.error('checkForActiveJob exception:', e);
+            }
         }
 
         async function dismissNew(id) {
@@ -1522,6 +1628,7 @@
         // Init
         loadStats();
         loadDeals();
+        checkForActiveJob();
     </script>
 </body>
 </html>

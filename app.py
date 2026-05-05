@@ -1112,24 +1112,72 @@ def api_preforeclosure_scan_cost_estimate():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/preforeclosure/scan-selected", methods=["POST"])
-def api_preforeclosure_scan_selected():
-    """Scan specific properties by ID. Returns results synchronously.
+@app.route("/api/scan-jobs", methods=["POST"])
+def api_scan_job_create():
+    """Create an async scan job. Returns job ID immediately.
 
     Request body: {"property_ids": [1, 2, 3]}
-    Returns scan summary with actual_cost for the toast.
+    The worker service picks up the job and runs it in the background.
     """
+    from database import ScanJob, scan_job_to_dict
+    from datetime import timedelta
     data = request.get_json() or {}
     property_ids = data.get("property_ids", [])
     if not property_ids:
         return jsonify({"error": "property_ids array required"}), 400
+
+    db = get_session()
     try:
-        from worker import run_preforeclosure_scan
-        summary = run_preforeclosure_scan(property_ids=property_ids)
-        return jsonify(summary)
+        # Block duplicate: reject if a pending/running job already exists
+        active = db.query(ScanJob).filter(ScanJob.status.in_(["pending", "running"])).first()
+        if active:
+            return jsonify({"error": "A scan is already in progress", "job": scan_job_to_dict(active)}), 409
+
+        from datetime import datetime as dt
+        job = ScanJob(
+            status="pending",
+            property_ids=json.dumps(property_ids),
+            total=len(property_ids),
+            created_at=dt.utcnow(),
+            expires_at=dt.utcnow() + timedelta(hours=2),
+        )
+        db.add(job)
+        db.commit()
+        logger.info(f"Created scan job {job.id} for {len(property_ids)} properties")
+        return jsonify(scan_job_to_dict(job))
     except Exception as e:
-        logger.error(f"Scan-selected failed: {e}", exc_info=True)
+        db.rollback()
         return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/scan-jobs/<int:job_id>")
+def api_scan_job_status(job_id):
+    """Get status of a scan job (for polling)."""
+    from database import ScanJob, scan_job_to_dict
+    db = get_session()
+    try:
+        job = db.query(ScanJob).filter_by(id=job_id).first()
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        return jsonify(scan_job_to_dict(job))
+    finally:
+        db.close()
+
+
+@app.route("/api/scan-jobs/latest")
+def api_scan_job_latest():
+    """Get the most recent scan job (for detecting in-progress scans on page load)."""
+    from database import ScanJob, scan_job_to_dict
+    db = get_session()
+    try:
+        job = db.query(ScanJob).order_by(ScanJob.created_at.desc()).first()
+        if not job:
+            return jsonify({"job": None})
+        return jsonify({"job": scan_job_to_dict(job)})
+    finally:
+        db.close()
 
 
 @app.route("/api/tracker")

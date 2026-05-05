@@ -17,6 +17,7 @@ print("Worker script starting...", flush=True)
 from dotenv import load_dotenv
 load_dotenv()
 
+import json
 import time
 import logging
 import schedule
@@ -142,23 +143,93 @@ def estimate_scan_cost(property_ids):
         db.close()
 
 
-def run_preforeclosure_scan(property_ids=None):
+def _update_job_progress(job_id, db, **kwargs):
+    """Update a ScanJob row with progress data. No-op if job_id is None."""
+    if not job_id:
+        return
+    from database import ScanJob
+    job = db.query(ScanJob).filter_by(id=job_id).first()
+    if job:
+        for k, v in kwargs.items():
+            setattr(job, k, v)
+        db.commit()
+
+
+def check_pending_scan_jobs():
+    """Check for pending scan jobs and execute the oldest one.
+
+    Called every iteration of the worker's main loop (~30s).
+    Picks up one job at a time to avoid overloading Apify.
+    """
+    from database import init_db, get_session, ScanJob
+    from datetime import datetime as dt, timedelta
+    init_db()
+    db = get_session()
+    try:
+        # Clean up stale running jobs (exceeded expires_at)
+        stale = db.query(ScanJob).filter(
+            ScanJob.status == "running",
+            ScanJob.expires_at < dt.utcnow()
+        ).all()
+        for job in stale:
+            logger.warning(f"Scan job {job.id} expired — marking failed")
+            job.status = "failed"
+            job.error_message = "Exceeded 2 hour time limit"
+            job.completed_at = dt.utcnow()
+        if stale:
+            db.commit()
+
+        # Pick up oldest pending job
+        job = db.query(ScanJob).filter(
+            ScanJob.status == "pending"
+        ).order_by(ScanJob.created_at).first()
+
+        if not job:
+            return
+
+        logger.info(f"Picking up scan job {job.id} ({job.total} properties)")
+        job.status = "running"
+        job.started_at = dt.utcnow()
+        db.commit()
+
+        property_ids = json.loads(job.property_ids)
+        summary = run_preforeclosure_scan(property_ids=property_ids, job_id=job.id)
+
+        # Update job with final results
+        job = db.query(ScanJob).filter_by(id=job.id).first()
+        if summary.get("error"):
+            job.status = "failed"
+            job.error_message = summary["error"]
+        else:
+            job.status = "completed"
+            job.scanned = summary.get("scanned", 0)
+            job.new_on_market = summary.get("new_on_market", 0)
+            job.errors = summary.get("errors", 0)
+            job.actual_cost = summary.get("actual_cost", 0)
+            job.result = json.dumps(summary)
+        job.completed_at = dt.utcnow()
+        db.commit()
+        logger.info(f"Scan job {job.id} completed: {job.status}")
+
+    except Exception as e:
+        logger.error(f"Error processing scan job: {e}", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def run_preforeclosure_scan(property_ids=None, job_id=None):
     """Scan pre-foreclosure properties on Zillow for MLS status changes.
 
     Args:
-        property_ids: Required list of property IDs to scan.
-                      Pass None only from the auto-scheduler (scans all).
+        property_ids: List of property IDs to scan. None = scan all (auto-scheduler).
+        job_id: Optional ScanJob ID to update with progress during scan.
 
     Groups properties by zip code to minimize Apify calls.
     Detects Monitoring -> On Market transitions and sends email + sets is_new flag.
     After zip-search pass, runs detail-scraper fallback for "not found" properties.
 
     Returns dict with scan results summary.
-
-    Config env vars:
-      MLS_AUTO_SCAN_ENABLED: "false" (default) — set to "true" to enable scheduled scans
-      MLS_DELAY_SECONDS: delay between Apify calls (default: 3)
-      MLS_DETAIL_FALLBACK_ENABLED: "true" (default) — enable detail-scraper second pass
     """
     now_pst = datetime.now(PST)
     logger.info(f"=== PRE-FORECLOSURE SCAN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
@@ -296,6 +367,9 @@ def run_preforeclosure_scan(property_ids=None):
                     errors += 1
 
             db.commit()
+            _update_job_progress(job_id, db, scanned=scanned, errors=errors,
+                                 actual_cost=round(actual_cost, 2),
+                                 new_on_market=len(new_on_market))
             time.sleep(delay_seconds)
 
         # ── Pass 2: Detail-scraper fallback for "not found" properties ──
@@ -661,4 +735,8 @@ if __name__ == "__main__":
             schedule.run_pending()
         except Exception as e:
             logger.error(f"Schedule error: {e}")
+        try:
+            check_pending_scan_jobs()
+        except Exception as e:
+            logger.error(f"Scan job check error: {e}")
         time.sleep(30)
