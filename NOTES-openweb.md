@@ -35,6 +35,12 @@
 - Added "⚠ Needs scan" badge on all rows missing listing_type_dimension
 - No auto-invalidation — user decides which to re-scan via checkboxes + Scan Selected
 
+### Scan cost modal showing Apify text (FIXED)
+- Modal was hardcoded to show "Estimated Apify cost" regardless of provider
+- Fix: reads provider field from estimate response, shows OpenWeb Ninja pricing when active
+- Display-only bug — actual scans were already using OpenWeb Ninja correctly
+- Production verified May 5 evening
+
 ## Apify status
 
 - All Apify code is INTACT — zero deletions
