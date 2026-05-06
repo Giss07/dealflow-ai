@@ -1344,7 +1344,12 @@
                 const est = await estResp.json();
 
                 if (est.show_cost_preview !== false) {
-                    const msg = `Scan ${est.property_count} properties?\n\nEstimated Apify cost: $${est.total_cost.toFixed(2)}\n  Zip searches: ${est.estimated_zip_calls} x $0.29 = $${est.zip_cost.toFixed(2)}\n  Detail lookups: ~${est.estimated_detail_calls} x $0.003 = $${est.detail_cost.toFixed(2)}\n  Detail fallback: ${est.detail_fallback_enabled ? 'enabled' : 'disabled'}\n\nProceed?`;
+                    let msg;
+                    if (est.provider === 'openweb_ninja') {
+                        msg = `Scan ${est.property_count} properties?\n\nEstimated OpenWeb Ninja cost: $${est.total_cost.toFixed(2)}\n  Property lookups: ${est.estimated_calls} x $${est.cost_per_call} = $${est.total_cost.toFixed(2)}\n\nProceed?`;
+                    } else {
+                        msg = `Scan ${est.property_count} properties?\n\nEstimated Apify cost: $${est.total_cost.toFixed(2)}\n  Zip searches: ${est.estimated_zip_calls} x $0.29 = $${est.zip_cost.toFixed(2)}\n  Detail lookups: ~${est.estimated_detail_calls} x $0.003 = $${est.detail_cost.toFixed(2)}\n  Detail fallback: ${est.detail_fallback_enabled ? 'enabled' : 'disabled'}\n\nProceed?`;
+                    }
                     if (!confirm(msg)) return;
                 }
             } catch(e) {
