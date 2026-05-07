@@ -1031,6 +1031,8 @@
         let pfSelected = new Set();
         let pfSort = 'default';
         let pfAuctionFilter = 'all';
+        let pfPriorityFilter = 'all';
+        let pfStageFilter = 'all';
         let pfExpandedId = null;
 
         function getPfSelectedCount() { return pfSelected.size; }
@@ -1083,13 +1085,16 @@
                 filtersBar.parentNode.insertBefore(pfBar, filtersBar.nextSibling);
             }
             const newBadge = pfData.filter(p => p.is_new).length;
+            const nodCount = pfData.filter(p => (p.foreclosure_stage||'NOD') === 'NOD').length;
+            const auctionCount = pfData.filter(p => p.foreclosure_stage === 'Auction').length;
             const selCount = getPfSelectedCount();
             pfBar.innerHTML = `
-                <button class="score-filter-btn ${pfFilter==='all'?'active':''}" onclick="setPfFilter('all')">All</button>
-                <button class="score-filter-btn ${pfFilter==='new'?'active':''}" onclick="setPfFilter('new')" style="${pfFilter==='new'?'background:#22c55e;border-color:#22c55e;color:#000;':''}">New ${newBadge > 0 ? '<span style="background:#000;color:#22c55e;padding:1px 5px;border-radius:8px;font-size:10px;margin-left:4px;">'+newBadge+'</span>' : ''}</button>
-                <button class="score-filter-btn ${pfFilter==='on-market'?'active':''}" onclick="setPfFilter('on-market')" style="${pfFilter==='on-market'?'background:#22c55e;border-color:#22c55e;':''}">On Market</button>
-                <button class="score-filter-btn ${pfFilter==='pre-foreclosure'?'active':''}" onclick="setPfFilter('pre-foreclosure')" style="${pfFilter==='pre-foreclosure'?'background:#f97316;border-color:#f97316;':''}">Pre-Foreclosure</button>
-                <button class="score-filter-btn ${pfFilter==='auction'?'active':''}" onclick="setPfFilter('auction')" style="${pfFilter==='auction'?'background:#eab308;border-color:#eab308;':''}">Auction</button>
+                <button class="score-filter-btn ${pfStageFilter==='all'?'active':''}" onclick="pfStageFilter='all';renderPfRows()" style="font-weight:600;">All <span id="pf-stage-all" style="opacity:0.6;font-size:10px;">0</span></button>
+                <button class="score-filter-btn ${pfStageFilter==='NOD'?'active':''}" onclick="pfStageFilter='NOD';renderPfRows()" style="${pfStageFilter==='NOD'?'background:#f97316;border-color:#f97316;':''}font-weight:600;">NOD <span id="pf-stage-nod" style="opacity:0.6;font-size:10px;">0</span></button>
+                <button class="score-filter-btn ${pfStageFilter==='Auction'?'active':''}" onclick="pfStageFilter='Auction';renderPfRows()" style="${pfStageFilter==='Auction'?'background:#eab308;border-color:#eab308;color:#000;':''}font-weight:600;">Auction <span id="pf-stage-auction" style="opacity:0.6;font-size:10px;">0</span></button>
+                <span style="color:#334155;margin:0 2px;">|</span>
+                <button class="score-filter-btn ${pfFilter==='new'?'active':''}" onclick="setPfFilter('new')" style="${pfFilter==='new'?'background:#22c55e;border-color:#22c55e;color:#000;':''}font-size:11px;">New ${newBadge > 0 ? '<span style="background:#000;color:#22c55e;padding:1px 5px;border-radius:8px;font-size:10px;margin-left:4px;">'+newBadge+'</span>' : ''}</button>
+                <button class="score-filter-btn ${pfFilter==='on-market'?'active':''}" onclick="setPfFilter('on-market')" style="${pfFilter==='on-market'?'background:#22c55e;border-color:#22c55e;':''}font-size:11px;">On Market</button>
                 <span style="color:#64748b;font-size:11px;margin-left:4px;">Sort:</span>
                 <select onchange="pfSort=this.value;renderPfRows()" style="background:#334155;border:1px solid #475569;color:#e2e8f0;padding:6px 8px;border-radius:6px;font-size:12px;cursor:pointer;">
                     <option value="default" ${pfSort==='default'?'selected':''}>Default</option>
@@ -1102,6 +1107,13 @@
                     <option value="30" ${pfAuctionFilter==='30'?'selected':''}>< 30 days</option>
                     <option value="60" ${pfAuctionFilter==='60'?'selected':''}>< 60 days</option>
                     <option value="90" ${pfAuctionFilter==='90'?'selected':''}>< 90 days</option>
+                </select>
+                <span style="color:#64748b;font-size:11px;margin-left:4px;">Notify:</span>
+                <select onchange="pfPriorityFilter=this.value;renderPfRows()" style="background:#334155;border:1px solid #475569;color:#e2e8f0;padding:6px 8px;border-radius:6px;font-size:12px;cursor:pointer;">
+                    <option value="all" ${pfPriorityFilter==='all'?'selected':''}>All</option>
+                    <option value="watch" ${pfPriorityFilter==='watch'?'selected':''}>👁 Watching</option>
+                    <option value="auto" ${pfPriorityFilter==='auto'?'selected':''}>🔔 Auto</option>
+                    <option value="mute" ${pfPriorityFilter==='mute'?'selected':''}>🔇 Muted</option>
                 </select>
                 <input type="text" placeholder="Search address..." value="${pfSearch}" oninput="pfSearch=this.value;renderPfRows()" style="background:#334155;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:6px;font-size:14px;width:200px;">
                 <button id="btn-pf-archived" onclick="togglePfArchived()" style="background:#475569;color:#e2e8f0;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Show Archived</button>
@@ -1213,6 +1225,18 @@
             const empty = document.getElementById('empty-state');
             let rows = pfData;
 
+            // Update stage count badges from full dataset (not filtered)
+            const allEl = document.getElementById('pf-stage-all');
+            const nodEl = document.getElementById('pf-stage-nod');
+            const aucEl = document.getElementById('pf-stage-auction');
+            if (allEl) allEl.textContent = pfData.length;
+            if (nodEl) nodEl.textContent = pfData.filter(p => (p.foreclosure_stage||'NOD') === 'NOD').length;
+            if (aucEl) aucEl.textContent = pfData.filter(p => p.foreclosure_stage === 'Auction').length;
+
+            // Stage filter (NOD / Auction sub-tabs)
+            if (pfStageFilter !== 'all') {
+                rows = rows.filter(p => (p.foreclosure_stage || 'NOD') === pfStageFilter);
+            }
             // Status filter
             if (pfFilter === 'new') {
                 rows = rows.filter(p => p.is_new);
@@ -1222,21 +1246,53 @@
                 const q = pfSearch.toLowerCase();
                 rows = rows.filter(p => (p.address||'').toLowerCase().includes(q) || (p.city||'').toLowerCase().includes(q));
             }
-            // Parse MM/DD/YYYY auction_date string to Date. Returns null on failure.
-            function parseAuctionDate(s) {
-                if (!s || typeof s !== 'string') return null;
-                const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-                if (!m) { return null; }
-                const d = new Date(parseInt(m[3]), parseInt(m[1])-1, parseInt(m[2]));
-                return isNaN(d.getTime()) ? null : d;
+            // Priority filter
+            if (pfPriorityFilter !== 'all') {
+                rows = rows.filter(p => (p.notification_priority || 'auto') === pfPriorityFilter);
             }
-            // Auction date filter (future-only: auction_date >= today AND <= today + N days)
+            // Get best auction date: prefer foreclosure_auction_time (DateTime from OpenWeb Ninja),
+            // fall back to parsing auction_date string (MM/DD/YYYY from CSV import).
+            function getBestAuctionDate(p) {
+                if (p.foreclosure_auction_time) {
+                    const d = new Date(p.foreclosure_auction_time);
+                    return isNaN(d.getTime()) ? null : d;
+                }
+                if (p.auction_date && typeof p.auction_date === 'string') {
+                    const m = p.auction_date.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+                    if (m) {
+                        const d = new Date(parseInt(m[3]), parseInt(m[1])-1, parseInt(m[2]));
+                        return isNaN(d.getTime()) ? null : d;
+                    }
+                }
+                return null;
+            }
+            function formatAuctionDate(p) {
+                const d = getBestAuctionDate(p);
+                if (!d) return '—';
+                const dateStr = d.toLocaleDateString('en-US', {month:'2-digit', day:'2-digit', year:'numeric'});
+                const now = new Date(); now.setHours(0,0,0,0);
+                const diff = Math.round((d - now) / 86400000);
+                let badge = '';
+                if (diff < 0) {
+                    badge = `<span style="display:block;font-size:10px;color:#64748b;margin-top:2px;">Passed ${Math.abs(diff)}d ago</span>`;
+                } else if (diff === 0) {
+                    badge = `<span style="display:block;font-size:10px;color:#dc2626;font-weight:600;margin-top:2px;">TODAY</span>`;
+                } else if (diff < 14) {
+                    badge = `<span style="display:block;font-size:10px;color:#dc2626;font-weight:600;margin-top:2px;">${diff}d away</span>`;
+                } else if (diff < 30) {
+                    badge = `<span style="display:block;font-size:10px;color:#f59e0b;margin-top:2px;">${diff}d away</span>`;
+                } else {
+                    badge = `<span style="display:block;font-size:10px;color:#22c55e;margin-top:2px;">${diff}d away</span>`;
+                }
+                return dateStr + badge;
+            }
+            // Auction date filter (future-only)
             if (pfAuctionFilter !== 'all') {
                 const days = parseInt(pfAuctionFilter);
                 const today = new Date(); today.setHours(0,0,0,0);
                 const cutoff = new Date(today); cutoff.setDate(cutoff.getDate() + days);
                 rows = rows.filter(p => {
-                    const ad = parseAuctionDate(p.auction_date);
+                    const ad = getBestAuctionDate(p);
                     if (!ad) return false;
                     return ad >= today && ad <= cutoff;
                 });
@@ -1244,8 +1300,8 @@
             // Sort
             if (pfSort === 'auction') {
                 rows = [...rows].sort((a, b) => {
-                    const da = parseAuctionDate(a.auction_date);
-                    const db = parseAuctionDate(b.auction_date);
+                    const da = getBestAuctionDate(a);
+                    const db = getBestAuctionDate(b);
                     if (!da && !db) return 0;
                     if (!da) return 1;
                     if (!db) return -1;
@@ -1265,13 +1321,15 @@
             tbody.innerHTML = rows.map(p => {
                 const val = p.estimated_value ? '$' + Math.round(p.estimated_value).toLocaleString() : '—';
                 const checked = p.last_scanned ? new Date(p.last_scanned).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : 'Never';
-                const auc = p.auction_date || '—';
+                const auc = formatAuctionDate(p);
                 const sel = pfSelected.has(p.id);
                 const expanded = pfExpandedId === p.id;
                 const chevron = expanded ? '&#9660;' : '&#9654;';
+                const pri = p.notification_priority || 'auto';
+                const priIcon = pri === 'watch' ? '<span title="Watching — always notify" style="color:#22c55e;font-size:11px;margin-left:4px;">👁</span>' : pri === 'mute' ? '<span title="Muted — no notifications" style="color:#64748b;font-size:11px;margin-left:4px;">🔇</span>' : '';
                 return `<tr style="${sel ? 'background:rgba(59,130,246,.08);' : ''}">
                     <td><input type="checkbox" id="pf-cb-${p.id}" ${sel?'checked':''} onclick="togglePfSelect(${p.id})" style="cursor:pointer;"></td>
-                    <td><div style="font-weight:500;">${p.address}${p.is_new ? ' <span style="background:#00e5a0;color:#000;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;">NEW</span>' : ''}${!p.listing_type_dimension ? ' <span title="Incomplete data — re-scan recommended" style="background:rgba(234,179,8,.15);color:#eab308;font-size:9px;font-weight:600;padding:2px 5px;border-radius:3px;cursor:help;">⚠ Needs scan</span>' : ''}</div><div style="color:#94a3b8;font-size:12px;">${p.city}${p.state ? ', '+p.state : ''} ${p.zip_code||''}</div></td>
+                    <td><div style="font-weight:500;">${p.address}${priIcon}${p.is_new ? ' <span style="background:#00e5a0;color:#000;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;">NEW</span>' : ''}${!p.listing_type_dimension ? ' <span title="Incomplete data — re-scan recommended" style="background:rgba(234,179,8,.15);color:#eab308;font-size:9px;font-weight:600;padding:2px 5px;border-radius:3px;cursor:help;">⚠ Needs scan</span>' : ''}</div><div style="color:#94a3b8;font-size:12px;">${p.city}${p.state ? ', '+p.state : ''} ${p.zip_code||''}</div></td>
                     <td><span style="font-size:10px;padding:2px 7px;border-radius:3px;background:#334155;color:#94a3b8;">${p.property_type||'SFR'}</span></td>
                     <td style="font-family:monospace;font-size:13px;">${val}</td>
                     <td style="font-size:12px;color:#94a3b8;">${auc}</td>
@@ -1280,6 +1338,11 @@
                     <td>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             <button onclick="togglePfDetail(${p.id})" title="Details" style="width:28px;height:28px;border-radius:6px;border:1px solid ${expanded ? '#3b82f6' : '#334155'};background:${expanded ? 'rgba(59,130,246,.15)' : 'transparent'};color:${expanded ? '#3b82f6' : '#94a3b8'};cursor:pointer;font-size:11px;">${chevron}</button>
+                            <select onchange="setPfPriority(${p.id},this.value)" title="Notification priority" style="background:#1e293b;border:1px solid #334155;color:${pri==='watch'?'#22c55e':pri==='mute'?'#64748b':'#94a3b8'};padding:2px 4px;border-radius:6px;font-size:11px;cursor:pointer;width:58px;">
+                                <option value="auto" ${pri==='auto'?'selected':''}>🔔 Auto</option>
+                                <option value="watch" ${pri==='watch'?'selected':''}>👁 Watch</option>
+                                <option value="mute" ${pri==='mute'?'selected':''}>🔇 Mute</option>
+                            </select>
                             <button onclick="scanPf(${p.id})" title="Scan MLS" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#8635;</button>
                             ${p.mls_status === 'on-market' ? `<button onclick="viewPfDeal(${p.id})" title="View Deal" style="padding:4px 10px;border-radius:6px;border:none;background:#22c55e;color:#000;cursor:pointer;font-size:11px;font-weight:600;">View Deal</button>` : `<button onclick="togglePfOffer(${p.id},'${p.mls_status}')" title="Mark Offer" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#9998;</button>`}
                             <button onclick="setZillowUrl(${p.id})" title="${p.zillow_url ? 'URL set: '+p.zillow_url.substring(0,30)+'...' : 'Set Zillow URL'}" style="width:28px;height:28px;border-radius:6px;border:1px solid ${p.zillow_url ? '#3b82f6' : '#334155'};background:${p.zillow_url ? 'rgba(59,130,246,.15)' : 'transparent'};color:${p.zillow_url ? '#3b82f6' : '#94a3b8'};cursor:pointer;font-size:13px;">&#128279;</button>
@@ -1305,7 +1368,7 @@
                         ${pfStatusBadge(p.mls_status||'unknown')}
                     </div>
                     ${expanded ? `<div style="padding:8px 0;font-size:11px;color:#94a3b8;border-top:1px solid #334155;margin-top:8px;">${pfDetailPanel(p).replace(/<tr[^>]*>|<\/tr>/g,'').replace(/<td[^>]*>|<\/td>/g,'')}</div>` : ''}
-                    <div class="deal-card-grid"><span class="lbl">Value</span><span class="val">${val}</span><span class="lbl">Type</span><span class="val">${p.property_type||'SFR'}</span><span class="lbl">Auction</span><span class="val">${p.auction_date||'—'}</span></div>
+                    <div class="deal-card-grid"><span class="lbl">Value</span><span class="val">${val}</span><span class="lbl">Type</span><span class="val">${p.property_type||'SFR'}</span><span class="lbl">Auction</span><span class="val">${formatAuctionDate(p)}</span></div>
                     <div class="deal-card-actions">
                         <button class="btn-action" onclick="scanPf(${p.id})" style="background:#00e5a0;color:#000;">Scan</button>
                         ${p.mls_status === 'on-market' ? `<button class="btn-action" onclick="viewPfDeal(${p.id})" style="background:#22c55e;color:#000;">View Deal</button>` : ''}
@@ -1493,6 +1556,21 @@
             await fetch('/api/preforeclosure/dismiss-all', {method:'POST'});
             loadPreForeclosure();
             updateTabCounts();
+        }
+
+        async function setPfPriority(id, priority) {
+            try {
+                const resp = await fetch('/api/preforeclosure/' + id + '/notification-priority', {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({priority: priority})
+                });
+                if (resp.ok) {
+                    // Update local data without full reload
+                    const pf = pfData.find(p => p.id === id);
+                    if (pf) pf.notification_priority = priority;
+                    renderPfRows();
+                }
+            } catch(e) { console.error('Failed to set priority:', e); }
         }
 
         async function setZillowUrl(id) {

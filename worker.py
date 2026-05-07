@@ -950,6 +950,195 @@ def _send_new_listing_alert(alert_data):
         logger.error(f"Failed to send alert: {e}")
 
 
+def check_upcoming_auctions():
+    """Daily cron: send digest email for properties with auctions in next 7 days.
+
+    Priority filter:
+      - mute: always excluded
+      - watch: always included (bypass MLS check)
+      - auto: included only if MLS-verified (last_scanned set + listing_type_dimension contains 'by Agent')
+
+    Runs at 8AM Pacific (15:00 UTC). Skips properties already notified.
+    """
+    now_pst = datetime.now(PST)
+    logger.info(f"=== CHECK UPCOMING AUCTIONS at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
+
+    try:
+        from database import init_db, get_session, PreForeclosure
+        from notifications import send_auction_digest, log_notification, was_notification_sent
+        from datetime import datetime as dt, timedelta
+
+        init_db()
+        db = get_session()
+
+        now = dt.utcnow()
+        window_end = now + timedelta(days=7)
+
+        # Get all Auction-stage properties with auction in next 7 days
+        candidates = db.query(PreForeclosure).filter(
+            PreForeclosure.foreclosure_stage == "Auction",
+            PreForeclosure.foreclosure_auction_time > now,
+            PreForeclosure.foreclosure_auction_time <= window_end,
+            (PreForeclosure.is_archived == False) | (PreForeclosure.is_archived == None),
+        ).all()
+
+        total_in_window = len(candidates)
+
+        # Apply priority filter
+        muted = 0
+        skipped_non_mls = 0
+        already_notified = 0
+        watch_count = 0
+        auto_mls_count = 0
+        qualify = []
+
+        for pf in candidates:
+            priority = pf.notification_priority or "auto"
+
+            if priority == "mute":
+                muted += 1
+                continue
+
+            if priority == "watch":
+                # Check if already notified
+                if was_notification_sent(db, pf.id, "auction_warning_7d"):
+                    already_notified += 1
+                    continue
+                watch_count += 1
+                qualify.append(pf)
+            else:
+                # auto: must be MLS-verified
+                listing_type = (pf.listing_type_dimension or "").lower()
+                if pf.last_scanned and "by agent" in listing_type:
+                    if was_notification_sent(db, pf.id, "auction_warning_7d"):
+                        already_notified += 1
+                        continue
+                    auto_mls_count += 1
+                    qualify.append(pf)
+                else:
+                    skipped_non_mls += 1
+
+        logger.info(f"  Found {total_in_window} properties with auction in next 7 days")
+        logger.info(f"  After priority filter: {len(qualify)} qualify ({watch_count} watched, {auto_mls_count} auto+MLS)")
+        logger.info(f"  Muted: {muted}, skipped non-MLS: {skipped_non_mls}, already notified: {already_notified}")
+
+        if not qualify:
+            logger.info("  No properties qualify for digest — skipping email")
+            db.close()
+            return
+
+        # Sort by auction time ascending (soonest first)
+        qualify.sort(key=lambda pf: pf.foreclosure_auction_time)
+
+        # Send digest
+        subject = f"Auction alert: {len(qualify)} propert{'y' if len(qualify)==1 else 'ies'} with auctions in next 7 days"
+        sent = send_auction_digest(qualify)
+
+        # Log notification for each property
+        for pf in qualify:
+            log_notification(db, pf.id, "auction_warning_7d", subject, sent,
+                             None if sent else "Digest email send failed")
+
+        logger.info(f"  Sent digest with {len(qualify)} properties: {'OK' if sent else 'FAILED'}")
+        db.close()
+
+    except Exception as e:
+        logger.error(f"check_upcoming_auctions failed: {e}", exc_info=True)
+
+
+def rescan_nod_properties():
+    """Every-3-day cron: rescan NOD properties via OpenWeb Ninja to detect new auction dates.
+
+    When foreclosureAuctionTime newly appears in API response:
+      - Sets foreclosure_stage='Auction'
+      - Sends immediate auction_scheduled email
+      - Logs notification
+
+    Config: RESCAN_BATCH_LIMIT env var (default 500).
+    Requires USE_OPENWEB_NINJA=true and OPENWEB_NINJA_API_KEY set.
+    """
+    now_pst = datetime.now(PST)
+    logger.info(f"=== RESCAN NOD PROPERTIES at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
+
+    OPENWEB_KEY = os.getenv("OPENWEB_NINJA_API_KEY", "")
+    if not OPENWEB_KEY:
+        logger.error("OPENWEB_NINJA_API_KEY not set — aborting NOD rescan")
+        return
+
+    batch_limit = int(os.getenv("RESCAN_BATCH_LIMIT", "500"))
+
+    try:
+        from database import init_db, get_session, PreForeclosure
+        from notifications import send_auction_scheduled, log_notification
+        from datetime import datetime as dt, timedelta
+
+        init_db()
+        db = get_session()
+
+        # Properties: NOD stage, not manually overridden, not scanned in last 3 days
+        cutoff = dt.utcnow() - timedelta(days=3)
+        properties = db.query(PreForeclosure).filter(
+            PreForeclosure.foreclosure_stage == "NOD",
+            (PreForeclosure.foreclosure_stage_manual_override == False) | (PreForeclosure.foreclosure_stage_manual_override == None),
+            (PreForeclosure.is_archived == False) | (PreForeclosure.is_archived == None),
+        ).filter(
+            (PreForeclosure.last_scanned == None) | (PreForeclosure.last_scanned < cutoff)
+        ).limit(batch_limit).all()
+
+        logger.info(f"  Found {len(properties)} NOD properties to rescan (limit={batch_limit})")
+
+        scanned = 0
+        moved_to_auction = 0
+        errors = 0
+        rate_limited = 0
+
+        for i, pf in enumerate(properties):
+            prev_auction_time = pf.foreclosure_auction_time
+
+            try:
+                new_on_market = []  # Not used for NOD rescan but required by function signature
+                found = _scan_via_openweb_ninja(pf, OPENWEB_KEY, 0, new_on_market)
+
+                if found:
+                    pf.scan_error_count = 0
+                    pf.last_scan_error = None
+
+                    # Detect new auction date: was NULL, now set
+                    if pf.foreclosure_auction_time and not prev_auction_time:
+                        pf.foreclosure_stage = "Auction"
+                        moved_to_auction += 1
+                        logger.info(f"  NOD -> AUCTION: {pf.address} (auction: {pf.foreclosure_auction_time})")
+
+                        # Send immediate notification (regardless of priority — rare event)
+                        subject = f"New auction scheduled: {pf.address}"
+                        sent = send_auction_scheduled(pf)
+                        log_notification(db, pf.id, "new_auction_scheduled", subject, sent,
+                                         None if sent else "Email send failed")
+
+                scanned += 1
+            except Exception as e:
+                logger.error(f"  Error scanning {pf.address}: {e}")
+                pf.last_scanned = dt.utcnow()
+                pf.scan_error_count = (pf.scan_error_count or 0) + 1
+                pf.last_scan_error = f"{type(e).__name__}: {str(e)[:100]}"
+                errors += 1
+
+            # Commit every 10 properties
+            if (i + 1) % 10 == 0:
+                db.commit()
+
+            # Rate limit: 200ms between calls
+            time.sleep(0.2)
+
+        db.commit()
+        db.close()
+
+        logger.info(f"  NOD rescan complete: {scanned} scanned, {moved_to_auction} moved to Auction, {errors} errors, {rate_limited} rate-limited")
+
+    except Exception as e:
+        logger.error(f"rescan_nod_properties failed: {e}", exc_info=True)
+
+
 def run_dealflow_pipeline():
     """Run the DealFlow AI scraper pipeline (Mon & Thu at 7AM PST)."""
     now_pst = datetime.now(PST)
@@ -980,9 +1169,16 @@ if __name__ == "__main__":
     if mls_auto:
         schedule.every(3).days.at("09:00").do(run_preforeclosure_scan)
 
+    # Auction notification digest — daily at 8AM Pacific = 15:00 UTC
+    schedule.every().day.at("15:00").do(check_upcoming_auctions)
+
+    # NOD rescan — every 3 days at 6AM Pacific = 13:00 UTC
+    schedule.every(3).days.at("13:00").do(rescan_nod_properties)
+
     logger.info("Scheduled (UTC times, Railway server):")
     logger.info(f"  - Pre-foreclosure MLS scan: {'ENABLED every 3 days 09:00 UTC' if mls_auto else 'MANUAL ONLY (MLS_AUTO_SCAN_ENABLED=false)'}")
-    logger.info("  - 15:00 UTC (8AM PST): Full updater run")
+    logger.info("  - 15:00 UTC (8AM PST): Full updater + check_upcoming_auctions")
+    logger.info("  - 13:00 UTC (6AM PST) every 3 days: rescan_nod_properties")
     logger.info("  - Hourly (9AM-6PM PST): Gmail-only counter checks")
     logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")
 

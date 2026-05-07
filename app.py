@@ -1062,6 +1062,28 @@ def api_preforeclosure_set_url(pf_id):
         db.close()
 
 
+@app.route("/api/preforeclosure/<int:pf_id>/notification-priority", methods=["PATCH", "POST"])
+def api_preforeclosure_notification_priority(pf_id):
+    """Set notification priority for a property (auto/watch/mute)."""
+    db = get_session()
+    try:
+        pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
+        if not pf:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json() or {}
+        priority = data.get("priority", "").lower()
+        if priority not in ("auto", "watch", "mute"):
+            return jsonify({"error": "priority must be auto, watch, or mute"}), 400
+        pf.notification_priority = priority
+        db.commit()
+        return jsonify(preforeclosure_to_dict(pf))
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
 @app.route("/api/preforeclosure/<int:pf_id>/dismiss", methods=["POST"])
 def api_preforeclosure_dismiss(pf_id):
     """Dismiss the 'new listing' flag for a property (mark as seen)."""
@@ -1191,6 +1213,49 @@ def api_scan_job_latest():
         return jsonify({"job": scan_job_to_dict(job)})
     finally:
         db.close()
+
+
+@app.route("/admin/run-cron/<job_name>", methods=["POST"])
+def admin_run_cron(job_name):
+    """Manually trigger a cron job. Password-protected."""
+    import threading
+    jobs = {
+        "check-upcoming-auctions": ("check_upcoming_auctions", "worker"),
+        "rescan-nod-properties": ("rescan_nod_properties", "worker"),
+    }
+    if job_name not in jobs:
+        return jsonify({"error": f"Unknown job: {job_name}", "available": list(jobs.keys())}), 404
+    func_name, module = jobs[job_name]
+    def _run():
+        try:
+            from worker import check_upcoming_auctions, rescan_nod_properties
+            {"check_upcoming_auctions": check_upcoming_auctions, "rescan_nod_properties": rescan_nod_properties}[func_name]()
+        except Exception as e:
+            logger.error(f"Manual cron trigger failed: {e}", exc_info=True)
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"status": "started", "job": job_name})
+
+
+@app.route("/admin/test-notifications", methods=["POST"])
+def admin_test_notifications():
+    """Send test emails using both templates. Password-protected."""
+    from datetime import timedelta
+    from notifications import send_auction_scheduled, send_auction_digest
+
+    class FakePF:
+        def __init__(self, **kw):
+            for k, v in kw.items(): setattr(self, k, v)
+
+    now = datetime.utcnow()
+    test_pf = FakePF(
+        id=0, address="TEST: 123 Main St", city="Los Angeles", state="CA", zip_code="90210",
+        foreclosure_auction_time=now + timedelta(days=5), foreclosing_bank="Test Bank N.A.",
+        foreclosure_auction_city="Los Angeles", foreclosure_auction_location="Test Location",
+        foreclosure_unpaid_balance=250000.0,
+    )
+    r1 = send_auction_scheduled(test_pf)
+    r2 = send_auction_digest([test_pf])
+    return jsonify({"smtp_status": "ok" if (r1 and r2) else "partial", "auction_scheduled": r1, "auction_digest": r2})
 
 
 @app.route("/api/tracker")

@@ -159,6 +159,11 @@ class PreForeclosure(Base):
     foreclosure_loan_date = Column(DateTime)
     foreclosure_judicial_type = Column(Text)
 
+    # Foreclosure stage tracking
+    foreclosure_stage = Column(String(20), default="NOD")  # NOD, Auction, Sold, REO
+    foreclosure_stage_manual_override = Column(Boolean, default=False)
+    notification_priority = Column(String(20), default="auto")  # auto, watch, mute
+
     # Property/listing data (from OpenWeb Ninja / Zillow)
     last_sold_price = Column(Float)
     year_built = Column(Integer)
@@ -193,6 +198,10 @@ def preforeclosure_to_dict(pf):
         "zillow_url": pf.zillow_url,
         "scan_error_count": pf.scan_error_count or 0,
         "last_scan_error": pf.last_scan_error,
+        # Foreclosure stage
+        "foreclosure_stage": pf.foreclosure_stage or "NOD",
+        "foreclosure_stage_manual_override": pf.foreclosure_stage_manual_override or False,
+        "notification_priority": pf.notification_priority or "auto",
         # Foreclosure data
         "foreclosing_bank": pf.foreclosing_bank,
         "foreclosure_default_description": pf.foreclosure_default_description,
@@ -250,6 +259,30 @@ def scan_job_to_dict(job):
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+
+
+class SentNotification(Base):
+    __tablename__ = "sent_notifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    property_id = Column(Integer)  # References preforeclosures.id
+    notification_type = Column(String(50))  # new_auction_scheduled, auction_warning_7d, etc.
+    sent_at = Column(DateTime, default=datetime.utcnow)
+    email_subject = Column(Text)
+    email_status = Column(String(20))  # sent, failed, retry
+    error_message = Column(Text)
+
+
+def sent_notification_to_dict(n):
+    return {
+        "id": n.id,
+        "property_id": n.property_id,
+        "notification_type": n.notification_type,
+        "sent_at": n.sent_at.isoformat() if n.sent_at else None,
+        "email_subject": n.email_subject,
+        "email_status": n.email_status,
+        "error_message": n.error_message,
     }
 
 
