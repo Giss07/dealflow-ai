@@ -1172,13 +1172,15 @@ if __name__ == "__main__":
     # Auction notification digest — daily at 8AM Pacific = 15:00 UTC
     schedule.every().day.at("15:00").do(check_upcoming_auctions)
 
-    # NOD rescan — every 3 days at 6AM Pacific = 13:00 UTC
-    schedule.every(3).days.at("13:00").do(rescan_nod_properties)
+    # Auto-rescan disabled May 7 2026 — use manual batch scanning until OpenWeb Ninja Pro upgrade.
+    # Function rescan_nod_properties() still exists and is callable via /admin/run-cron/rescan-nod-properties.
+    # To re-enable: uncomment the line below.
+    # schedule.every(3).days.at("13:00").do(rescan_nod_properties)
 
     logger.info("Scheduled (UTC times, Railway server):")
     logger.info(f"  - Pre-foreclosure MLS scan: {'ENABLED every 3 days 09:00 UTC' if mls_auto else 'MANUAL ONLY (MLS_AUTO_SCAN_ENABLED=false)'}")
     logger.info("  - 15:00 UTC (8AM PST): Full updater + check_upcoming_auctions")
-    logger.info("  - 13:00 UTC (6AM PST) every 3 days: rescan_nod_properties")
+    logger.info("  - DISABLED: rescan_nod_properties (manual only via /admin/run-cron)")
     logger.info("  - Hourly (9AM-6PM PST): Gmail-only counter checks")
     logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")
 
