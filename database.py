@@ -134,6 +134,9 @@ class PreForeclosure(Base):
     last_scanned = Column(DateTime)
     is_new = Column(Boolean, default=False)
     is_archived = Column(Boolean, default=False)
+    archive_reason = Column(String(30))    # already_sold, no_equity, not_real_lead
+    archive_notes = Column(Text)
+    archived_at = Column(DateTime)
     linked_deal_id = Column(Integer)  # ID of Deal created from this property
     date_added = Column(DateTime, default=datetime.utcnow)
 
@@ -191,6 +194,9 @@ def preforeclosure_to_dict(pf):
         "last_scanned": pf.last_scanned.isoformat() if pf.last_scanned else None,
         "is_new": pf.is_new or False,
         "is_archived": pf.is_archived or False,
+        "archive_reason": pf.archive_reason,
+        "archive_notes": pf.archive_notes,
+        "archived_at": pf.archived_at.isoformat() if pf.archived_at else None,
         "linked_deal_id": pf.linked_deal_id,
         "date_added": pf.date_added.isoformat() if pf.date_added else None,
         "listed_at": pf.listed_at.isoformat() if pf.listed_at else None,

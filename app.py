@@ -761,18 +761,122 @@ def api_preforeclosure_import():
 
 @app.route("/api/preforeclosure/<int:pf_id>/archive", methods=["POST"])
 def api_preforeclosure_archive(pf_id):
-    """Toggle archive on a pre-foreclosure property."""
+    """Archive with reason, or restore (unarchive)."""
+    from datetime import datetime as dt
     db = get_session()
     try:
         pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
         if not pf:
             return jsonify({"error": "Not found"}), 404
         data = request.get_json() or {}
-        pf.is_archived = data.get("archived", not pf.is_archived)
+
+        if data.get("archived") == False:
+            # Restore (unarchive)
+            pf.is_archived = False
+            pf.archive_reason = None
+            pf.archive_notes = None
+            pf.archived_at = None
+        else:
+            # Archive with reason
+            reason = data.get("reason", "")
+            if reason and reason not in ("already_sold", "no_equity", "not_real_lead"):
+                return jsonify({"error": "Invalid reason"}), 400
+            pf.is_archived = True
+            pf.archive_reason = reason or None
+            pf.archive_notes = data.get("notes", "").strip() or None
+            pf.archived_at = dt.utcnow()
+
         db.commit()
         return jsonify(preforeclosure_to_dict(pf))
     except Exception as e:
         db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/<int:pf_id>/submit-offer", methods=["POST"])
+def api_preforeclosure_submit_offer(pf_id):
+    """Submit or update an offer on a pre-foreclosure property.
+
+    Creates a Deal record (or reuses existing linked one), sets offer fields,
+    marks the pre-foreclosure as offer-submitted. Clears offer if amount is empty.
+    """
+    from datetime import datetime as dt
+    db = get_session()
+    try:
+        pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
+        if not pf:
+            return jsonify({"error": "Not found"}), 404
+
+        data = request.get_json() or {}
+        offer_amount = data.get("offer_amount", "")
+        offer_arv = data.get("offer_arv", "")
+        offer_notes = data.get("notes", "").strip()
+
+        # Clear offer if amount is empty
+        if not offer_amount:
+            if pf.linked_deal_id:
+                deal = db.query(Deal).filter_by(id=pf.linked_deal_id).first()
+                if deal:
+                    deal.offer_amount = None
+                    deal.offer_date = None
+                    deal.offer_notes = None
+                    deal.offer_status = None
+            pf.mls_status = pf.previous_mls_status or "unknown"
+            db.commit()
+            return jsonify(preforeclosure_to_dict(pf))
+
+        # Parse amounts
+        try:
+            amt = float(str(offer_amount).replace("$", "").replace(",", ""))
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid offer amount"}), 400
+        arv = None
+        if offer_arv:
+            try:
+                arv = float(str(offer_arv).replace("$", "").replace(",", ""))
+            except (ValueError, TypeError):
+                pass
+
+        # Get or create Deal
+        deal = None
+        if pf.linked_deal_id:
+            deal = db.query(Deal).filter_by(id=pf.linked_deal_id).first()
+
+        if not deal:
+            deal = Deal()
+            deal.address = pf.address
+            deal.city = pf.city
+            deal.state = pf.state
+            deal.zip_code = pf.zip_code
+            deal.price = pf.mls_price or pf.estimated_value
+            deal.home_type = pf.property_type or "SINGLE_FAMILY"
+            deal.source = "pre-foreclosure"
+            deal.description = pf.ai_notes or ""
+            db.add(deal)
+            db.flush()
+            pf.linked_deal_id = deal.id
+
+        # Set offer fields on Deal
+        deal.offer_amount = amt
+        deal.arv = arv or deal.arv or pf.estimated_value
+        deal.offer_date = dt.utcnow().strftime("%Y-%m-%d")
+        deal.offer_notes = offer_notes or deal.offer_notes
+        deal.offer_status = "Submitted"
+
+        # Mark pre-foreclosure as offer-submitted
+        pf.mls_status = "offer-submitted"
+
+        db.commit()
+        logger.info(f"Offer submitted for {pf.address}: ${amt:,.0f} (Deal ID {deal.id})")
+        return jsonify({
+            "preforeclosure": preforeclosure_to_dict(pf),
+            "deal": deal_to_dict(deal),
+        })
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Submit offer failed: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()

@@ -1333,7 +1333,7 @@
                 const priIcon = pri === 'watch' ? '<span title="Watching — always notify" style="color:#22c55e;font-size:11px;margin-left:4px;">👁</span>' : pri === 'mute' ? '<span title="Muted — no notifications" style="color:#64748b;font-size:11px;margin-left:4px;">🔇</span>' : '';
                 return `<tr style="${sel ? 'background:rgba(59,130,246,.08);' : ''}">
                     <td><input type="checkbox" id="pf-cb-${p.id}" ${sel?'checked':''} onclick="togglePfSelect(${p.id})" style="cursor:pointer;"></td>
-                    <td><div style="font-weight:500;">${p.address}${priIcon}${p.is_new ? ' <span style="background:#00e5a0;color:#000;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;">NEW</span>' : ''}${!p.listing_type_dimension ? ' <span title="Incomplete data — re-scan recommended" style="background:rgba(234,179,8,.15);color:#eab308;font-size:9px;font-weight:600;padding:2px 5px;border-radius:3px;cursor:help;">⚠ Needs scan</span>' : ''}</div><div style="color:#94a3b8;font-size:12px;">${p.city}${p.state ? ', '+p.state : ''} ${p.zip_code||''}</div></td>
+                    <td><div style="font-weight:500;">${p.address}${priIcon}${p.is_new ? ' <span style="background:#00e5a0;color:#000;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;">NEW</span>' : ''}${!p.listing_type_dimension ? ' <span title="Incomplete data — re-scan recommended" style="background:rgba(234,179,8,.15);color:#eab308;font-size:9px;font-weight:600;padding:2px 5px;border-radius:3px;cursor:help;">⚠ Needs scan</span>' : ''}${p.archive_reason ? ' <span style="background:rgba(100,116,139,.15);color:#94a3b8;font-size:9px;padding:2px 5px;border-radius:3px;">' + ({'already_sold':'🏷️ Sold','no_equity':'💰 No equity','not_real_lead':'❌ Not real'}[p.archive_reason] || p.archive_reason) + '</span>' : ''}</div><div style="color:#94a3b8;font-size:12px;">${p.city}${p.state ? ', '+p.state : ''} ${p.zip_code||''}${p.archive_notes ? ' — '+p.archive_notes : ''}</div></td>
                     <td><span style="font-size:10px;padding:2px 7px;border-radius:3px;background:#334155;color:#94a3b8;">${p.property_type||'SFR'}</span></td>
                     <td style="font-family:monospace;font-size:13px;">${val}</td>
                     <td style="font-size:12px;color:#94a3b8;">${auc}</td>
@@ -1348,7 +1348,7 @@
                                 <option value="mute" ${pri==='mute'?'selected':''}>🔇 Mute</option>
                             </select>
                             <button onclick="scanPf(${p.id})" title="Scan MLS" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#8635;</button>
-                            ${p.mls_status === 'on-market' ? `<button onclick="viewPfDeal(${p.id})" title="View Deal" style="padding:4px 10px;border-radius:6px;border:none;background:#22c55e;color:#000;cursor:pointer;font-size:11px;font-weight:600;">View Deal</button>` : `<button onclick="togglePfOffer(${p.id},'${p.mls_status}')" title="Mark Offer" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#9998;</button>`}
+                            ${p.mls_status === 'on-market' ? `<button onclick="viewPfDeal(${p.id})" title="View Deal" style="padding:4px 10px;border-radius:6px;border:none;background:#22c55e;color:#000;cursor:pointer;font-size:11px;font-weight:600;">View Deal</button>` : `<button onclick="openOfferModal(${p.id})" title="Mark Offer" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:transparent;color:#94a3b8;cursor:pointer;font-size:13px;">&#9998;</button>`}
                             <button onclick="setZillowUrl(${p.id})" title="${p.zillow_url ? 'URL set: '+p.zillow_url.substring(0,30)+'...' : 'Set Zillow URL'}" style="width:28px;height:28px;border-radius:6px;border:1px solid ${p.zillow_url ? '#3b82f6' : '#334155'};background:${p.zillow_url ? 'rgba(59,130,246,.15)' : 'transparent'};color:${p.zillow_url ? '#3b82f6' : '#94a3b8'};cursor:pointer;font-size:13px;">&#128279;</button>
                             ${p.is_new ? `<button onclick="dismissNew(${p.id})" title="Dismiss" style="padding:4px 8px;border-radius:6px;border:none;background:#854d0e;color:#fbbf24;cursor:pointer;font-size:10px;font-weight:600;">Seen</button>` : ''}
                             <button onclick="archivePf(${p.id},${!p.is_archived})" title="${p.is_archived ? 'Restore' : 'Archive'}" style="width:28px;height:28px;border-radius:6px;border:1px solid #334155;background:${p.is_archived ? '#475569' : 'transparent'};color:${p.is_archived ? '#fbbf24' : '#94a3b8'};cursor:pointer;font-size:13px;">${p.is_archived ? '↩' : '✕'}</button>
@@ -1642,10 +1642,68 @@
             } catch(e) { alert('Failed to move to NOD'); }
         }
 
-        async function togglePfOffer(id, current) {
-            const newStatus = current === 'offer-submitted' ? 'unknown' : 'offer-submitted';
-            await fetch('/api/preforeclosure/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mls_status: newStatus})});
-            loadPreForeclosure();
+        function openOfferModal(id) {
+            const pf = pfData.find(p => p.id === id);
+            const addr = pf ? pf.address : '';
+            const isEdit = pf && pf.mls_status === 'offer-submitted' && pf.linked_deal_id;
+
+            let modal = document.getElementById('offer-modal');
+            if (modal) modal.remove();
+            modal = document.createElement('div');
+            modal.id = 'offer-modal';
+            modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:1000;';
+            modal.innerHTML = `
+                <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:24px;width:400px;max-width:90vw;">
+                    <h3 style="margin:0 0 4px;color:#e2e8f0;font-size:16px;">${isEdit ? 'Edit Offer' : 'Submit Offer'}</h3>
+                    <p style="margin:0 0 16px;color:#94a3b8;font-size:13px;">${addr}</p>
+                    <label style="color:#94a3b8;font-size:12px;">Offer Amount ($) *</label>
+                    <input type="text" id="offer-amount-input" placeholder="e.g. 350000" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:10px;border-radius:6px;margin:4px 0 12px;font-size:14px;">
+                    <label style="color:#94a3b8;font-size:12px;">ARV ($)</label>
+                    <input type="text" id="offer-arv-input" placeholder="e.g. 500000" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:10px;border-radius:6px;margin:4px 0 12px;font-size:14px;">
+                    <label style="color:#94a3b8;font-size:12px;">Notes (optional)</label>
+                    <input type="text" id="offer-notes-input" placeholder="e.g. Submitted via agent" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:10px;border-radius:6px;margin:4px 0 16px;font-size:14px;">
+                    <div style="display:flex;gap:10px;justify-content:flex-end;">
+                        ${isEdit ? '<button onclick="submitPfOffer('+id+',true)" style="background:#475569;color:#fca5a5;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;">Revoke Offer</button>' : ''}
+                        <button onclick="document.getElementById(\'offer-modal\').remove()" style="background:#475569;color:#e2e8f0;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
+                        <button onclick="submitPfOffer(${id},false)" style="background:#8b5cf6;color:white;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">${isEdit ? 'Update' : 'Submit'}</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+
+            // Pre-fill if editing
+            if (isEdit) {
+                fetch('/api/deals?tab=offers').then(r=>r.json()).then(deals => {
+                    const deal = deals.find(d => d.id === pf.linked_deal_id);
+                    if (deal) {
+                        document.getElementById('offer-amount-input').value = deal.offer_amount || '';
+                        document.getElementById('offer-arv-input').value = deal.arv || '';
+                        document.getElementById('offer-notes-input').value = deal.offer_notes || '';
+                    }
+                });
+            }
+        }
+
+        async function submitPfOffer(id, revoke) {
+            const amount = revoke ? '' : document.getElementById('offer-amount-input').value;
+            const arv = revoke ? '' : document.getElementById('offer-arv-input').value;
+            const notes = revoke ? '' : document.getElementById('offer-notes-input').value;
+
+            if (!revoke && !amount) { alert('Enter an offer amount'); return; }
+
+            try {
+                const resp = await fetch('/api/preforeclosure/' + id + '/submit-offer', {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({offer_amount: amount, offer_arv: arv, notes: notes})
+                });
+                const data = await resp.json();
+                if (data.error) { alert(data.error); return; }
+                const modal = document.getElementById('offer-modal');
+                if (modal) modal.remove();
+                loadPreForeclosure();
+                updateTabCounts();
+            } catch(e) { alert('Failed: ' + e.message); }
         }
 
         async function deletePf(id) {
@@ -1706,12 +1764,61 @@
             loadPreForeclosure();
         }
 
-        async function archivePf(id, archive) {
+        function archivePf(id, archive) {
+            if (!archive) {
+                // Restore — no modal needed
+                fetch(`/api/preforeclosure/${id}/archive`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({archived: false})})
+                    .then(r => r.json()).then(d => { if (d.error) alert(d.error); loadPreForeclosure(); });
+                return;
+            }
+            // Archive — show reason modal
+            const pf = pfData.find(p => p.id === id);
+            const addr = pf ? pf.address : '';
+            let modal = document.getElementById('archive-reason-modal');
+            if (modal) modal.remove();
+            modal = document.createElement('div');
+            modal.id = 'archive-reason-modal';
+            modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:1000;';
+            modal.innerHTML = `
+                <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:24px;width:380px;max-width:90vw;">
+                    <h3 style="margin:0 0 4px;color:#e2e8f0;font-size:16px;">Archive Property</h3>
+                    <p style="margin:0 0 16px;color:#94a3b8;font-size:13px;">${addr}</p>
+                    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
+                        <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#0f172a;border:1px solid #334155;border-radius:8px;cursor:pointer;color:#e2e8f0;font-size:13px;">
+                            <input type="radio" name="archive-reason" value="no_equity" checked style="accent-color:#f59e0b;"> 💰 No equity
+                        </label>
+                        <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#0f172a;border:1px solid #334155;border-radius:8px;cursor:pointer;color:#e2e8f0;font-size:13px;">
+                            <input type="radio" name="archive-reason" value="already_sold" style="accent-color:#f59e0b;"> 🏷️ Already sold/off-market
+                        </label>
+                        <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#0f172a;border:1px solid #334155;border-radius:8px;cursor:pointer;color:#e2e8f0;font-size:13px;">
+                            <input type="radio" name="archive-reason" value="not_real_lead" style="accent-color:#f59e0b;"> ❌ Not a real lead
+                        </label>
+                    </div>
+                    <label style="color:#94a3b8;font-size:12px;">Notes (optional)</label>
+                    <textarea id="archive-notes-input" rows="2" placeholder="Any additional context..." style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:8px;border-radius:6px;margin:4px 0 16px;font-size:13px;resize:vertical;"></textarea>
+                    <div style="display:flex;gap:10px;justify-content:flex-end;">
+                        <button onclick="document.getElementById('archive-reason-modal').remove()" style="background:#475569;color:#e2e8f0;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
+                        <button onclick="submitArchive(${id})" style="background:#dc2626;color:white;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">Archive</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+        }
+
+        async function submitArchive(id) {
+            const reason = document.querySelector('input[name="archive-reason"]:checked')?.value || 'no_equity';
+            const notes = document.getElementById('archive-notes-input')?.value || '';
             try {
-                const resp = await fetch(`/api/preforeclosure/${id}/archive`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({archived: archive})});
+                const resp = await fetch(`/api/preforeclosure/${id}/archive`, {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({archived: true, reason, notes})
+                });
                 const data = await resp.json();
                 if (data.error) { alert('Archive failed: ' + data.error); return; }
+                document.getElementById('archive-reason-modal').remove();
                 loadPreForeclosure();
+                updateTabCounts();
             } catch(e) { alert('Archive failed: ' + e.message); }
         }
 
