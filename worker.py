@@ -540,7 +540,7 @@ def _parse_date_safe(value):
         except (ValueError, OSError):
             return None
     value = str(value).strip()
-    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
                 "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f",
                 "%m/%d/%Y", "%m-%d-%Y", "%Y/%m/%d"):
         try:

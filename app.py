@@ -1062,6 +1062,62 @@ def api_preforeclosure_set_url(pf_id):
         db.close()
 
 
+@app.route("/api/preforeclosure/<int:pf_id>/set-auction-date", methods=["POST"])
+def api_preforeclosure_set_auction_date(pf_id):
+    """Set auction date on a NOD property, moving it to Auction stage."""
+    from datetime import datetime as dt
+    db = get_session()
+    try:
+        pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
+        if not pf:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json() or {}
+        auction_date_str = data.get("auction_date", "")
+        if not auction_date_str:
+            return jsonify({"error": "auction_date required"}), 400
+
+        # Parse date — accept multiple formats
+        from worker import _parse_date_safe
+        parsed = _parse_date_safe(auction_date_str)
+        if not parsed:
+            return jsonify({"error": f"Could not parse date: {auction_date_str}"}), 400
+
+        pf.foreclosure_auction_time = parsed
+        pf.foreclosure_stage = "Auction"
+        pf.foreclosure_stage_manual_override = True
+        if data.get("notes"):
+            pf.notes = data["notes"]
+        db.commit()
+        logger.info(f"Set auction date for {pf.address}: {parsed} (manual override)")
+        return jsonify(preforeclosure_to_dict(pf))
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/preforeclosure/<int:pf_id>/move-to-nod", methods=["POST"])
+def api_preforeclosure_move_to_nod(pf_id):
+    """Move an Auction property back to NOD stage (clear auction date)."""
+    db = get_session()
+    try:
+        pf = db.query(PreForeclosure).filter_by(id=pf_id).first()
+        if not pf:
+            return jsonify({"error": "Not found"}), 404
+        pf.foreclosure_auction_time = None
+        pf.foreclosure_stage = "NOD"
+        pf.foreclosure_stage_manual_override = True
+        db.commit()
+        logger.info(f"Moved {pf.address} back to NOD (manual override)")
+        return jsonify(preforeclosure_to_dict(pf))
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
 @app.route("/api/preforeclosure/<int:pf_id>/notification-priority", methods=["PATCH", "POST"])
 def api_preforeclosure_notification_priority(pf_id):
     """Set notification priority for a property (auto/watch/mute)."""

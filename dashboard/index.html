@@ -1207,6 +1207,10 @@
                         </div>
                     </div>
                 </div>
+                <div style="padding:0 24px 16px;border-top:1px solid #1e293b;display:flex;gap:10px;">
+                    ${(p.foreclosure_stage||'NOD') === 'NOD' ? `<button onclick="openSetAuctionDate(${p.id})" style="background:#f59e0b;color:#000;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">Set Auction Date</button>` : ''}
+                    ${p.foreclosure_stage === 'Auction' ? `<button onclick="moveToNod(${p.id})" style="background:#475569;color:#e2e8f0;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;">Move back to NOD</button>` : ''}
+                </div>
             </td></tr>`;
         }
 
@@ -1581,6 +1585,61 @@
                 body: JSON.stringify({zillow_url: url})
             });
             loadPreForeclosure();
+        }
+
+        function openSetAuctionDate(id) {
+            const pf = pfData.find(p => p.id === id);
+            const addr = pf ? pf.address : '';
+            // Create modal overlay
+            let modal = document.getElementById('auction-date-modal');
+            if (modal) modal.remove();
+            modal = document.createElement('div');
+            modal.id = 'auction-date-modal';
+            modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:1000;';
+            modal.innerHTML = `
+                <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:24px;width:400px;max-width:90vw;">
+                    <h3 style="margin:0 0 4px;color:#e2e8f0;font-size:16px;">Set Auction Date</h3>
+                    <p style="margin:0 0 16px;color:#94a3b8;font-size:13px;">${addr}</p>
+                    <label style="color:#94a3b8;font-size:12px;">Auction Date & Time</label>
+                    <input type="datetime-local" id="auction-date-input" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:10px;border-radius:6px;margin:4px 0 12px;font-size:14px;">
+                    <label style="color:#94a3b8;font-size:12px;">Notes (optional)</label>
+                    <input type="text" id="auction-notes-input" placeholder="e.g. Courthouse steps, Pomona" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:10px;border-radius:6px;margin:4px 0 16px;font-size:14px;">
+                    <div style="display:flex;gap:10px;justify-content:flex-end;">
+                        <button onclick="document.getElementById('auction-date-modal').remove()" style="background:#475569;color:#e2e8f0;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
+                        <button onclick="submitAuctionDate(${id})" style="background:#f59e0b;color:#000;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">Set Date</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+        }
+
+        async function submitAuctionDate(id) {
+            const dateVal = document.getElementById('auction-date-input').value;
+            const notes = document.getElementById('auction-notes-input').value;
+            if (!dateVal) { alert('Please select a date'); return; }
+            try {
+                const resp = await fetch('/api/preforeclosure/' + id + '/set-auction-date', {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({auction_date: dateVal, notes: notes})
+                });
+                const data = await resp.json();
+                if (data.error) { alert(data.error); return; }
+                document.getElementById('auction-date-modal').remove();
+                loadPreForeclosure();
+                updateTabCounts();
+            } catch(e) { alert('Failed to set auction date'); }
+        }
+
+        async function moveToNod(id) {
+            if (!confirm('Clear auction date and move this property back to NOD?')) return;
+            try {
+                const resp = await fetch('/api/preforeclosure/' + id + '/move-to-nod', {method:'POST'});
+                const data = await resp.json();
+                if (data.error) { alert(data.error); return; }
+                loadPreForeclosure();
+                updateTabCounts();
+            } catch(e) { alert('Failed to move to NOD'); }
         }
 
         async function togglePfOffer(id, current) {
