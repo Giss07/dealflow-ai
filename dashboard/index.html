@@ -1116,7 +1116,7 @@
                     <option value="mute" ${pfPriorityFilter==='mute'?'selected':''}>🔇 Muted</option>
                 </select>
                 <input type="text" placeholder="Search address..." value="${pfSearch}" oninput="pfSearch=this.value;renderPfRows()" style="background:#334155;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:6px;font-size:14px;width:200px;">
-                <button id="btn-pf-archived" onclick="togglePfArchived()" style="background:#475569;color:#e2e8f0;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Show Archived</button>
+                <button id="btn-pf-archived" onclick="togglePfArchived()" style="background:${pfShowArchived ? '#3b82f6' : '#475569'};color:${pfShowArchived ? 'white' : '#e2e8f0'};border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">${pfShowArchived ? 'Showing Archived' : 'Show Archived'}</button>
                 ${newBadge > 0 ? '<button onclick="dismissAllNew()" style="background:#854d0e;color:#fbbf24;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Dismiss All New</button>' : ''}
                 <div style="flex:1;"></div>
                 <label for="pf-csv-input" style="background:#475569;color:#e2e8f0;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Import CSV</label>
@@ -1664,7 +1664,7 @@
                     <input type="text" id="offer-notes-input" placeholder="e.g. Submitted via agent" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:10px;border-radius:6px;margin:4px 0 16px;font-size:14px;">
                     <div style="display:flex;gap:10px;justify-content:flex-end;">
                         ${isEdit ? '<button onclick="submitPfOffer('+id+',true)" style="background:#475569;color:#fca5a5;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;">Revoke Offer</button>' : ''}
-                        <button onclick="document.getElementById(\'offer-modal\').remove()" style="background:#475569;color:#e2e8f0;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
+                        <button onclick="document.getElementById('offer-modal').remove()" style="background:#475569;color:#e2e8f0;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
                         <button onclick="submitPfOffer(${id},false)" style="background:#8b5cf6;color:white;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">${isEdit ? 'Update' : 'Submit'}</button>
                     </div>
                 </div>
