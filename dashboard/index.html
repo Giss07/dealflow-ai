@@ -1278,7 +1278,7 @@
                 const diff = Math.round((d - now) / 86400000);
                 let badge = '';
                 if (diff < 0) {
-                    badge = `<span style="display:block;font-size:10px;color:#64748b;margin-top:2px;">Passed ${Math.abs(diff)}d ago</span>`;
+                    badge = `<span style="display:block;font-size:10px;color:#f59e0b;margin-top:2px;" title="Auction date may have been postponed — verify with trustee before acting.">⚠️ Passed ${Math.abs(diff)}d ago · <a href="#" onclick="event.preventDefault();event.stopPropagation();togglePfDetail(${p.id})" style="color:#f59e0b;text-decoration:underline;font-size:10px;">Verify</a></span>`;
                 } else if (diff === 0) {
                     badge = `<span style="display:block;font-size:10px;color:#dc2626;font-weight:600;margin-top:2px;">TODAY</span>`;
                 } else if (diff < 14) {
