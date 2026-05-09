@@ -1186,7 +1186,7 @@ def api_scan_job_create():
         )
         db.add(job)
         db.commit()
-        logger.info(f"Created scan job {job.id} for {len(property_ids)} properties")
+        logger.info(f"[SCAN_JOB_CREATED] id={job.id} created_at={job.created_at.isoformat()} property_count={len(property_ids)}")
         return jsonify(scan_job_to_dict(job))
     except Exception as e:
         db.rollback()

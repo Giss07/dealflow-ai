@@ -153,7 +153,8 @@ def check_pending_scan_jobs():
         if not job:
             return
 
-        logger.info(f"Picking up scan job {job.id} ({job.total} properties)")
+        pickup_delay = (dt.utcnow() - job.created_at).total_seconds() if job.created_at else 0
+        logger.info(f"[SCAN_JOB_PICKUP] id={job.id} created_at={job.created_at.isoformat() if job.created_at else '?'} pickup_at={dt.utcnow().isoformat()} pickup_delay_seconds={pickup_delay:.1f}")
         job.status = "running"
         job.started_at = dt.utcnow()
         db.commit()
@@ -266,6 +267,9 @@ def run_preforeclosure_scan(property_ids=None, job_id=None):
             "api_calls": api_calls, "actual_cost": round(actual_cost, 4),
             "new_on_market": len(new_on_market), "provider": "openweb_ninja",
         }
+        from datetime import datetime as dt2
+        duration = (dt2.utcnow() - now_pst.astimezone(pytz.utc).replace(tzinfo=None)).total_seconds()
+        logger.info(f"[SCAN_JOB_COMPLETE] job_id={job_id} duration_seconds={duration:.1f} scanned={scanned} errors={errors} new_on_market={len(new_on_market)}")
         logger.info(f"Pre-foreclosure scan complete: {summary}")
         if alert_data:
             _send_new_listing_alert(alert_data)
