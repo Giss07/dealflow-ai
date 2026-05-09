@@ -284,6 +284,7 @@ def run_preforeclosure_scan(property_ids=None, job_id=None):
             actual_cost = 0.0
             new_on_market = []
 
+            progress_interval = max(1, len(properties) // 4) if len(properties) > 4 else 1
             for i, pf in enumerate(properties):
                 try:
                     found = _scan_via_openweb_ninja(pf, OPENWEB_KEY, delay_seconds, new_on_market)
@@ -300,11 +301,13 @@ def run_preforeclosure_scan(property_ids=None, job_id=None):
                     pf.last_scan_error = f"{type(e).__name__}: {str(e)[:100]}"
                     errors += 1
 
-                # Commit + update job progress every property
-                db.commit()
-                _update_job_progress(job_id, db, scanned=scanned, errors=errors,
-                                     actual_cost=round(actual_cost, 4),
-                                     new_on_market=len(new_on_market))
+                # Batch commit + progress update every 5 properties or at progress intervals
+                if (i + 1) % 5 == 0 or i == len(properties) - 1:
+                    db.commit()
+                if (i + 1) % progress_interval == 0 or i == len(properties) - 1:
+                    _update_job_progress(job_id, db, scanned=scanned, errors=errors,
+                                         actual_cost=round(actual_cost, 4),
+                                         new_on_market=len(new_on_market))
                 if i < len(properties) - 1:
                     time.sleep(delay_seconds)
 
