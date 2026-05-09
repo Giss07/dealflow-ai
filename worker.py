@@ -249,7 +249,7 @@ def run_preforeclosure_scan(property_ids=None, job_id=None):
     now_pst = datetime.now(PST)
     logger.info(f"=== PRE-FORECLOSURE SCAN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
 
-    delay_seconds = int(os.getenv("MLS_DELAY_SECONDS", "3"))
+    delay_seconds = int(os.getenv("MLS_DELAY_SECONDS", "1"))
     detail_fallback = os.getenv("MLS_DETAIL_FALLBACK_ENABLED", "true").lower() != "false"
     use_openweb = os.getenv("USE_OPENWEB_NINJA", "false").lower() == "true"
     OPENWEB_KEY = os.getenv("OPENWEB_NINJA_API_KEY", "")
