@@ -405,7 +405,17 @@ def check_mls_status(address: str, zip_code: str):
         if not data:
             return json.dumps({"found": False, "message": f"Not found on Zillow via OpenWeb Ninja"})
         home_status = (data.get("homeStatus") or "").upper()
-        status = "for-sale" if "FOR_SALE" in home_status else "pending" if "PENDING" in home_status else "sold" if "SOLD" in home_status else home_status.lower()
+        days = data.get("daysOnZillow")
+        if "FOR_SALE" in home_status and days is not None:
+            status = "for-sale"
+        elif "PENDING" in home_status:
+            status = "pending"
+        elif "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
+            status = "sold"
+        elif "OTHER" in home_status or "OFF_MARKET" in home_status:
+            status = "off-market"
+        else:
+            status = "off-market"  # Default: safer than for-sale
         return json.dumps({
             "found": True,
             "address": data.get("streetAddress") or data.get("address") or address,
@@ -438,7 +448,7 @@ def check_mls_status(address: str, zip_code: str):
             return json.dumps({
                 "found": True,
                 "address": item.get("address", address),
-                "status": "for-sale" if "FOR_SALE" in st else "pending" if "PENDING" in st else st.lower(),
+                "status": "for-sale" if "FOR_SALE" in st else "pending" if "PENDING" in st else "sold" if "SOLD" in st else "off-market",
                 "price": hi.get("price"),
                 "zestimate": hi.get("zestimate"),
                 "beds": hi.get("bedrooms"),

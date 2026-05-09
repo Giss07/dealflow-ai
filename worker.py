@@ -654,8 +654,8 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
             pf.mls_status = "auction"
     elif "FORECLOSURE" in home_status or "PRE_FORECLOSURE" in home_status:
         pf.mls_status = "pre-foreclosure"
-    elif "OFF_MARKET" in home_status:
-        pf.mls_status = "unknown"
+    elif "OFF_MARKET" in home_status or "OTHER" in home_status:
+        pf.mls_status = "unknown"  # OTHER = off-market/withdrawn/unknown on Zillow
     else:
         pf.mls_status = "pre-foreclosure"  # Default: safer than on-market
 
@@ -762,8 +762,10 @@ def _apply_zillow_match(pf, matched, prev_status, new_on_market):
         pf.mls_status = "auction"
     elif "FOR_SALE" in home_status or "ACTIVE" in home_status:
         pf.mls_status = "on-market"
-    elif "PENDING" in home_status or "OTHER" in home_status or "UNDER_CONTRACT" in home_status:
+    elif "PENDING" in home_status or "UNDER_CONTRACT" in home_status:
         pf.mls_status = "on-market"
+    elif "OTHER" in home_status:
+        pf.mls_status = "unknown"  # OTHER = off-market/withdrawn on Zillow, not actively listed
     elif "FORECLOSURE" in home_status or "PRE_FORECLOSURE" in home_status:
         pf.mls_status = "pre-foreclosure"
     elif "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
