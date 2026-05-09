@@ -708,6 +708,75 @@ def check_zillow_status(address, zillow_url=None):
         print(f"  [Apify] Error: {e}")
         return None
 
+
+def _check_zillow_status_owin(address, zillow_url=None):
+    """Check Zillow status via OpenWeb Ninja (address-based lookup).
+
+    Returns: 'active' | 'pending' | 'sold' | None
+    Same return values as check_zillow_status() for drop-in compatibility.
+    """
+    try:
+        OWIN_KEY = os.getenv("OPENWEB_NINJA_API_KEY", "")
+        if not OWIN_KEY:
+            print(f"  [OpenWeb] API key not set, falling back to Apify")
+            return check_zillow_status(address, zillow_url)
+
+        print(f"  [OpenWeb] Looking up: {address}")
+
+        resp = requests.get(
+            "https://api.openwebninja.com/realtime-zillow-data/property-details-address",
+            params={"address": address},
+            headers={"x-api-key": OWIN_KEY},
+            timeout=30,
+        )
+
+        if resp.status_code == 404:
+            print(f"  [OpenWeb] Not found on Zillow")
+            return None
+        if resp.status_code == 429:
+            print(f"  [OpenWeb] Rate limited — falling back to Apify")
+            return check_zillow_status(address, zillow_url)
+        if resp.status_code not in (200, 201):
+            print(f"  [OpenWeb] HTTP {resp.status_code}: {resp.text[:200]}")
+            return None
+
+        body = resp.json()
+        data = body.get("data") or body
+        if not data or not data.get("zpid"):
+            print(f"  [OpenWeb] No results returned")
+            return None
+
+        home_status = str(data.get("homeStatus", "")).upper()
+        print(f"  [OpenWeb] homeStatus={home_status}")
+
+        # Check contingentListingType FIRST
+        contingent = str(data.get("contingentListingType", "") or "").upper()
+        if "UNDER_CONTRACT" in contingent or "CONTINGENT" in contingent:
+            print(f"  [OpenWeb] contingentListingType={contingent} — treating as pending")
+            return "pending"
+
+        if "SOLD" in home_status or "RECENTLY_SOLD" in home_status or "FORECLOSED" in home_status or "CLOSED" in home_status:
+            return "sold"
+        elif "PENDING" in home_status or "UNDER_CONTRACT" in home_status:
+            return "pending"
+        elif "FOR_SALE" in home_status or "ACTIVE" in home_status:
+            sub_type = data.get("listing_sub_type", {}) or {}
+            if sub_type.get("is_pending", False):
+                print(f"  [OpenWeb] listing_sub_type.is_pending=True — treating as pending")
+                return "pending"
+            return "active"
+        elif home_status == "OTHER":
+            print(f"  [OpenWeb] Status OTHER = likely Under Contract, treating as pending")
+            return "pending"
+        else:
+            print(f"  [OpenWeb] Unrecognized status: {home_status}")
+            return None
+
+    except Exception as e:
+        print(f"  [OpenWeb] Error: {e}")
+        return None
+
+
 # ============================================================
 # COUNTER PRICE ALERTS FROM EXISTING SHEET DATA
 # ============================================================
@@ -927,7 +996,11 @@ def run_full(sheet, records, headers, status_col):
             zillow_url = zillow_url.split('?')[0]
 
         print(f"[{i+1}/{len(records)}] {address}")
-        zillow_status = check_zillow_status(address, zillow_url=zillow_url)
+        use_owin = os.getenv("USE_OPENWEB_NINJA_FOR_ZILLOW", "false").lower() == "true"
+        if use_owin:
+            zillow_status = _check_zillow_status_owin(address, zillow_url=zillow_url)
+        else:
+            zillow_status = check_zillow_status(address, zillow_url=zillow_url)
 
         if zillow_status == 'sold':
             if current_status not in ['STP', 'Closed', 'Accepted', 'Rejected']:

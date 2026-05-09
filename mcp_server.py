@@ -159,6 +159,129 @@ def _format_listing(item, hi, price, zip_code):
     }
 
 
+# ── OPENWEB NINJA ─────────────────────────────────────────────────────
+# Feature flag: USE_OPENWEB_NINJA_FOR_ZILLOW (default false)
+# When true, MCP tools use OpenWeb Ninja instead of Apify.
+# OpenWeb Ninja: $0.0025/call, 1-2s response, direct address/zip lookup.
+
+_owin_cache = {}  # {cache_key: (epoch_time, data)}
+
+def _call_openweb_ninja_search(zip_code, status="FOR_SALE"):
+    """Search listings by zip code via OpenWeb Ninja.
+
+    Returns list of listing dicts on success, or dict with "error" key on failure.
+    Results cached for 1 hour.
+    """
+    import requests
+
+    cache_key = f"{zip_code}:{status}"
+    if cache_key in _owin_cache:
+        ts, items = _owin_cache[cache_key]
+        age = int(time.time() - ts)
+        if age < CACHE_TTL:
+            logger.info(f"[owin] CACHE HIT zip={zip_code} status={status} age={age}s items={len(items)}")
+            return items
+
+    key = os.getenv("OPENWEB_NINJA_API_KEY", "")
+    if not key:
+        return {"error": "OPENWEB_NINJA_API_KEY not configured on server"}
+
+    for attempt in range(3):
+        try:
+            start = time.time()
+            r = requests.get(
+                "https://api.openwebninja.com/realtime-zillow-data/search",
+                params={"location": zip_code, "status": status},
+                headers={"x-api-key": key},
+                timeout=30,
+            )
+            elapsed = time.time() - start
+            logger.info(f"[owin] zip={zip_code} attempt={attempt+1} status={r.status_code} time={elapsed:.1f}s")
+
+            if r.status_code in (200, 201):
+                body = r.json()
+                items = body.get("data", [])
+                if isinstance(items, list):
+                    _owin_cache[cache_key] = (time.time(), items)
+                    logger.info(f"[owin] zip={zip_code} cached {len(items)} items")
+                    return items
+                return {"error": "Unexpected response format"}
+
+            if r.status_code == 429:
+                wait = 2 ** (attempt + 1)
+                logger.warning(f"[owin] rate limited (429), waiting {wait}s")
+                time.sleep(wait)
+                continue
+
+            return {"error": f"OpenWeb Ninja HTTP {r.status_code}", "detail": r.text[:300]}
+
+        except requests.exceptions.Timeout:
+            logger.warning(f"[owin] timeout attempt {attempt+1}/3 zip={zip_code}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+        except requests.exceptions.ConnectionError as e:
+            logger.warning(f"[owin] connection error attempt {attempt+1}/3: {str(e)[:100]}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+
+    return {"error": "All 3 OpenWeb Ninja attempts failed"}
+
+
+def _call_openweb_ninja_address(address):
+    """Look up a single property by address via OpenWeb Ninja.
+
+    Returns property dict on success, None if not found, or dict with "error" key.
+    """
+    import requests
+
+    key = os.getenv("OPENWEB_NINJA_API_KEY", "")
+    if not key:
+        return {"error": "OPENWEB_NINJA_API_KEY not configured on server"}
+
+    try:
+        r = requests.get(
+            "https://api.openwebninja.com/realtime-zillow-data/property-details-address",
+            params={"address": address},
+            headers={"x-api-key": key},
+            timeout=30,
+        )
+        if r.status_code == 404:
+            return None
+        if r.status_code == 429:
+            return {"error": "OpenWeb Ninja rate limited (429)"}
+        if r.status_code not in (200, 201):
+            return {"error": f"OpenWeb Ninja HTTP {r.status_code}"}
+
+        body = r.json()
+        data = body.get("data") or body
+        if not data or not data.get("zpid"):
+            return None
+        return data
+    except Exception as e:
+        return {"error": f"OpenWeb Ninja error: {str(e)[:100]}"}
+
+
+def _owin_format_listing(item, zip_code):
+    """Format an OpenWeb Ninja search result for tool output."""
+    hi = item.get("hdpData", {}).get("homeInfo", {})
+    return {
+        "address": f"{item.get('streetAddress', '')}, {item.get('city', '')}, {item.get('state', 'CA')} {zip_code}",
+        "price": item.get("price") or item.get("unformattedPrice") or 0,
+        "beds": item.get("bedrooms") or item.get("beds"),
+        "baths": item.get("bathrooms") or item.get("baths"),
+        "sqft": item.get("livingArea") or item.get("area"),
+        "year": hi.get("yearBuilt"),
+        "days": item.get("daysOnZillow") or hi.get("daysOnZillow"),
+        "zestimate": item.get("zestimate"),
+        "type": item.get("homeType", ""),
+    }
+
+
+def _use_openweb():
+    """Check if OpenWeb Ninja should be used for Zillow lookups."""
+    return os.getenv("USE_OPENWEB_NINJA_FOR_ZILLOW", "false").lower() == "true"
+
+
 # ── TOOLS ─────────────────────────────────────────────────────────────
 
 
@@ -166,10 +289,21 @@ def _format_listing(item, hi, price, zip_code):
 def search_zillow(zip_code: str):
     """Search Zillow for homes currently for sale in a California zip code.
     Returns up to 20 active listings with price, beds, baths, sqft, year built, and days on market.
-    Results are cached for 1 hour to save Apify credits.
+    Results are cached for 1 hour.
     """
     logger.info(f"[search_zillow] zip={zip_code}")
 
+    if _use_openweb():
+        result = _call_openweb_ninja_search(zip_code, "FOR_SALE")
+        if isinstance(result, dict) and "error" in result:
+            return json.dumps({"status": "error", **result})
+        out = [_owin_format_listing(item, zip_code) for item in result[:20]
+               if (item.get("homeStatus") or "").upper() == "FOR_SALE"
+               and (item.get("statusText") or "").lower() != "auction"]
+        logger.info(f"[search_zillow] owin zip={zip_code} returning {len(out)}/{len(result)} listings")
+        return json.dumps({"status": "ok", "zip": zip_code, "count": len(out), "listings": out, "provider": "openweb_ninja"})
+
+    # Apify path
     result = _call_apify(zip_code)
     if isinstance(result, dict) and "error" in result:
         return json.dumps({"status": "error", **result})
@@ -187,76 +321,106 @@ def search_distressed(zip_code: str):
     Filters for: 60+ days on market, price cuts, as-is/fixer/estate/probate
     language, and investor-friendly signals. Returns matches sorted by days
     on market (most stale first) with distress signals explained.
-    Results are cached for 1 hour to save Apify credits.
+    Results are cached for 1 hour.
     """
     logger.info(f"[search_distressed] zip={zip_code}")
 
-    result = _call_apify(zip_code)
+    if _use_openweb():
+        result = _call_openweb_ninja_search(zip_code, "FOR_SALE")
+    else:
+        result = _call_apify(zip_code)
+
     if isinstance(result, dict) and "error" in result:
         return json.dumps({"status": "error", **result})
 
-    listings = _filter_for_sale(result)
+    # Normalize items to a common format for distress analysis
     distressed = []
+    for item in result:
+        hi = item.get("hdpData", {}).get("homeInfo", {})
+        home_status = (hi.get("homeStatus") or item.get("homeStatus") or "").upper()
+        if "FOR_SALE" not in home_status:
+            continue
+        if (item.get("statusText") or "").lower() == "auction":
+            continue
 
-    for l in listings:
-        item, hi, price = l["raw"], l["hi"], l["price"]
+        price = item.get("price") or hi.get("price") or item.get("unformattedPrice") or 0
+        try:
+            price = float(str(price).replace("$", "").replace(",", ""))
+        except (ValueError, TypeError):
+            continue
+
         signals = []
 
-        # High days on market
-        days = hi.get("daysOnZillow")
+        days = item.get("daysOnZillow") or hi.get("daysOnZillow")
         if days is not None and days >= 60:
             signals.append(f"On market {days} days")
 
-        # Price below zestimate by >10%
-        zest = hi.get("zestimate")
+        zest = item.get("zestimate") or hi.get("zestimate")
         if zest and price and zest > 0:
             discount = (zest - price) / zest
             if discount > 0.10:
                 signals.append(f"Priced {discount:.0%} below Zestimate (${zest:,.0f})")
 
-        # Price change/reduction
-        price_change = hi.get("priceChange")
+        price_change = hi.get("priceChange") or item.get("priceChange")
         if price_change and price_change < 0:
             signals.append(f"Price cut: ${abs(price_change):,.0f}")
 
-        # Distressed keywords in description
-        desc = (item.get("hdpData", {}).get("homeInfo", {}).get("description") or "").lower()
-        # Also check the top-level description if present
-        desc2 = (item.get("description") or "").lower()
-        full_desc = desc + " " + desc2
-        matched_kw = [kw for kw in DISTRESSED_KEYWORDS if kw in full_desc]
+        desc = (hi.get("description") or item.get("description") or "").lower()
+        matched_kw = [kw for kw in DISTRESSED_KEYWORDS if kw in desc]
         if matched_kw:
             signals.append(f"Keywords: {', '.join(matched_kw)}")
 
-        # Year built (pre-1980 = likely needs work)
-        year = hi.get("yearBuilt")
+        year = hi.get("yearBuilt") or item.get("yearBuilt")
         if year and year < 1980:
             signals.append(f"Built {year}")
 
-        # Include if at least one strong signal (60+ days or keywords or price cut)
         has_dom = days is not None and days >= 60
         has_keywords = len(matched_kw) > 0
         has_price_cut = (price_change and price_change < 0) or (zest and price and zest > 0 and (zest - price) / zest > 0.10)
         if has_dom or has_keywords or has_price_cut:
-            entry = _format_listing(item, hi, price, zip_code)
+            if _use_openweb():
+                entry = _owin_format_listing(item, zip_code)
+            else:
+                entry = _format_listing(item, hi, price, zip_code)
             entry["distress_signals"] = signals
             entry["signal_count"] = len(signals)
             distressed.append(entry)
 
-    # Sort by days on market descending (most stale first)
     distressed.sort(key=lambda x: (x.get("days") or 0), reverse=True)
 
-    logger.info(f"[search_distressed] zip={zip_code} found {len(distressed)} distressed out of {len(listings)} for-sale")
+    logger.info(f"[search_distressed] zip={zip_code} found {len(distressed)} distressed")
     return json.dumps({"status": "ok", "zip": zip_code, "count": len(distressed), "listings": distressed})
 
 
 @mcp.tool()
 def check_mls_status(address: str, zip_code: str):
-    """Check if a specific property address is currently listed for sale on Zillow.
-    Uses cached Apify results when available.
-    """
+    """Check if a specific property address is currently listed for sale on Zillow."""
     logger.info(f"[check_mls_status] {address}, {zip_code}")
 
+    if _use_openweb():
+        full_addr = f"{address}, CA {zip_code}".strip()
+        data = _call_openweb_ninja_address(full_addr)
+        if isinstance(data, dict) and "error" in data:
+            return json.dumps({"status": "error", **data})
+        if not data:
+            return json.dumps({"found": False, "message": f"Not found on Zillow via OpenWeb Ninja"})
+        home_status = (data.get("homeStatus") or "").upper()
+        status = "for-sale" if "FOR_SALE" in home_status else "pending" if "PENDING" in home_status else "sold" if "SOLD" in home_status else home_status.lower()
+        return json.dumps({
+            "found": True,
+            "address": data.get("streetAddress") or data.get("address") or address,
+            "status": status,
+            "price": data.get("price"),
+            "zestimate": data.get("zestimate"),
+            "beds": data.get("bedrooms"),
+            "baths": data.get("bathrooms"),
+            "sqft": data.get("livingArea"),
+            "year": data.get("yearBuilt"),
+            "days": data.get("daysOnZillow"),
+            "provider": "openweb_ninja",
+        })
+
+    # Apify path
     result = _call_apify(zip_code, max_items=20)
     if isinstance(result, dict) and "error" in result:
         return json.dumps({"status": "error", **result})
