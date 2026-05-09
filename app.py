@@ -967,7 +967,7 @@ def api_preforeclosure_create_deal(pf_id):
 
 @app.route("/api/preforeclosure/scan/<int:pf_id>", methods=["POST"])
 def api_preforeclosure_scan(pf_id):
-    """Scan a single property. Uses OpenWeb Ninja if USE_OPENWEB_NINJA=true, else Apify."""
+    """Scan a single property via OpenWeb Ninja."""
     from datetime import datetime as dt
 
     db = get_session()
@@ -976,167 +976,15 @@ def api_preforeclosure_scan(pf_id):
         if not pf:
             return jsonify({"error": "Not found"}), 404
 
-        # OpenWeb Ninja path
-        use_openweb = os.getenv("USE_OPENWEB_NINJA", "false").lower() == "true"
         openweb_key = os.getenv("OPENWEB_NINJA_API_KEY", "")
-        if use_openweb and openweb_key:
-            from worker import _scan_via_openweb_ninja
-            new_on_market = []
-            _scan_via_openweb_ninja(pf, openweb_key, 0, new_on_market)
-            db.commit()
-            logger.info(f"OpenWeb scan for {pf.address}: {pf.mls_status}")
-            return jsonify(preforeclosure_to_dict(pf))
+        if not openweb_key:
+            return jsonify({"error": "OPENWEB_NINJA_API_KEY not configured"}), 500
 
-        # Apify path (existing)
-        from urllib.parse import quote_plus
-        import requests as req
-
-        APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
-        if not APIFY_API_KEY:
-            return jsonify({"error": "No API key configured"}), 500
-
-        full_addr = f"{pf.address}, {pf.city}, {pf.state} {pf.zip_code}"
-
-        # Use Apify zip search to find the property by zip code, then match by address
-        zip_code = pf.zip_code or ""
-        if not zip_code:
-            # Try to extract zip from address
-            import re as _re
-            zip_match = _re.search(r'\b(\d{5})\b', full_addr)
-            zip_code = zip_match.group(1) if zip_match else ""
-
-        logger.info(f"Scanning {full_addr} via Apify (zip: {zip_code})...")
-
-        api_url = "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search/run-sync-get-dataset-items"
-        payload = {
-            "zipCodes": [zip_code] if zip_code else [],
-            "maxItems": 50,
-        }
-
-        prev_status = pf.mls_status
-        pf.previous_mls_status = prev_status
-        pf.last_scanned = dt.utcnow()
-
-        if not zip_code:
-            pf.ai_notes = "No zip code — cannot search Zillow"
-            pf.mls_status = "unknown"
-            pf.scan_error_count = (pf.scan_error_count or 0) + 1
-            pf.last_scan_error = "No zip code"
-            db.commit()
-            return jsonify(preforeclosure_to_dict(pf))
-
-        resp = req.post(
-            api_url, params={"token": APIFY_API_KEY},
-            json=payload, headers={"Content-Type": "application/json"},
-            timeout=300
-        )
-
-        if resp.status_code not in (200, 201):
-            error_text = resp.text[:200]
-            pf.ai_notes = f"Apify error {resp.status_code}: {error_text}"
-            db.commit()
-            return jsonify({"error": f"Apify returned {resp.status_code}", "details": error_text}), 502
-
-        all_results = resp.json()
-
-        # Find matching property by street number + street name
-        street_parts = pf.address.lower().split()
-        results = []
-        data = None
-        for item in all_results:
-            item_addr = (item.get("addressStreet") or item.get("address") or "").lower()
-            # Match on first few words of address (street number + name)
-            if len(street_parts) >= 2 and street_parts[0] in item_addr and street_parts[1] in item_addr:
-                data = item
-                break
-
-        if not data:
-            pf.mls_status = "unknown"
-            pf.ai_notes = f"Not found on Zillow ({len(all_results)} listings in {zip_code})"
-            db.commit()
-            return jsonify(preforeclosure_to_dict(pf))
-
-        results = [data]
-        home_info = data.get("hdpData", {}).get("homeInfo", {})
-        home_status = (home_info.get("homeStatus") or data.get("statusType") or "").upper()
-        price = home_info.get("price") or data.get("unformattedPrice")
-        zestimate = home_info.get("zestimate") or data.get("zestimate")
-        bedrooms = home_info.get("bedrooms") or data.get("beds")
-        bathrooms = home_info.get("bathrooms") or data.get("baths")
-        sqft = home_info.get("livingArea") or data.get("area")
-        year_built = home_info.get("yearBuilt")
-        description = ""
-
-        # Map Zillow status to our status
-        # Check for auction listings (not real MLS)
-        # Only use statusText and price=0 — sub_type flags are unreliable
-        status_text = (data.get("statusText") or "").upper()
-        try:
-            price_num = float(str(price).replace("$","").replace(",","") or 0) if price else 0
-        except (ValueError, TypeError):
-            price_num = 0
-        is_auction = bool(
-            "AUCTION" in status_text
-            or "AUCTION" in home_status
-            or "FORECLOSED" in home_status
-            or (price is not None and price_num == 0)
-        )
-
-        if is_auction:
-            pf.mls_status = "auction"
-        elif "FOR_SALE" in home_status:
-            pf.mls_status = "on-market"
-        elif "PENDING" in home_status or "OTHER" in home_status:
-            pf.mls_status = "on-market"
-        elif "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
-            pf.mls_status = "unknown"
-        elif "FORECLOSURE" in home_status or "PRE_FORECLOSURE" in home_status:
-            pf.mls_status = "pre-foreclosure"
-        else:
-            pf.mls_status = "unknown"
-
-        # Update property details
-        if price:
-            try:
-                pf.mls_price = float(str(price).replace("$", "").replace(",", ""))
-            except (ValueError, TypeError):
-                pass
-
-        if zestimate:
-            try:
-                pf.estimated_value = float(zestimate)
-            except (ValueError, TypeError):
-                pass
-        elif price and not pf.estimated_value:
-            try:
-                pf.estimated_value = float(str(price).replace("$", "").replace(",", ""))
-            except (ValueError, TypeError):
-                pass
-
-        # Build notes
-        notes_parts = []
-        notes_parts.append(f"Zillow: {home_status}")
-        if price:
-            notes_parts.append(f"Price: ${float(str(price).replace('$','').replace(',','')):,.0f}" if str(price).replace('$','').replace(',','').replace('.','').isdigit() else f"Price: {price}")
-        if zestimate:
-            notes_parts.append(f"Zestimate: ${float(zestimate):,.0f}")
-        if bedrooms or bathrooms or sqft:
-            notes_parts.append(f"{bedrooms or '?'}bd/{bathrooms or '?'}ba {sqft or '?'}sqft")
-        if year_built:
-            notes_parts.append(f"Built {year_built}")
-        if description:
-            notes_parts.append(description[:100])
-        pf.ai_notes = " | ".join(notes_parts)
-
-        pf.is_new = (prev_status != "on-market" and pf.mls_status == "on-market")
-        if pf.is_new:
-            pf.listed_at = dt.utcnow()
-        # Clear error tracking on successful scan
-        pf.scan_error_count = 0
-        pf.last_scan_error = None
-
+        from worker import _scan_via_openweb_ninja
+        new_on_market = []
+        _scan_via_openweb_ninja(pf, openweb_key, 0, new_on_market)
         db.commit()
-        logger.info(f"Scan result for {pf.address}: {pf.mls_status} | {pf.ai_notes[:80]}")
+        logger.info(f"Scan for {pf.address}: {pf.mls_status}")
         return jsonify(preforeclosure_to_dict(pf))
 
     except Exception as e:
@@ -1293,7 +1141,7 @@ def api_preforeclosure_new_count():
 
 @app.route("/api/preforeclosure/scan-cost-estimate", methods=["POST"])
 def api_preforeclosure_scan_cost_estimate():
-    """Estimate Apify cost for scanning a set of properties."""
+    """Estimate cost for scanning a set of properties."""
     data = request.get_json() or {}
     property_ids = data.get("property_ids", [])
     if not property_ids:
