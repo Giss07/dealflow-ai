@@ -25,26 +25,15 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("DealFlow AI")
 
 
-# ── APIFY CACHE + RETRY ──────────────────────────────────────────────
+# ── OPENWEB NINJA ─────────────────────────────────────────────────────
+# All Zillow lookups use OpenWeb Ninja Real-Time Zillow Data API.
+# $0.0025/call, 1-2s response, direct address/zip lookup.
 #
-# ROOT CAUSE (documented to prevent regression):
-# MCP SDK 1.27 has DEFAULT_REQUEST_TIMEOUT_MSEC = 60000 (60s) hardcoded
-# in the Protocol class. Claude Desktop's MCP client enforces this per
-# tool call. Apify's zillow-zip-search actor takes 20-90s depending on
-# zip code density. If the Apify call exceeds 60s, the client aborts
-# with "Tool execution failed" before the server can respond.
-#
-# FIX: timeout=55s on each Apify attempt (leaves 5s buffer for JSON
-# parsing + MCP framing). maxItems=25 keeps most calls under 30s.
-# Cache prevents repeated calls for the same zip within an hour.
-#
-# ALSO: FastMCP 1.27 rejects tool calls when optional params are
+# NOTE: FastMCP 1.27 rejects tool calls when optional params are
 # omitted. ALL tool params must be required (no default values).
 # Return type annotations (-> str) must be omitted to avoid
 # outputSchema validation errors.
-# ──────────────────────────────────────────────────────────────────────
 
-_apify_cache = {}  # {zip_code: (epoch_time, [raw_items])}
 CACHE_TTL = 3600   # 1 hour
 
 DISTRESSED_KEYWORDS = [
@@ -53,116 +42,6 @@ DISTRESSED_KEYWORDS = [
     "motivated", "must sell", "priced to sell", "short sale",
     "bank owned", "reo", "foreclosure", "auction", "deferred maintenance",
 ]
-
-
-def _call_apify(zip_code, max_items=25):
-    """Call Apify zillow-zip-search with retry + exponential backoff + caching.
-
-    Returns a list of raw Apify item dicts on success, or a dict with
-    "error" key on failure. All Apify-calling tools delegate here.
-    """
-    import requests
-
-    # 1. Check cache
-    if zip_code in _apify_cache:
-        ts, items = _apify_cache[zip_code]
-        age = int(time.time() - ts)
-        if age < CACHE_TTL:
-            logger.info(f"[apify] CACHE HIT zip={zip_code} age={age}s items={len(items)}")
-            return items
-
-    key = os.getenv("APIFY_API_KEY", "")
-    if not key:
-        return {"error": "APIFY_API_KEY not configured on server"}
-
-    # 2. Retry loop with backoff
-    last_error = None
-    for attempt in range(3):
-        try:
-            start = time.time()
-            r = requests.post(
-                "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search/run-sync-get-dataset-items",
-                params={"token": key},
-                json={"zipCodes": [zip_code], "maxItems": max_items},
-                headers={"Content-Type": "application/json"},
-                timeout=55,
-            )
-            elapsed = time.time() - start
-            logger.info(f"[apify] zip={zip_code} attempt={attempt+1} status={r.status_code} time={elapsed:.1f}s")
-
-            if r.status_code in (200, 201):
-                items = r.json()
-                _apify_cache[zip_code] = (time.time(), items)
-                logger.info(f"[apify] zip={zip_code} cached {len(items)} items")
-                return items
-
-            if r.status_code == 429:
-                wait = 2 ** (attempt + 1)
-                logger.warning(f"[apify] rate limited (429), waiting {wait}s before retry")
-                time.sleep(wait)
-                continue
-
-            # Other HTTP errors — don't retry
-            return {"error": f"Apify returned HTTP {r.status_code}", "detail": r.text[:300]}
-
-        except requests.exceptions.Timeout:
-            last_error = "timeout"
-            logger.warning(f"[apify] timeout on attempt {attempt+1}/3 zip={zip_code}")
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-                continue
-
-        except requests.exceptions.ConnectionError as e:
-            last_error = str(e)[:200]
-            logger.warning(f"[apify] connection error attempt {attempt+1}/3: {last_error}")
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-                continue
-
-    return {"error": f"All 3 Apify attempts failed (last: {last_error})"}
-
-
-def _filter_for_sale(items):
-    """Filter raw Apify items to active for-sale listings (not auctions)."""
-    out = []
-    for item in items:
-        hi = item.get("hdpData", {}).get("homeInfo", {})
-        if "FOR_SALE" not in (hi.get("homeStatus") or "").upper():
-            continue
-        if (item.get("statusText") or "").lower() == "auction":
-            continue
-        price = hi.get("price") or item.get("unformattedPrice") or 0
-        try:
-            price = float(str(price).replace("$", "").replace(",", ""))
-        except (ValueError, TypeError):
-            continue
-        out.append({
-            "raw": item,
-            "hi": hi,
-            "price": price,
-        })
-    return out
-
-
-def _format_listing(item, hi, price, zip_code):
-    """Format a single listing for tool output."""
-    return {
-        "address": f"{item.get('addressStreet', '')}, {item.get('addressCity', '')}, CA {zip_code}",
-        "price": price,
-        "beds": hi.get("bedrooms"),
-        "baths": hi.get("bathrooms"),
-        "sqft": hi.get("livingArea") or item.get("area"),
-        "year": hi.get("yearBuilt"),
-        "days": hi.get("daysOnZillow"),
-        "zestimate": hi.get("zestimate"),
-        "type": hi.get("homeType", ""),
-    }
-
-
-# ── OPENWEB NINJA ─────────────────────────────────────────────────────
-# Feature flag: USE_OPENWEB_NINJA_FOR_ZILLOW (default false)
-# When true, MCP tools use OpenWeb Ninja instead of Apify.
-# OpenWeb Ninja: $0.0025/call, 1-2s response, direct address/zip lookup.
 
 _owin_cache = {}  # {cache_key: (epoch_time, data)}
 
@@ -277,11 +156,6 @@ def _owin_format_listing(item, zip_code):
     }
 
 
-def _use_openweb():
-    """Check if OpenWeb Ninja should be used for Zillow lookups."""
-    return os.getenv("USE_OPENWEB_NINJA_FOR_ZILLOW", "false").lower() == "true"
-
-
 # ── TOOLS ─────────────────────────────────────────────────────────────
 
 
@@ -293,24 +167,12 @@ def search_zillow(zip_code: str):
     """
     logger.info(f"[search_zillow] zip={zip_code}")
 
-    if _use_openweb():
-        result = _call_openweb_ninja_search(zip_code, "FOR_SALE")
-        if isinstance(result, dict) and "error" in result:
-            return json.dumps({"status": "error", **result})
-        out = [_owin_format_listing(item, zip_code) for item in result[:20]
-               if (item.get("homeStatus") or "").upper() == "FOR_SALE"
-               and (item.get("statusText") or "").lower() != "auction"]
-        logger.info(f"[search_zillow] owin zip={zip_code} returning {len(out)}/{len(result)} listings")
-        return json.dumps({"status": "ok", "zip": zip_code, "count": len(out), "listings": out, "provider": "openweb_ninja"})
-
-    # Apify path
-    result = _call_apify(zip_code)
+    result = _call_openweb_ninja_search(zip_code, "FOR_SALE")
     if isinstance(result, dict) and "error" in result:
         return json.dumps({"status": "error", **result})
-
-    listings = _filter_for_sale(result)
-    out = [_format_listing(l["raw"], l["hi"], l["price"], zip_code) for l in listings[:20]]
-
+    out = [_owin_format_listing(item, zip_code) for item in result[:20]
+           if (item.get("homeStatus") or "").upper() == "FOR_SALE"
+           and (item.get("statusText") or "").lower() != "auction"]
     logger.info(f"[search_zillow] zip={zip_code} returning {len(out)}/{len(result)} listings")
     return json.dumps({"status": "ok", "zip": zip_code, "count": len(out), "listings": out})
 
@@ -325,11 +187,7 @@ def search_distressed(zip_code: str):
     """
     logger.info(f"[search_distressed] zip={zip_code}")
 
-    if _use_openweb():
-        result = _call_openweb_ninja_search(zip_code, "FOR_SALE")
-    else:
-        result = _call_apify(zip_code)
-
+    result = _call_openweb_ninja_search(zip_code, "FOR_SALE")
     if isinstance(result, dict) and "error" in result:
         return json.dumps({"status": "error", **result})
 
@@ -378,10 +236,7 @@ def search_distressed(zip_code: str):
         has_keywords = len(matched_kw) > 0
         has_price_cut = (price_change and price_change < 0) or (zest and price and zest > 0 and (zest - price) / zest > 0.10)
         if has_dom or has_keywords or has_price_cut:
-            if _use_openweb():
-                entry = _owin_format_listing(item, zip_code)
-            else:
-                entry = _format_listing(item, hi, price, zip_code)
+            entry = _owin_format_listing(item, zip_code)
             entry["distress_signals"] = signals
             entry["signal_count"] = len(signals)
             distressed.append(entry)
@@ -397,69 +252,36 @@ def check_mls_status(address: str, zip_code: str):
     """Check if a specific property address is currently listed for sale on Zillow."""
     logger.info(f"[check_mls_status] {address}, {zip_code}")
 
-    if _use_openweb():
-        full_addr = f"{address}, CA {zip_code}".strip()
-        data = _call_openweb_ninja_address(full_addr)
-        if isinstance(data, dict) and "error" in data:
-            return json.dumps({"status": "error", **data})
-        if not data:
-            return json.dumps({"found": False, "message": f"Not found on Zillow via OpenWeb Ninja"})
-        home_status = (data.get("homeStatus") or "").upper()
-        days = data.get("daysOnZillow")
-        if "FOR_SALE" in home_status and days is not None:
-            status = "for-sale"
-        elif "PENDING" in home_status:
-            status = "pending"
-        elif "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
-            status = "sold"
-        elif "OTHER" in home_status or "OFF_MARKET" in home_status:
-            status = "off-market"
-        else:
-            status = "off-market"  # Default: safer than for-sale
-        return json.dumps({
-            "found": True,
-            "address": data.get("streetAddress") or data.get("address") or address,
-            "status": status,
-            "price": data.get("price"),
-            "zestimate": data.get("zestimate"),
-            "beds": data.get("bedrooms"),
-            "baths": data.get("bathrooms"),
-            "sqft": data.get("livingArea"),
-            "year": data.get("yearBuilt"),
-            "days": data.get("daysOnZillow"),
-            "provider": "openweb_ninja",
-        })
-
-    # Apify path
-    result = _call_apify(zip_code, max_items=20)
-    if isinstance(result, dict) and "error" in result:
-        return json.dumps({"status": "error", **result})
-
-    parts = address.lower().replace(",", " ").split()
-    match_parts = [p for p in parts if len(p) > 1][:3]
-    logger.info(f"[check_mls_status] matching {match_parts} in {len(result)} listings")
-
-    for item in result:
-        addr = (item.get("addressStreet") or item.get("address") or "").lower()
-        if len(match_parts) >= 2 and match_parts[0] in addr and match_parts[1] in addr:
-            hi = item.get("hdpData", {}).get("homeInfo", {})
-            st = (hi.get("homeStatus") or "").upper()
-            logger.info(f"[check_mls_status] FOUND: {item.get('address')} = {st}")
-            return json.dumps({
-                "found": True,
-                "address": item.get("address", address),
-                "status": "for-sale" if "FOR_SALE" in st else "pending" if "PENDING" in st else "sold" if "SOLD" in st else "off-market",
-                "price": hi.get("price"),
-                "zestimate": hi.get("zestimate"),
-                "beds": hi.get("bedrooms"),
-                "baths": hi.get("bathrooms"),
-                "sqft": hi.get("livingArea"),
-                "year": hi.get("yearBuilt"),
-                "days": hi.get("daysOnZillow"),
-            })
-
-    logger.info(f"[check_mls_status] NOT FOUND in {len(result)} listings")
-    return json.dumps({"found": False, "message": f"Not found in {len(result)} listings for {zip_code}"})
+    full_addr = f"{address}, CA {zip_code}".strip()
+    data = _call_openweb_ninja_address(full_addr)
+    if isinstance(data, dict) and "error" in data:
+        return json.dumps({"status": "error", **data})
+    if not data:
+        return json.dumps({"found": False, "message": f"Not found on Zillow"})
+    home_status = (data.get("homeStatus") or "").upper()
+    days = data.get("daysOnZillow")
+    if "FOR_SALE" in home_status and days is not None:
+        status = "for-sale"
+    elif "PENDING" in home_status:
+        status = "pending"
+    elif "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
+        status = "sold"
+    elif "OTHER" in home_status or "OFF_MARKET" in home_status:
+        status = "off-market"
+    else:
+        status = "off-market"
+    return json.dumps({
+        "found": True,
+        "address": data.get("streetAddress") or data.get("address") or address,
+        "status": status,
+        "price": data.get("price"),
+        "zestimate": data.get("zestimate"),
+        "beds": data.get("bedrooms"),
+        "baths": data.get("bathrooms"),
+        "sqft": data.get("livingArea"),
+        "year": data.get("yearBuilt"),
+        "days": data.get("daysOnZillow"),
+    })
 
 
 @mcp.tool()
@@ -590,7 +412,7 @@ if __name__ == "__main__":
 
     # --- Health endpoint ---
     async def health(request):
-        k = "yes" if os.getenv("APIFY_API_KEY") else "NO"
+        k = "yes" if os.getenv("OPENWEB_NINJA_API_KEY") else "NO"
         sha = "unknown"
         try:
             with open(os.path.join(os.path.dirname(__file__), ".build_sha")) as f:
@@ -602,8 +424,8 @@ if __name__ == "__main__":
             mcpv = getattr(_mcp, "__version__", "?")
         except:
             mcpv = "?"
-        cache_zips = list(_apify_cache.keys())
-        return PlainTextResponse(f"ok sha={sha} apify={k} mcp={mcpv} cached={cache_zips}")
+        cache_zips = list(_owin_cache.keys())
+        return PlainTextResponse(f"ok sha={sha} owin={k} mcp={mcpv} cached={cache_zips}")
 
     # --- Legacy SSE transport (kept for rollback) ---
     sse = SseServerTransport("/messages/")
