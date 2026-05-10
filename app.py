@@ -1197,10 +1197,11 @@ def api_scan_job_create():
 
 @app.route("/api/scan-jobs/<int:job_id>")
 def api_scan_job_status(job_id):
-    """Get status of a scan job (for polling)."""
+    """Get status of a scan job (for polling). Forces fresh read from DB."""
     from database import ScanJob, scan_job_to_dict
     db = get_session()
     try:
+        db.expire_all()  # Force fresh read — don't return cached session data
         job = db.query(ScanJob).filter_by(id=job_id).first()
         if not job:
             return jsonify({"error": "Job not found"}), 404

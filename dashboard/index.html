@@ -1476,7 +1476,7 @@
             showScanBadge(true);
 
             if (scanPollInterval) clearInterval(scanPollInterval);
-            scanPollInterval = setInterval(() => pollScanJob(jobId, total), 3000);
+            scanPollInterval = setInterval(() => pollScanJob(jobId, total), 1500);
         }
 
         async function pollScanJob(jobId, total) {
