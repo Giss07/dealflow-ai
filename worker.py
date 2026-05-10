@@ -162,7 +162,7 @@ def check_pending_scan_jobs():
         property_ids = json.loads(job.property_ids)
         summary = run_preforeclosure_scan(property_ids=property_ids, job_id=job.id)
 
-        # Update job with final results
+        # Mark job complete FIRST — so polling sees completed immediately
         job = db.query(ScanJob).filter_by(id=job.id).first()
         if summary.get("error"):
             job.status = "failed"
@@ -177,6 +177,14 @@ def check_pending_scan_jobs():
         job.completed_at = dt.utcnow()
         db.commit()
         logger.info(f"Scan job {job.id} completed: {job.status}")
+
+        # Send alerts AFTER job is marked complete — don't block UX
+        alert_data = summary.get("_alert_data", [])
+        if alert_data:
+            try:
+                _send_new_listing_alert(alert_data)
+            except Exception as e:
+                logger.error(f"Alert email failed (job already marked complete): {e}")
 
     except Exception as e:
         logger.error(f"Error processing scan job: {e}", exc_info=True)
@@ -266,23 +274,20 @@ def run_preforeclosure_scan(property_ids=None, job_id=None):
                 time.sleep(delay_seconds)
             logger.info(f"[TIMING] property={pf.id} total_loop_seconds={time.time() - t_loop:.1f}")
 
+        # Collect alert data before returning — caller will send alerts AFTER marking job complete
         alert_data = [{"address": pf.address, "city": pf.city,
                        "mls_price": pf.mls_price, "estimated_value": pf.estimated_value}
                       for pf in new_on_market]
-        db.commit()
-        db.close()
 
         summary = {
             "scanned": scanned, "errors": errors,
             "api_calls": api_calls, "actual_cost": round(actual_cost, 4),
             "new_on_market": len(new_on_market), "provider": "openweb_ninja",
+            "_alert_data": alert_data,  # Passed to caller for post-completion alerting
         }
         from datetime import datetime as dt2
         duration = (dt2.utcnow() - now_pst.astimezone(pytz.utc).replace(tzinfo=None)).total_seconds()
         logger.info(f"[SCAN_JOB_COMPLETE] job_id={job_id} duration_seconds={duration:.1f} scanned={scanned} errors={errors} new_on_market={len(new_on_market)}")
-        logger.info(f"Pre-foreclosure scan complete: {summary}")
-        if alert_data:
-            _send_new_listing_alert(alert_data)
         return summary
 
     except Exception as e:
