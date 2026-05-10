@@ -1199,7 +1199,6 @@ def api_scan_job_create():
 def api_scan_job_status(job_id):
     """Get status of a scan job (for polling). Fresh session per request."""
     from database import ScanJob, scan_job_to_dict
-    from datetime import datetime as dt
     db = get_session()
     db.close()  # Close immediately — discard any pooled connection state
     db = get_session()  # Brand new session + connection
@@ -1207,7 +1206,6 @@ def api_scan_job_status(job_id):
         job = db.query(ScanJob).filter_by(id=job_id).first()
         if not job:
             return jsonify({"error": "Job not found"}), 404
-        logger.info(f"[POLL] job_id={job_id} status={job.status} scanned={job.scanned} time={dt.utcnow().isoformat()}")
         return jsonify(scan_job_to_dict(job))
     finally:
         db.close()

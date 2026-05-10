@@ -239,12 +239,8 @@ def run_preforeclosure_scan(property_ids=None, job_id=None):
 
         progress_interval = max(5, len(properties) // 4)  # Update progress at most every 5 properties
         for i, pf in enumerate(properties):
-            t_loop = time.time()
             try:
-                t_api = time.time()
                 found = _scan_via_openweb_ninja(pf, OPENWEB_KEY, delay_seconds, new_on_market)
-                api_elapsed = time.time() - t_api
-                logger.info(f"[TIMING] property={pf.id} api_seconds={api_elapsed:.1f}")
                 api_calls += 1
                 actual_cost += COST_OPENWEB_NINJA
                 if found:
@@ -260,9 +256,7 @@ def run_preforeclosure_scan(property_ids=None, job_id=None):
 
             # Batch commit every 5 properties or at the end
             if (i + 1) % 5 == 0 or i == len(properties) - 1:
-                t_commit = time.time()
                 db.commit()
-                logger.info(f"[TIMING] property={pf.id} commit_seconds={time.time() - t_commit:.1f}")
 
             # Progress update only at 25% intervals or at the end
             if (i + 1) % progress_interval == 0 or i == len(properties) - 1:
@@ -272,7 +266,6 @@ def run_preforeclosure_scan(property_ids=None, job_id=None):
 
             if i < len(properties) - 1:
                 time.sleep(delay_seconds)
-            logger.info(f"[TIMING] property={pf.id} total_loop_seconds={time.time() - t_loop:.1f}")
 
         # Collect alert data before returning — caller will send alerts AFTER marking job complete
         alert_data = [{"address": pf.address, "city": pf.city,
