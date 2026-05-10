@@ -68,9 +68,7 @@ ALERT_EMAILS = os.getenv('ALERT_EMAILS', '').split(',') if os.getenv('ALERT_EMAI
 
 CLOSE_DEAL_THRESHOLD = 30000
 
-APIFY_API_KEY    = os.getenv('APIFY_API_KEY', '')
-APIFY_ACTOR_ID   = 'maxcopell~zillow-detail-scraper'
-APIFY_RUN_SYNC   = f'https://api.apify.com/v2/acts/{APIFY_ACTOR_ID}/run-sync-get-dataset-items'
+OPENWEB_NINJA_API_KEY = os.getenv('OPENWEB_NINJA_API_KEY', '')
 
 PST = pytz.timezone('America/Los_Angeles')
 
@@ -591,135 +589,21 @@ def write_sold_price_to_archive(address, sold_price):
         return False
 
 # ============================================================
-# ZILLOW STATUS CHECKER — powered by Apify
 # ============================================================
-
-def build_zillow_search_url(address):
-    """Convert a plain address into a Zillow search URL."""
-    clean = address.strip().lower()
-    clean = re.sub(r'[^a-z0-9\s]', '', clean)
-    slug = clean.replace(' ', '-')
-    return f"https://www.zillow.com/homes/{slug}_rb/"
-
-def get_zpid_for_address(address):
-    """
-    Uses Apify to search Zillow for an address and return its ZPID.
-    Returns the zpid string or None.
-    """
-    try:
-        search_url = build_zillow_search_url(address)
-        payload = {
-            "startUrls": [{"url": search_url}],
-            "maxItems": 1,
-            "proxyConfiguration": {
-                "useApifyProxy": True,
-                "apifyProxyGroups": ["BUYPROXIES94952"]
-            }
-        }
-        response = requests.post(
-            APIFY_RUN_SYNC,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            params={"token": APIFY_API_KEY},
-            timeout=120
-        )
-        if response.status_code not in [200, 201]:
-            return None
-        data = response.json()
-        if not data or not isinstance(data, list):
-            return None
-        zpid = data[0].get('zpid')
-        return str(zpid) if zpid else None
-    except Exception as e:
-        print(f"  [Apify] ZPID lookup error: {e}")
-        return None
-
-def check_zillow_status(address, zillow_url=None):
-    """
-    Uses the Apify maxcopell~zillow-detail-scraper actor with proxy.
-    Uses the Zillow URL from the sheet if available, otherwise falls back to search.
-    Returns: 'active' | 'pending' | 'sold' | None
-    """
-    try:
-        print(f"  [Apify] Looking up: {address}")
-
-        if not zillow_url:
-            # Fallback: build search URL
-            zillow_url = build_zillow_search_url(address)
-
-        print(f"  [Apify] URL: {zillow_url}")
-
-        # Step 2: Get full property details
-        payload = {
-            "startUrls": [{"url": zillow_url}],
-            "maxItems": 1,
-            "proxyConfiguration": {
-                "useApifyProxy": True,
-                "apifyProxyGroups": ["BUYPROXIES94952"]
-            }
-        }
-        response = requests.post(
-            APIFY_RUN_SYNC,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            params={"token": APIFY_API_KEY},
-            timeout=120
-        )
-
-        if response.status_code not in [200, 201]:
-            print(f"  [Apify] HTTP {response.status_code}: {response.text[:200]}")
-            return None
-
-        data = response.json()
-        if not data or not isinstance(data, list) or len(data) == 0:
-            print(f"  [Apify] No results returned")
-            return None
-
-        item = data[0]
-        home_status = str(item.get('homeStatus', '')).upper()
-        print(f"  [Apify] homeStatus={home_status}")
-
-        # Check contingentListingType FIRST — overrides homeStatus
-        contingent = str(item.get('contingentListingType', '') or '').upper()
-        if 'UNDER_CONTRACT' in contingent or 'CONTINGENT' in contingent:
-            print(f"  [Apify] contingentListingType={contingent} — treating as pending")
-            return 'pending'
-
-        if 'SOLD' in home_status or 'RECENTLY_SOLD' in home_status or 'FORECLOSED' in home_status or 'FORECLOSURE' in home_status or 'CLOSED' in home_status:
-            return 'sold'
-        elif 'PENDING' in home_status or 'UNDER_CONTRACT' in home_status:
-            return 'pending'
-        elif 'FOR_SALE' in home_status or 'ACTIVE' in home_status:
-            # Double check listing_sub_type for pending/under contract
-            sub_type = item.get('listing_sub_type', {}) or {}
-            if sub_type.get('is_pending', False):
-                print(f"  [Apify] listing_sub_type.is_pending=True — treating as pending")
-                return 'pending'
-            return 'active'
-        elif home_status == 'OTHER':
-            # OTHER = Under Contract on Zillow — treat as pending, no changes
-            print(f"  [Apify] Status OTHER = likely Under Contract, treating as pending")
-            return 'pending'
-        else:
-            print(f"  [Apify] Unrecognized status: {home_status}")
-            return None
-
-    except Exception as e:
-        print(f"  [Apify] Error: {e}")
-        return None
-
+# ZILLOW STATUS CHECKER — powered by OpenWeb Ninja
+# ============================================================
 
 def _check_zillow_status_owin(address, zillow_url=None):
     """Check Zillow status via OpenWeb Ninja (address-based lookup).
 
     Returns: 'active' | 'pending' | 'sold' | None
-    Same return values as check_zillow_status() for drop-in compatibility.
+    Fails loudly if API key is missing or rate-limited — no Apify fallback.
     """
     try:
-        OWIN_KEY = os.getenv("OPENWEB_NINJA_API_KEY", "")
+        OWIN_KEY = OPENWEB_NINJA_API_KEY
         if not OWIN_KEY:
-            print(f"  [OpenWeb] API key not set, falling back to Apify")
-            return check_zillow_status(address, zillow_url)
+            print(f"  [OpenWeb] ERROR: OPENWEB_NINJA_API_KEY not set — cannot check status")
+            return None
 
         print(f"  [OpenWeb] Looking up: {address}")
 
@@ -734,8 +618,8 @@ def _check_zillow_status_owin(address, zillow_url=None):
             print(f"  [OpenWeb] Not found on Zillow")
             return None
         if resp.status_code == 429:
-            print(f"  [OpenWeb] Rate limited — falling back to Apify")
-            return check_zillow_status(address, zillow_url)
+            print(f"  [OpenWeb] ERROR: Rate limited (429) — skipping property")
+            return None
         if resp.status_code not in (200, 201):
             print(f"  [OpenWeb] HTTP {resp.status_code}: {resp.text[:200]}")
             return None
@@ -996,11 +880,7 @@ def run_full(sheet, records, headers, status_col):
             zillow_url = zillow_url.split('?')[0]
 
         print(f"[{i+1}/{len(records)}] {address}")
-        use_owin = os.getenv("USE_OPENWEB_NINJA_FOR_ZILLOW", "false").lower() == "true"
-        if use_owin:
-            zillow_status = _check_zillow_status_owin(address, zillow_url=zillow_url)
-        else:
-            zillow_status = check_zillow_status(address, zillow_url=zillow_url)
+        zillow_status = _check_zillow_status_owin(address, zillow_url=zillow_url)
 
         if zillow_status == 'sold':
             if current_status not in ['STP', 'Closed', 'Accepted', 'Rejected']:
@@ -1127,29 +1007,25 @@ def run_test():
         return "SMTP login OK — outbound email ready"
     check("SMTP login (outbound alerts)", test_smtp)
 
-    # ── 4. Apify Zillow lookup ──────────────────────────────
-    print("\n[ 4 / 4 ] Apify Zillow Actor")
-    TEST_ADDRESS = '3524 E Elgin St, Gilbert, AZ 85295'
-    def test_apify():
-        # Use a known real Zillow homedetails URL to verify the actor works
-        test_url = 'https://www.zillow.com/homedetails/3524-E-Elgin-St-Gilbert-AZ-85295/25427964_zpid/'
-        payload = {'startUrls': [{'url': test_url}], 'maxItems': 1}
-        r = requests.post(
-            APIFY_RUN_SYNC,
-            json=payload,
-            headers={'Content-Type': 'application/json'},
-            params={'token': APIFY_API_KEY},
-            timeout=120
+    # ── 4. OpenWeb Ninja Zillow lookup ──────────────────────
+    print("\n[ 4 / 4 ] OpenWeb Ninja Zillow API")
+    def test_owin():
+        key = OPENWEB_NINJA_API_KEY
+        if not key:
+            raise Exception("OPENWEB_NINJA_API_KEY not set")
+        r = requests.get(
+            "https://api.openwebninja.com/realtime-zillow-data/property-details-address",
+            params={"address": "3524 E Elgin St, Gilbert, AZ 85295"},
+            headers={"x-api-key": key},
+            timeout=30,
         )
         if r.status_code not in [200, 201]:
             raise Exception(f"HTTP {r.status_code}: {r.text[:200]}")
-        data = r.json()
-        if not data:
-            raise Exception("Empty response from Apify")
-        home_status = data[0].get('homeStatus', 'N/A')
-        zpid = data[0].get('zpid', 'N/A')
-        return f"Actor responded — zpid={zpid} homeStatus={home_status}"
-    check(f"Zillow lookup via Apify", test_apify)
+        data = r.json().get("data") or r.json()
+        if not data or not data.get("zpid"):
+            raise Exception("No data returned")
+        return f"OK — zpid={data.get('zpid')} homeStatus={data.get('homeStatus')}"
+    check("Zillow lookup via OpenWeb Ninja", test_owin)
 
     # ── Summary ────────────────────────────────────────────
     passed = sum(1 for _, s, _ in results if s == 'PASS')
