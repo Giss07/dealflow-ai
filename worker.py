@@ -288,6 +288,44 @@ def run_preforeclosure_scan(property_ids=None, job_id=None):
         return {"error": str(e)}
 
 
+def _extract_unit(address):
+    """Extract unit/apt number from an address. Returns (street, unit) tuple.
+
+    Examples:
+        "2001 Club Center Dr APT 8126" → ("2001 club center dr", "8126")
+        "123 Main St" → ("123 main st", None)
+        "456 Oak Ave Unit 5B" → ("456 oak ave", "5b")
+    """
+    if not address:
+        return ("", None)
+    import re
+    addr = address.strip().lower()
+    m = re.search(r'\s*(?:apt|unit|ste|suite|#)\s*\.?\s*(\S+)\s*$', addr, re.IGNORECASE)
+    if m:
+        unit = m.group(1)
+        street = addr[:m.start()].strip()
+        return (street, unit)
+    return (addr, None)
+
+
+def _verify_address_match(queried, returned):
+    """Verify API-returned address matches what we queried.
+
+    Returns True if match is acceptable, False if it should be rejected.
+    Logs warnings for mismatches.
+    """
+    q_street, q_unit = _extract_unit(queried.split(',')[0] if ',' in queried else queried)
+    r_street, r_unit = _extract_unit(returned)
+
+    if q_unit and r_unit and q_unit != r_unit:
+        logger.warning(f"[ADDRESS_MISMATCH] Queried '{queried}' but API returned '{returned}' — different unit, skipping")
+        return False
+    if not q_unit and r_unit:
+        logger.warning(f"[MULTI_UNIT_AMBIGUOUS] Queried '{queried}' (no unit) but API returned '{returned}' (specific unit) — cannot verify, skipping")
+        return False
+    return True
+
+
 def _parse_date_safe(value):
     """Parse a date string to datetime. Returns None if unparseable.
 
@@ -392,6 +430,14 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
         # Clean not-found — property not on Zillow. NOT an error.
         pf.mls_status = "unknown"
         pf.ai_notes = "Not found on Zillow (OpenWeb Ninja)"
+        pf.is_new = False
+        return False
+
+    # Verify returned address matches queried address (multi-unit protection)
+    returned_addr = result_data.get("streetAddress") or result_data.get("address") or ""
+    if not _verify_address_match(full_addr, returned_addr):
+        pf.mls_status = "unknown"
+        pf.ai_notes = f"Address mismatch: queried '{pf.address}', API returned '{returned_addr}'"
         pf.is_new = False
         return False
 
