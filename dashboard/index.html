@@ -1434,25 +1434,27 @@
                 if (!confirm(`Scan ${ids.length} properties? (Could not load cost estimate)`)) return;
             }
 
-            // Create scan job — fire and forget
+            // Create async scan job + poll for completion
             try {
                 const resp = await fetch('/api/scan-jobs', {
                     method:'POST', headers:{'Content-Type':'application/json'},
                     body: JSON.stringify({property_ids: ids})
                 });
                 if (!resp.ok && resp.status !== 409) {
-                    const body = await resp.text();
                     alert('Failed to start scan: server returned ' + resp.status);
                     return;
                 }
                 const data = await resp.json();
-                if (data.error && resp.status !== 409) {
-                    alert('Error: ' + data.error);
+                if (data.error) {
+                    if (resp.status === 409 && data.job) {
+                        startScanPolling(data.job.id, data.job.total);
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
                     return;
                 }
                 pfSelected.clear();
-                alert(`Scan started for ${ids.length} properties. Refresh the page in 15-30 seconds to see results.`);
-                updateScanBtn();
+                startScanPolling(data.id, data.total);
             } catch(e) {
                 alert('Failed to start scan: ' + e.message);
             }
