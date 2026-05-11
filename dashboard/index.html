@@ -1095,6 +1095,7 @@
                 <span style="color:#334155;margin:0 2px;">|</span>
                 <button class="score-filter-btn ${pfFilter==='new'?'active':''}" onclick="setPfFilter('new')" style="${pfFilter==='new'?'background:#22c55e;border-color:#22c55e;color:#000;':''}font-size:11px;">New ${newBadge > 0 ? '<span style="background:#000;color:#22c55e;padding:1px 5px;border-radius:8px;font-size:10px;margin-left:4px;">'+newBadge+'</span>' : ''}</button>
                 <button class="score-filter-btn ${pfFilter==='on-market'?'active':''}" onclick="setPfFilter('on-market')" style="${pfFilter==='on-market'?'background:#22c55e;border-color:#22c55e;':''}font-size:11px;">On Market</button>
+                <button class="score-filter-btn ${pfFilter==='pending'?'active':''}" onclick="setPfFilter('pending')" style="${pfFilter==='pending'?'background:#f59e0b;border-color:#f59e0b;color:#000;':''}font-size:11px;">MLS Pending</button>
                 <span style="color:#64748b;font-size:11px;margin-left:4px;">Sort:</span>
                 <select onchange="pfSort=this.value;renderPfRows()" style="background:#334155;border:1px solid #475569;color:#e2e8f0;padding:6px 8px;border-radius:6px;font-size:12px;cursor:pointer;">
                     <option value="default" ${pfSort==='default'?'selected':''}>Default</option>
@@ -1156,6 +1157,7 @@
         function pfStatusBadge(status) {
             const map = {
                 'on-market': ['background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.25);', 'On Market'],
+                'pending': ['background:rgba(251,191,36,.12);color:#f59e0b;border:1px solid rgba(251,191,36,.25);', 'MLS Pending'],
                 'pre-foreclosure': ['background:rgba(249,115,22,.12);color:#f97316;border:1px solid rgba(249,115,22,.25);', 'Pre-Foreclosure'],
                 'auction': ['background:rgba(234,179,8,.12);color:#eab308;border:1px solid rgba(234,179,8,.25);', 'Auction'],
                 'checking': ['background:rgba(59,130,246,.12);color:#3b82f6;border:1px solid rgba(59,130,246,.25);', 'Checking...'],
@@ -1349,7 +1351,7 @@
                     <td><span style="font-size:10px;padding:2px 7px;border-radius:3px;background:#334155;color:#94a3b8;">${p.property_type||'SFR'}</span></td>
                     <td style="font-family:monospace;font-size:13px;">${val}</td>
                     <td style="font-size:12px;color:#94a3b8;">${auc}</td>
-                    <td>${pfStatusBadge(p.mls_status||'unknown')}${p.mls_status === 'on-market' && p.unit_verified === false ? '<span title="Unit not verified — check Zillow" style="color:#eab308;font-size:11px;margin-left:2px;cursor:help;">*</span>' : ''}</td>
+                    <td>${pfStatusBadge(p.mls_status||'unknown')}${(p.mls_status === 'on-market' || p.mls_status === 'pending') && p.unit_verified === false ? '<span title="Unit not verified — check Zillow" style="color:#eab308;font-size:11px;margin-left:2px;cursor:help;">*</span>' : ''}</td>
                     <td style="font-size:12px;color:#94a3b8;">${checked}</td>
                     <td>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">

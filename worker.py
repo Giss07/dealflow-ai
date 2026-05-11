@@ -457,9 +457,16 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
     is_agent_listed = "by agent" in listing_type
     is_auction_source = "auction" in listing_source
 
+    # Check for contingent/under-contract FIRST (overrides homeStatus)
+    contingent = (result_data.get("contingentListingType") or "").upper()
+    is_pending = ("PENDING" in home_status or "UNDER_CONTRACT" in home_status
+                  or "CONTINGENT" in contingent or "UNDER_CONTRACT" in contingent)
+
     if "SOLD" in home_status or "RECENTLY_SOLD" in home_status:
         pf.mls_status = "unknown"
-    elif "FOR_SALE" in home_status or "PENDING" in home_status:
+    elif is_pending:
+        pf.mls_status = "pending"
+    elif "FOR_SALE" in home_status:
         if is_agent_listed and not is_auction_source:
             pf.mls_status = "on-market"
         else:
@@ -467,7 +474,7 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
     elif "FORECLOSURE" in home_status or "PRE_FORECLOSURE" in home_status:
         pf.mls_status = "pre-foreclosure"
     elif "OFF_MARKET" in home_status or "OTHER" in home_status:
-        pf.mls_status = "unknown"  # OTHER = off-market/withdrawn/unknown on Zillow
+        pf.mls_status = "unknown"
     else:
         pf.mls_status = "pre-foreclosure"  # Default: safer than on-market
 
