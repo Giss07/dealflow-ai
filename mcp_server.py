@@ -279,8 +279,6 @@ def search_investor_listings(zip_code: str):
         return json.dumps({"status": "ok", "zip": zip_code, "count": 0, "listings": [], "note": "No listings found"})
 
     # Step 2: For each listing, fetch full details for description
-    import requests
-    key = os.getenv("OPENWEB_NINJA_API_KEY", "")
     matches = []
     details_fetched = 0
     details_failed = 0
