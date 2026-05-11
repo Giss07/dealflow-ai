@@ -247,6 +247,80 @@ def search_distressed(zip_code: str):
     return json.dumps({"status": "ok", "zip": zip_code, "count": len(distressed), "listings": distressed})
 
 
+INVESTOR_KEYWORDS = [
+    "cash only", "cash buyer", "cash offers", "hard money",
+    "investor", "investors welcome", "investment opportunity",
+    "private sale", "as-is", "as is", "fixer", "fixer-upper", "fixer upper",
+    "needs work", "needs tlc", "tlc needed", "handyman special",
+    "diamond in the rough", "bring offers", "motivated seller",
+    "estate sale", "probate", "trustee sale", "no contingencies",
+    "quick close", "buyer must qualify", "no fha", "no va",
+    "no financing", "off-market",
+]
+
+
+@mcp.tool()
+def search_investor_listings(zip_code: str):
+    """Search Zillow for listings with investor/cash-buyer signals in descriptions.
+    Returns matches sorted by signal count with keyword details and age bonus.
+    Costs ~20 API calls per zip (1 search + up to 20 detail lookups).
+    """
+    logger.info(f"[search_investor_listings] zip={zip_code}")
+    result = _call_openweb_ninja_search(zip_code, "FOR_SALE")
+    if isinstance(result, dict) and "error" in result:
+        return json.dumps({"status": "error", **result})
+    if not result:
+        return json.dumps({"status": "ok", "zip": zip_code, "count": 0, "listings": []})
+    matches = []
+    details_ok = 0
+    details_fail = 0
+    for item in result[:20]:
+        hi = item.get("hdpData", {}).get("homeInfo", {})
+        hs = (hi.get("homeStatus") or item.get("homeStatus") or "").upper()
+        if "FOR_SALE" not in hs:
+            continue
+        addr = item.get("address") or f"{item.get('streetAddress', '')}, {item.get('city', '')}, {item.get('state', '')} {item.get('zipcode', '')}"
+        desc = ""
+        yb = hi.get("yearBuilt") or item.get("yearBuilt")
+        detail = _call_openweb_ninja_address(addr)
+        if detail and isinstance(detail, dict) and detail.get("zpid"):
+            desc = (detail.get("description") or "").lower()
+            yb = detail.get("yearBuilt") or yb
+            details_ok += 1
+        else:
+            details_fail += 1
+        matched_kw = [kw for kw in INVESTOR_KEYWORDS if kw in desc]
+        if not matched_kw:
+            continue
+        score = len(matched_kw)
+        is_old = False
+        if yb:
+            try:
+                y = int(yb)
+                if y <= 1960:
+                    score += 2
+                    is_old = True
+                elif y <= 1980:
+                    score += 1
+                    is_old = True
+            except (ValueError, TypeError):
+                pass
+        entry = _owin_format_listing(item, zip_code)
+        entry["matched_keywords"] = matched_kw
+        entry["signal_count"] = score
+        entry["is_old"] = is_old
+        entry["description_snippet"] = desc[:200] if desc else ""
+        matches.append(entry)
+    matches.sort(key=lambda x: x.get("signal_count", 0), reverse=True)
+    note = ""
+    if details_fail > 0 and details_ok == 0:
+        note = "Details endpoint unavailable. Retry later."
+    elif details_fail > 0:
+        note = f"{details_fail}/{details_fail + details_ok} detail lookups failed."
+    logger.info(f"[search_investor_listings] zip={zip_code} found {len(matches)} matches (details: {details_ok} ok, {details_fail} fail)")
+    return json.dumps({"status": "ok", "zip": zip_code, "count": len(matches), "listings": matches, "note": note})
+
+
 @mcp.tool()
 def check_mls_status(address: str, zip_code: str):
     """Check if a specific property address is currently listed for sale on Zillow."""
