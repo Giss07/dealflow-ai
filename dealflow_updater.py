@@ -627,7 +627,10 @@ def _check_zillow_status_owin(address, zillow_url=None):
         body = resp.json()
         data = body.get("data") or body
         if not data or not data.get("zpid"):
-            print(f"  [OpenWeb] No results returned")
+            if resp.status_code == 200 and body.get("status") == "OK" and not body.get("error"):
+                print(f"  [API_EMPTY_RESPONSE] address='{address}' request_id='{body.get('request_id', 'unknown')}' — endpoint returned empty data, treating as unknown")
+            else:
+                print(f"  [OpenWeb] No results returned")
             return None
 
         # Verify returned address matches queried address (multi-unit protection)

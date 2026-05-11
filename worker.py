@@ -400,7 +400,8 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
             body = resp.json()
             data = body.get("data") or body
             if not data or not data.get("zpid"):
-                # Empty/invalid response — treat as not found
+                if resp.status_code == 200 and body.get("status") == "OK" and not body.get("error"):
+                    logger.warning(f"[API_EMPTY_RESPONSE] address='{full_addr}' request_id='{body.get('request_id', 'unknown')}' — endpoint returned empty data, treating as unknown")
                 break
             result_data = data
             break
