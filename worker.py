@@ -379,12 +379,12 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
     lookup_error = None
     for attempt in range(3):
         try:
-            resp = req.get(
-                "https://api.openwebninja.com/realtime-zillow-data/property-details-address",
-                params={"address": full_addr},
-                headers={"x-api-key": api_key},
-                timeout=30,
-            )
+            req_url = "https://api.openwebninja.com/realtime-zillow-data/property-details-address"
+            req_headers = {"x-api-key": api_key}
+            req_params = {"address": full_addr}
+            logger.info(f"[DIAG_REQUEST] url={req_url} address='{full_addr}' key={api_key[:4]}...{api_key[-4:] if len(api_key)>8 else '****'}")
+            resp = req.get(req_url, params=req_params, headers=req_headers, timeout=30)
+            logger.info(f"[DIAG_RESPONSE] status={resp.status_code} content_type={resp.headers.get('content-type')} body={resp.text[:200]}")
             if resp.status_code == 429:
                 wait = 2 ** (attempt + 1)
                 logger.warning(f"  OpenWeb rate limited (429), waiting {wait}s")
