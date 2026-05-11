@@ -636,7 +636,8 @@ def _check_zillow_status_owin(address, zillow_url=None):
         # Verify returned address matches queried address (multi-unit protection)
         returned_addr = data.get("streetAddress") or data.get("address") or ""
         from worker import _verify_address_match
-        if not _verify_address_match(address, returned_addr):
+        accept, unit_verified = _verify_address_match(address, returned_addr)
+        if not accept:
             print(f"  [OpenWeb] Address mismatch — skipping (queried '{address}', got '{returned_addr}')")
             return None
 

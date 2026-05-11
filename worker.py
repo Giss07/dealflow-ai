@@ -311,19 +311,21 @@ def _extract_unit(address):
 def _verify_address_match(queried, returned):
     """Verify API-returned address matches what we queried.
 
-    Returns True if match is acceptable, False if it should be rejected.
-    Logs warnings for mismatches.
+    Returns (accept, unit_verified) tuple:
+      (True, True)  — clean match, unit verified or not applicable
+      (True, False) — accepted but unit unverified (query had no unit, response had one)
+      (False, False) — rejected (different units)
     """
     q_street, q_unit = _extract_unit(queried.split(',')[0] if ',' in queried else queried)
     r_street, r_unit = _extract_unit(returned)
 
     if q_unit and r_unit and q_unit != r_unit:
         logger.warning(f"[ADDRESS_MISMATCH] Queried '{queried}' but API returned '{returned}' — different unit, skipping")
-        return False
+        return (False, False)
     if not q_unit and r_unit:
-        logger.warning(f"[MULTI_UNIT_AMBIGUOUS] Queried '{queried}' (no unit) but API returned '{returned}' (specific unit) — cannot verify, skipping")
-        return False
-    return True
+        logger.info(f"[UNIT_UNVERIFIED] Queried '{queried}' (no unit), API returned '{returned}' (unit {r_unit}) — accepting, needs manual verification")
+        return (True, False)
+    return (True, True)
 
 
 def _parse_date_safe(value):
@@ -379,12 +381,12 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
     lookup_error = None
     for attempt in range(3):
         try:
-            req_url = "https://api.openwebninja.com/realtime-zillow-data/property-details-address"
-            req_headers = {"x-api-key": api_key}
-            req_params = {"address": full_addr}
-            logger.info(f"[DIAG_REQUEST] url={req_url} address='{full_addr}' key={api_key[:4]}...{api_key[-4:] if len(api_key)>8 else '****'}")
-            resp = req.get(req_url, params=req_params, headers=req_headers, timeout=30)
-            logger.info(f"[DIAG_RESPONSE] status={resp.status_code} content_type={resp.headers.get('content-type')} body={resp.text[:200]}")
+            resp = req.get(
+                "https://api.openwebninja.com/realtime-zillow-data/property-details-address",
+                params={"address": full_addr},
+                headers={"x-api-key": api_key},
+                timeout=30,
+            )
             if resp.status_code == 429:
                 wait = 2 ** (attempt + 1)
                 logger.warning(f"  OpenWeb rate limited (429), waiting {wait}s")
@@ -436,11 +438,13 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
 
     # Verify returned address matches queried address (multi-unit protection)
     returned_addr = result_data.get("streetAddress") or result_data.get("address") or ""
-    if not _verify_address_match(full_addr, returned_addr):
+    accept, unit_verified = _verify_address_match(full_addr, returned_addr)
+    if not accept:
         pf.mls_status = "unknown"
         pf.ai_notes = f"Address mismatch: queried '{pf.address}', API returned '{returned_addr}'"
         pf.is_new = False
         return False
+    pf.unit_verified = unit_verified
 
     # ── Map response fields to PreForeclosure model ──
 

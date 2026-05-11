@@ -1123,6 +1123,7 @@
                 <input type="file" id="pf-csv-input" accept=".csv" style="display:none;" onchange="importPfCSV(this.files[0])">
                 <button onclick="openPfAddModal()" style="background:#3b82f6;color:white;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;">+ Add Property</button>
                 <button id="btn-scan-selected" onclick="scanSelectedPf()" disabled style="background:#f59e0b;color:#000;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;opacity:0.4;">Scan Selected</button>
+                <button onclick="rescanMonitoring()" style="background:#475569;color:#e2e8f0;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;" title="Select all Monitoring properties for re-scan">Rescan Monitoring</button>
             `;
             pfBar.style.display = 'flex';
 
@@ -1348,7 +1349,7 @@
                     <td><span style="font-size:10px;padding:2px 7px;border-radius:3px;background:#334155;color:#94a3b8;">${p.property_type||'SFR'}</span></td>
                     <td style="font-family:monospace;font-size:13px;">${val}</td>
                     <td style="font-size:12px;color:#94a3b8;">${auc}</td>
-                    <td>${pfStatusBadge(p.mls_status||'unknown')}</td>
+                    <td>${pfStatusBadge(p.mls_status||'unknown')}${p.mls_status === 'on-market' && p.unit_verified === false ? '<span title="Unit not verified — check Zillow" style="color:#eab308;font-size:11px;margin-left:2px;cursor:help;">*</span>' : ''}</td>
                     <td style="font-size:12px;color:#94a3b8;">${checked}</td>
                     <td>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -1408,6 +1409,15 @@
 
         let activeScanJobId = null;
         let scanPollInterval = null;
+
+        function rescanMonitoring() {
+            const monitoring = pfData.filter(p => (p.mls_status || 'unknown') === 'unknown' && !p.is_archived);
+            if (!monitoring.length) { alert('No Monitoring properties to re-scan'); return; }
+            pfSelected = new Set(monitoring.map(p => p.id));
+            renderPfRows();
+            updateScanBtn();
+            alert(`Selected ${monitoring.length} Monitoring properties. Click "Scan Selected (${monitoring.length})" to start.`);
+        }
 
         async function scanSelectedPf() {
             const ids = [...pfSelected];

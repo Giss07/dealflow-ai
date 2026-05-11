@@ -167,6 +167,9 @@ class PreForeclosure(Base):
     foreclosure_stage_manual_override = Column(Boolean, default=False)
     notification_priority = Column(String(20), default="auto")  # auto, watch, mute
 
+    # Address verification
+    unit_verified = Column(Boolean, default=True)  # False when API returned a unit we didn't query for
+
     # Property/listing data (from OpenWeb Ninja / Zillow)
     last_sold_price = Column(Float)
     year_built = Column(Integer)
@@ -202,6 +205,7 @@ def preforeclosure_to_dict(pf):
         "listed_at": pf.listed_at.isoformat() + "Z" if pf.listed_at else None,
         "previous_mls_status": pf.previous_mls_status,
         "zillow_url": pf.zillow_url,
+        "unit_verified": pf.unit_verified if pf.unit_verified is not None else True,
         "scan_error_count": pf.scan_error_count or 0,
         "last_scan_error": pf.last_scan_error,
         # Foreclosure stage
