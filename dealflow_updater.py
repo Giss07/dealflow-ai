@@ -56,7 +56,20 @@ import pytz
 # ============================================================
 
 SERVICE_ACCOUNT_FILE = os.getenv('SERVICE_ACCOUNT_FILE', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dealflow-sheets-b59dc0c02384.json'))
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID', '')
+
+
+def _load_credentials(scopes):
+    """Load Google service-account credentials.
+
+    Prefers GOOGLE_SERVICE_ACCOUNT_JSON env (Railway) so secrets stay out of the image;
+    falls back to SERVICE_ACCOUNT_FILE on disk for local development.
+    """
+    if GOOGLE_SERVICE_ACCOUNT_JSON:
+        import json
+        return Credentials.from_service_account_info(json.loads(GOOGLE_SERVICE_ACCOUNT_JSON), scopes=scopes)
+    return Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
 
 YOUR_GMAIL = os.getenv('DEALFLOW_ALERTS_GMAIL', '')
 YOUR_APP_PASSWORD = os.getenv('DEALFLOW_ALERTS_PASSWORD', '')
@@ -105,7 +118,7 @@ def connect_to_sheet():
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
     ]
-    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+    creds = _load_credentials(scopes)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).sheet1
     print("Connected!")
@@ -119,7 +132,7 @@ def get_zillow_urls_from_sheet():
     try:
         from googleapiclient.discovery import build
         scopes = ['https://www.googleapis.com/auth/spreadsheets.readonly']
-        creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+        creds = _load_credentials(scopes)
         service = build('sheets', 'v4', credentials=creds)
         result = service.spreadsheets().get(
             spreadsheetId=SPREADSHEET_ID,
@@ -569,7 +582,7 @@ def write_sold_price_to_archive(address, sold_price):
             'https://www.googleapis.com/auth/spreadsheets',
             'https://www.googleapis.com/auth/drive'
         ]
-        creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+        creds = _load_credentials(scopes)
         client = gspread.authorize(creds)
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
         stp_sheet = spreadsheet.worksheet('Archive_STP')
@@ -984,7 +997,7 @@ def run_test():
             'https://www.googleapis.com/auth/spreadsheets',
             'https://www.googleapis.com/auth/drive'
         ]
-        creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+        creds = _load_credentials(scopes)
         client = gspread.authorize(creds)
         sheet = client.open_by_key(SPREADSHEET_ID).sheet1
         sheet_obj[0] = sheet
@@ -1064,7 +1077,7 @@ def run_refresh_report():
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
     ]
-    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+    creds = _load_credentials(scopes)
     client = gspread.authorize(creds)
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
 
