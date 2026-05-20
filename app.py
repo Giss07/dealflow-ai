@@ -1084,7 +1084,14 @@ def api_preforeclosure_notification_priority(pf_id):
             return jsonify({"error": "priority must be auto, watch, or mute"}), 400
         pf.notification_priority = priority
         db.commit()
-        return jsonify(preforeclosure_to_dict(pf))
+        result = preforeclosure_to_dict(pf)
+        if priority == "watch" and (pf.foreclosure_stage != "Auction" or not pf.foreclosure_auction_time):
+            reason = "no auction date set" if not pf.foreclosure_auction_time else f"stage is {pf.foreclosure_stage}"
+            result["warning"] = (
+                f"Marked as watch, but this property won't trigger notifications until it reaches "
+                f"Auction stage with an auction date ({reason}). Use 'Set Auction Date' to enable alerts."
+            )
+        return jsonify(result)
     except Exception as e:
         db.rollback()
         return jsonify({"error": str(e)}), 500

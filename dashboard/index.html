@@ -1589,6 +1589,8 @@
                     body: JSON.stringify({priority: priority})
                 });
                 if (resp.ok) {
+                    const data = await resp.json();
+                    if (data.warning) alert(data.warning);
                     // Update local data without full reload
                     const pf = pfData.find(p => p.id === id);
                     if (pf) pf.notification_priority = priority;
