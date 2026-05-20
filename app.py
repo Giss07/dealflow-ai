@@ -824,6 +824,7 @@ def api_preforeclosure_submit_offer(pf_id):
                     deal.offer_notes = None
                     deal.offer_status = None
             pf.mls_status = pf.previous_mls_status or "unknown"
+            pf.notification_priority = "auto"
             db.commit()
             return jsonify(preforeclosure_to_dict(pf))
 
@@ -865,8 +866,9 @@ def api_preforeclosure_submit_offer(pf_id):
         deal.offer_notes = offer_notes or deal.offer_notes
         deal.offer_status = "Submitted"
 
-        # Mark pre-foreclosure as offer-submitted
+        # Mark pre-foreclosure as offer-submitted; auto-watch so auction reminders fire
         pf.mls_status = "offer-submitted"
+        pf.notification_priority = "watch"
 
         db.commit()
         logger.info(f"Offer submitted for {pf.address}: ${amt:,.0f} (Deal ID {deal.id})")
