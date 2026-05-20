@@ -1,7 +1,7 @@
 """
 DealFlow Worker — Runs on Railway 24/7.
 - 8AM PST: Full run (Gmail + Zillow + Alerts)
-- 9AM-6PM PST hourly: Gmail-only (counter offer checks)
+- 6AM-7PM PT hourly: Gmail-only (counter offer checks)
 - Pre-foreclosure MLS scan: manual only by default (MLS_AUTO_SCAN_ENABLED=true to schedule)
 """
 
@@ -67,11 +67,11 @@ def run_full():
 
 
 def run_gmail_only():
-    """Run dealflow_updater in gmail_only mode (only during 9AM-6PM PST)."""
+    """Run dealflow_updater in gmail_only mode (only during 6AM-7PM PT)."""
     now_pst = datetime.now(PST)
     hour = now_pst.hour
-    if hour < 9 or hour > 18:
-        logger.info(f"Skipping Gmail check — outside 9AM-6PM PST (currently {hour}:00)")
+    if hour < 6 or hour > 19:
+        logger.info(f"Skipping Gmail check — outside 6AM-7PM PT (currently {hour}:00)")
         return
     logger.info(f"=== GMAIL-ONLY RUN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
     try:
@@ -790,9 +790,9 @@ if __name__ == "__main__":
     logger.info(f"Current time PST: {datetime.now(PST).strftime('%Y-%m-%d %H:%M %Z')}")
 
     # All times in UTC (Railway runs UTC)
-    # PST = UTC - 7 (PDT = UTC - 7 during daylight saving)
+    # PST = UTC - 8 (PDT = UTC - 7 during daylight saving)
     schedule.every().day.at("15:00").do(run_full)           # 8AM PST = 15:00 UTC
-    schedule.every().hour.at(":00").do(run_gmail_only)      # Hourly Gmail check (9AM-6PM PST only, checked inside func)
+    schedule.every().hour.at(":00").do(run_gmail_only)      # Hourly Gmail check (6AM-7PM PT only, checked inside func)
 
     # Schedule DealFlow AI pipeline (Mon & Thu at 7AM PST = 14:00 UTC) — PAUSED
     # schedule.every().monday.at("14:00").do(run_dealflow_pipeline)
@@ -816,7 +816,7 @@ if __name__ == "__main__":
     logger.info(f"  - Pre-foreclosure MLS scan: {'ENABLED every 3 days 09:00 UTC' if mls_auto else 'MANUAL ONLY (MLS_AUTO_SCAN_ENABLED=false)'}")
     logger.info("  - 15:00 UTC (8AM PST): Full updater + check_upcoming_auctions")
     logger.info("  - DISABLED: rescan_nod_properties (manual only via /admin/run-cron)")
-    logger.info("  - Hourly (9AM-6PM PST): Gmail-only counter checks")
+    logger.info("  - Hourly (6AM-7PM PT): Gmail-only counter checks")
     logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")
 
     # Start a tiny health server so Railway healthcheck passes
