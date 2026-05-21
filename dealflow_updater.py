@@ -456,7 +456,7 @@ def read_christian_emails(sheet, records):
                             if record.get('Address', '').strip().lower() == matched_address:
                                 row_num = i + 2
                                 current_status = record.get('Status (/Accepted/Rejected/Counter)', '')
-                                if current_status not in ['STP']:
+                                if current_status not in ['STP', 'Accepted']:
                                     sheet.update_cell(row_num, status_col, 'Accepted')
                                     existing_notes = record.get('Notes', '')
                                     accept_note = f"[ACCEPTED: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
