@@ -174,11 +174,15 @@ def search_zillow(zip_code: str):
 
 @mcp.tool()
 def search_distressed(zip_code: str):
-    """Search for likely distressed/flip-candidate properties in a zip code.
-    Filters for: 60+ days on market, price cuts, as-is/fixer/estate/probate
-    language, and investor-friendly signals. Returns matches sorted by days
-    on market (most stale first) with distress signals explained.
-    Results are cached for 1 hour.
+    """Search for distressed/flip-candidate properties by keyword-matching
+    the listing description in a zip code. A listing is included ONLY if
+    its description matches at least one DISTRESS_KEYWORDS phrase (as-is,
+    fixer, no repairs, bring your contractor, tear-down, etc.).
+    Days-on-market, price cuts, and Zestimate gaps are reported as extra
+    signals on kept listings but do NOT by themselves include a listing.
+    Returns matches sorted by days on market (most stale first).
+    Results are cached at the zip-search layer; per-listing descriptions
+    are fetched fresh.
     """
     logger.info(f"[search_distressed] zip={zip_code}")
 
@@ -218,19 +222,26 @@ def search_distressed(zip_code: str):
         if price_change and price_change < 0:
             signals.append(f"Price cut: ${abs(price_change):,.0f}")
 
-        desc = (hi.get("description") or item.get("description") or "").lower()
-        matched_kw = [kw for kw in DISTRESS_KEYWORDS if kw in desc]
-        if matched_kw:
-            signals.append(f"Keywords: {', '.join(matched_kw)}")
+        # /search returns no description. Fetch via /property-details-address
+        # so keyword matching can run. This is the SOLE inclusion gate; DOM,
+        # price cut, and year-built are reported as extra info on kept
+        # listings but do NOT by themselves include a listing.
+        # Cost: ~$0.0025 per FOR_SALE listing (~$0.08-$0.10 per zip).
+        addr = f"{item.get('streetAddress', '')}, {item.get('city', '')}, {item.get('state', 'CA')} {zip_code}"
+        matched_kw = []
+        detail = _call_openweb_ninja_address(addr)
+        if detail and isinstance(detail, dict) and "error" not in detail:
+            desc = (detail.get("description") or "").lower()
+            matched_kw = [kw for kw in DISTRESS_KEYWORDS if kw in desc]
+            if matched_kw:
+                signals.append(f"Keywords: {', '.join(matched_kw)}")
+        time.sleep(0.2)  # gentle rate-limit
 
         year = hi.get("yearBuilt") or item.get("yearBuilt")
         if year and year < 1980:
             signals.append(f"Built {year}")
 
-        has_dom = days is not None and days >= 60
-        has_keywords = len(matched_kw) > 0
-        has_price_cut = (price_change and price_change < 0) or (zest and price and zest > 0 and (zest - price) / zest > 0.10)
-        if has_dom or has_keywords or has_price_cut:
+        if matched_kw:
             entry = _owin_format_listing(item, zip_code)
             entry["distress_signals"] = signals
             entry["signal_count"] = len(signals)
@@ -238,7 +249,7 @@ def search_distressed(zip_code: str):
 
     distressed.sort(key=lambda x: (x.get("days") or 0), reverse=True)
 
-    logger.info(f"[search_distressed] zip={zip_code} found {len(distressed)} distressed")
+    logger.info(f"[search_distressed] zip={zip_code} {len(distressed)} keyword-matched (descriptions fetched)")
     return json.dumps({"status": "ok", "zip": zip_code, "count": len(distressed), "listings": distressed})
 
 
