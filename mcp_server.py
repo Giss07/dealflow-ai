@@ -11,6 +11,8 @@ import time
 import logging
 from datetime import datetime
 
+from distress_keywords import DISTRESS_KEYWORDS
+
 os.environ['PYTHONUNBUFFERED'] = '1'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -35,13 +37,6 @@ mcp = FastMCP("DealFlow AI")
 # outputSchema validation errors.
 
 CACHE_TTL = 3600   # 1 hour
-
-DISTRESSED_KEYWORDS = [
-    "as-is", "as is", "fixer", "investor", "handyman", "estate",
-    "probate", "needs work", "tlc", "cash only", "below market",
-    "motivated", "must sell", "priced to sell", "short sale",
-    "bank owned", "reo", "foreclosure", "auction", "deferred maintenance",
-]
 
 _owin_cache = {}  # {cache_key: (epoch_time, data)}
 
@@ -224,7 +219,7 @@ def search_distressed(zip_code: str):
             signals.append(f"Price cut: ${abs(price_change):,.0f}")
 
         desc = (hi.get("description") or item.get("description") or "").lower()
-        matched_kw = [kw for kw in DISTRESSED_KEYWORDS if kw in desc]
+        matched_kw = [kw for kw in DISTRESS_KEYWORDS if kw in desc]
         if matched_kw:
             signals.append(f"Keywords: {', '.join(matched_kw)}")
 

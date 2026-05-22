@@ -5,15 +5,12 @@ Checks ALL available Apify fields for exclude keywords.
 
 import logging
 
+from distress_keywords import DISTRESS_KEYWORDS
+
 logger = logging.getLogger(__name__)
 
 MAX_PRICE = 900_000
 MAX_YEAR_BUILT = 2009  # built before 2010
-
-INCLUDE_KEYWORDS = [
-    "tlc", "needs work", "cash only", "as-is", "as is", "fixer", "rehab",
-    "investor special", "motivated seller", "handyman special", "bring all offers",
-]
 
 EXCLUDE_KEYWORDS = [
     # Original excludes
@@ -173,7 +170,7 @@ def passes_property_type_filter(listing):
 def has_include_keyword(listing):
     """Check if any field contains include keywords (bonus signal)."""
     all_text = get_all_searchable_text(listing)
-    for kw in INCLUDE_KEYWORDS:
+    for kw in DISTRESS_KEYWORDS:
         if kw in all_text:
             return True
     return False
@@ -226,7 +223,7 @@ def filter_listings(listings):
         listing["has_deal_keywords"] = has_include_keyword(listing)
         matched_kw = []
         all_text = get_all_searchable_text(listing)
-        for kw in INCLUDE_KEYWORDS:
+        for kw in DISTRESS_KEYWORDS:
             if kw in all_text:
                 matched_kw.append(kw)
         listing["matched_keywords"] = matched_kw

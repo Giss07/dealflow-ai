@@ -13,7 +13,7 @@ import json
 import logging
 from database import init_db, get_session, Deal, deal_to_dict
 from scorer import score_deal, get_anthropic_client, ANTHROPIC_API_KEY
-from filter import INCLUDE_KEYWORDS
+from distress_keywords import DISTRESS_KEYWORDS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +39,7 @@ def extract_keywords(listing):
     all_text = " ".join(texts).lower()
 
     matched = []
-    for kw in INCLUDE_KEYWORDS:
+    for kw in DISTRESS_KEYWORDS:
         if kw in all_text:
             matched.append(kw)
 
