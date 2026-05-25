@@ -34,7 +34,14 @@ DISTRESS_KEYWORDS = [
     "lot value",
 
     # Investor / cash-buyer language
-    "investor",
+    "investor special",
+    "investor opportunity",
+    "investor's dream",
+    "investor's delight",
+    "calling all investors",
+    "investors only",
+    "opportunity for investors",
+    "savvy investor",
     "handyman",
     "wholesale",
     "cash only",
