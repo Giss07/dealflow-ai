@@ -183,13 +183,25 @@ def get_all_addresses(records):
     return addresses
 
 def normalize_address(addr):
-    """Normalize address for matching: lowercase, strip unit variations."""
+    """Normalize address for matching: lowercase, strip unit variations,
+    expand street-type abbreviations to canonical full words.
+    Without expansion, 'Pl' vs 'Place' silently breaks substring matching.
+    """
     a = addr.lower().strip()
     # Normalize unit indicators
     a = re.sub(r'\bapt\b\.?', '#', a)
     a = re.sub(r'\bunit\b\.?', '#', a)
     a = re.sub(r'\bste\b\.?', '#', a)
     a = re.sub(r'\bsuite\b\.?', '#', a)
+    # Expand street-type abbreviations to canonical full words so that
+    # email '4th Pl' matches sheet '4th Place' (and vice versa).
+    for abbrev, full in (
+        ('st', 'street'), ('ave', 'avenue'), ('pl', 'place'),
+        ('dr', 'drive'), ('ln', 'lane'), ('rd', 'road'),
+        ('blvd', 'boulevard'), ('ct', 'court'), ('cir', 'circle'),
+        ('hwy', 'highway'), ('pkwy', 'parkway'), ('ter', 'terrace'),
+    ):
+        a = re.sub(rf'\b{abbrev}\b\.?', full, a)
     return a
 
 
