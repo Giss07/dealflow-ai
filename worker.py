@@ -1,7 +1,7 @@
 """
 DealFlow Worker — Runs on Railway 24/7.
-- 8AM PST: Full run (Gmail + Zillow + Alerts)
-- 6AM-7PM PT hourly: Gmail-only (counter offer checks)
+- 8AM PT: Full run (Gmail + Zillow + Alerts) — daily, DST-aware
+- 6AM-6PM PT hourly: Gmail-only (counter offer checks) — 13 runs/day
 - Pre-foreclosure MLS scan: manual only by default (MLS_AUTO_SCAN_ENABLED=true to schedule)
 """
 
@@ -44,10 +44,14 @@ COST_OPENWEB_NINJA = 0.0025
 
 
 def run_full():
-    """Run dealflow_updater in full mode (every 3 days)."""
+    """Run dealflow_updater in full mode — daily at 8 AM Pacific (DST-aware).
+
+    Registered to fire at both 15:00 UTC (= 8 AM PDT) and 16:00 UTC (= 8 AM PST).
+    This gate ensures only the registration matching local 8 AM Pacific proceeds,
+    so exactly one full run happens per day regardless of DST.
+    """
     now_pst = datetime.now(PST)
-    if now_pst.day % 3 != 0:
-        logger.info(f"Skipping full run — runs every 3 days (day {now_pst.day})")
+    if now_pst.hour != 8:
         return
     logger.info(f"=== FULL RUN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
     try:
@@ -67,11 +71,11 @@ def run_full():
 
 
 def run_gmail_only():
-    """Run dealflow_updater in gmail_only mode (only during 6AM-7PM PT)."""
+    """Run dealflow_updater in gmail_only mode (only during 6AM-6PM PT, 13 runs/day)."""
     now_pst = datetime.now(PST)
     hour = now_pst.hour
-    if hour < 6 or hour > 19:
-        logger.info(f"Skipping Gmail check — outside 6AM-7PM PT (currently {hour}:00)")
+    if hour < 6 or hour > 18:
+        logger.info(f"Skipping Gmail check — outside 6AM-6PM PT (currently {hour}:00)")
         return
     logger.info(f"=== GMAIL-ONLY RUN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
     try:
@@ -791,8 +795,11 @@ if __name__ == "__main__":
 
     # All times in UTC (Railway runs UTC)
     # PST = UTC - 8 (PDT = UTC - 7 during daylight saving)
-    schedule.every().day.at("15:00").do(run_full)           # 8AM PST = 15:00 UTC
-    schedule.every().hour.at(":00").do(run_gmail_only)      # Hourly Gmail check (6AM-7PM PT only, checked inside func)
+    # Register full run at BOTH PDT and PST offsets — run_full's inner gate
+    # filters so only the registration matching 8 AM Pacific proceeds.
+    schedule.every().day.at("15:00").do(run_full)           # 8AM PDT = 15:00 UTC (summer)
+    schedule.every().day.at("16:00").do(run_full)           # 8AM PST = 16:00 UTC (winter)
+    schedule.every().hour.at(":00").do(run_gmail_only)      # Hourly Gmail check (6AM-6PM PT only, checked inside func)
 
     # Schedule DealFlow AI pipeline (Mon & Thu at 7AM PST = 14:00 UTC) — PAUSED
     # schedule.every().monday.at("14:00").do(run_dealflow_pipeline)
@@ -814,9 +821,10 @@ if __name__ == "__main__":
 
     logger.info("Scheduled (UTC times, Railway server):")
     logger.info(f"  - Pre-foreclosure MLS scan: {'ENABLED every 3 days 09:00 UTC' if mls_auto else 'MANUAL ONLY (MLS_AUTO_SCAN_ENABLED=false)'}")
-    logger.info("  - 15:00 UTC (8AM PST): Full updater + check_upcoming_auctions")
+    logger.info("  - 8 AM Pacific daily (DST-aware, 15:00 or 16:00 UTC): Full updater")
+    logger.info("  - 15:00 UTC daily: check_upcoming_auctions notification digest")
     logger.info("  - DISABLED: rescan_nod_properties (manual only via /admin/run-cron)")
-    logger.info("  - Hourly (6AM-7PM PT): Gmail-only counter checks")
+    logger.info("  - Hourly 6AM-6PM PT (13 runs/day): Gmail-only counter checks")
     logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")
 
     # Start a tiny health server so Railway healthcheck passes
