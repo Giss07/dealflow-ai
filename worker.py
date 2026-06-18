@@ -70,6 +70,7 @@ def run_full():
         logger.error(f"Full run failed: {e}")
 
 
+# TODO: intermittent gmail_only subprocess abort w/ truncated stderr (only "Traceback (most recent call last):" reaches stderr) — container healthy, not OOM — watch for recurrence (first seen 2026-06-10 23:02:39 UTC)
 def run_gmail_only():
     """Run dealflow_updater in gmail_only mode (only during 6AM-6PM PT, 13 runs/day)."""
     now_pst = datetime.now(PST)
