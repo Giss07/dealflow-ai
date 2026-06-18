@@ -234,13 +234,53 @@ def find_matching_address(email_text, sheet_addresses):
 
     return None
 
-ACCEPTANCE_KEYWORDS = [
+# Phrases that signal the email is describing SOMEONE ELSE's bid being accepted
+# (not yours). Anything in this list short-circuits detect_acceptance — the
+# email then falls through to counter/rejection detection.
+REJECTION_OVERRIDE_PHRASES = [
+    # narrow negation of "your bid" outcome
+    "not accepted", "not accept", "cannot accept", "won't accept",
+    # competing offer was accepted
+    "accepted another", "accept another", "accepting another",
+    "accepted a different", "accept a different", "accepting a different",
+    # seller chose someone else
+    "going with another", "went with another",
+    "chose another", "choosing another",
+    "selected another", "selecting another",
+    # HUD/agent describing the WINNING competing offer (third-person passive)
+    "offer accepted was", "bid accepted was",
+    "the offer accepted", "the bid accepted",
+    "offer that was accepted", "bid that was accepted",
+    "offer accepted included", "bid accepted included",
+    "offer we accepted", "bid we accepted",
+    "another offer was accepted", "another bid was accepted",
+    # HUD agent boilerplate when revealing competing terms
+    "allowed me to disclose",
+    # explicit framings
+    "decided to go with",
+    "decided to accept another",
+]
+
+# HIGH confidence — explicitly addresses YOUR bid; we are confident this is a real win
+HIGH_CONFIDENCE_ACCEPTANCE_KEYWORDS = [
+    "accepted your offer", "accepted your bid",
+    "your bid has been accepted",
+    "your offer has been accepted",
+    "your bid has been provisionally accepted",
+    "your bid has been selected",
+    "you have been selected",
+]
+
+# LIKELY confidence — positive language but doesn't explicitly name your bid.
+# HUD's template subject "Bid Acceptance Notification" appears on every HUD
+# email (wins, counters, AND rejections), so these keywords can fire on
+# competitor wins. Matches here produce a hedged "LIKELY ACCEPTED — VERIFY"
+# alert and leave the sheet Status column UNCHANGED.
+LIKELY_ACCEPTANCE_KEYWORDS = [
     "bid acceptance", "bid accepted", "bid has been accepted",
     "provisionally accepted", "bid has been provisionally accepted",
     "offer accepted", "offer has been accepted",
     "congratulations", "winning bid", "winning bidder",
-    "you have been selected", "your bid has been selected",
-    "accepted your offer", "accepted your bid",
     "proceed to closing", "proceed with closing",
     "under contract", "executed contract",
     "bid acceptance notification",
@@ -248,17 +288,28 @@ ACCEPTANCE_KEYWORDS = [
 
 
 def detect_acceptance(email_text):
-    """Check if email contains acceptance language. Returns (keyword, context) or (None, None)."""
+    """Check if email contains acceptance language.
+
+    Returns (keyword, context, confidence) where confidence is "high" or
+    "likely". Returns (None, None, None) if not an acceptance.
+
+    HIGH keywords explicitly name your bid ("accepted your offer"); LIKELY
+    keywords use positive but ambiguous language that could describe a
+    competing bid being accepted. Override phrases short-circuit detection
+    even if an acceptance keyword would otherwise match.
+    """
     import re as _re
     text_lower = email_text.lower()
     clean_text = _re.sub(r'\s+', ' ', text_lower).strip()
 
-    # Make sure it's not "not accepted" — check rejection first
-    for rej in ["not accepted", "not accept", "cannot accept", "won't accept"]:
+    # Short-circuit if the email is actually describing a competing offer
+    # being accepted — see REJECTION_OVERRIDE_PHRASES for the full pattern set.
+    for rej in REJECTION_OVERRIDE_PHRASES:
         if rej in clean_text:
-            return None, None
+            return None, None, None
 
-    for kw in ACCEPTANCE_KEYWORDS:
+    # HIGH confidence first — explicit "your bid/offer" wording
+    for kw in HIGH_CONFIDENCE_ACCEPTANCE_KEYWORDS:
         pos = clean_text.find(kw)
         if pos >= 0:
             start = max(0, pos - 60)
@@ -268,8 +319,22 @@ def detect_acceptance(email_text):
                 space = context.find(' ')
                 if space > 0 and space < 15:
                     context = context[space + 1:]
-            return kw, context
-    return None, None
+            return kw, context, "high"
+
+    # LIKELY confidence — positive but ambiguous (alert will be hedged)
+    for kw in LIKELY_ACCEPTANCE_KEYWORDS:
+        pos = clean_text.find(kw)
+        if pos >= 0:
+            start = max(0, pos - 60)
+            end = min(len(clean_text), pos + len(kw) + 90)
+            context = clean_text[start:end].strip()
+            if start > 0:
+                space = context.find(' ')
+                if space > 0 and space < 15:
+                    context = context[space + 1:]
+            return kw, context, "likely"
+
+    return None, None, None
 
 
 REJECTION_KEYWORDS = [
@@ -285,6 +350,14 @@ REJECTION_KEYWORDS = [
     "lower than the lowest", "lower than the highest",
     "highest and best", "best and final",
     "multiple offers", "come up",
+    # competing offer accepted — routes "another offer" emails to rejection
+    # path after detect_acceptance's override blocks them
+    "accepted another offer", "accepted another bid",
+    "accept another offer", "accept another bid",
+    "accepted a different offer", "accepted a different bid",
+    "going with another", "went with another",
+    "chose another", "selected another",
+    "decided to go with another",
 ]
 
 
@@ -461,32 +534,61 @@ def read_christian_emails(sheet, records):
 
                     # Check acceptance FIRST — before counter price extraction
                     # (HUD acceptance emails contain dollar amounts that confuse the counter parser)
-                    accept_kw, accept_context = detect_acceptance(full_text)
+                    accept_kw, accept_context, accept_confidence = detect_acceptance(full_text)
                     if accept_kw:
-                        print(f"  🎉 ACCEPTANCE detected: '{accept_kw}'")
+                        emoji = "🎉" if accept_confidence == "high" else "⚠️"
+                        label = "ACCEPTANCE" if accept_confidence == "high" else "LIKELY ACCEPTANCE (VERIFY)"
+                        print(f"  {emoji} {label} detected: '{accept_kw}' (confidence={accept_confidence})")
                         for i, record in enumerate(records):
                             if record.get('Address', '').strip().lower() == matched_address:
                                 row_num = i + 2
                                 current_status = record.get('Status (/Accepted/Rejected/Counter)', '')
-                                if current_status not in ['STP', 'Accepted']:
-                                    sheet.update_cell(row_num, status_col, 'Accepted')
-                                    existing_notes = record.get('Notes', '')
-                                    accept_note = f"[ACCEPTED: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
-                                    new_notes = f"{existing_notes} | {accept_note}" if existing_notes else accept_note
-                                    sheet.update_cell(row_num, notes_col, new_notes)
-                                    print(f"  Sheet updated to Accepted for row {row_num}!")
-                                    try:
-                                        alert_sent_col = headers.index('Alert Sent') + 1
-                                    except ValueError:
-                                        alert_sent_col = None
-                                    alerts.append({
-                                        'type': 'ACCEPTED',
-                                        'address': record.get('Address'),
-                                        'purchase_price': clean_price(record.get('Purchase Contract Price', '')),
-                                        'counter_price': None, 'difference': None,
-                                        'row': row_num, 'alert_col': alert_sent_col,
-                                        'reason': accept_context
-                                    })
+                                existing_notes = record.get('Notes', '') or ''
+                                try:
+                                    alert_sent_col = headers.index('Alert Sent') + 1
+                                except ValueError:
+                                    alert_sent_col = None
+
+                                if accept_confidence == "high":
+                                    # HIGH: write Status to Accepted, note in Notes, alert
+                                    if current_status not in ['STP', 'Accepted']:
+                                        sheet.update_cell(row_num, status_col, 'Accepted')
+                                        accept_note = f"[ACCEPTED: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
+                                        new_notes = f"{existing_notes} | {accept_note}" if existing_notes else accept_note
+                                        sheet.update_cell(row_num, notes_col, new_notes)
+                                        print(f"  Sheet updated to Accepted for row {row_num} (HIGH confidence)")
+                                        alerts.append({
+                                            'type': 'ACCEPTED',
+                                            'address': record.get('Address'),
+                                            'purchase_price': clean_price(record.get('Purchase Contract Price', '')),
+                                            'counter_price': None, 'difference': None,
+                                            'row': row_num, 'alert_col': alert_sent_col,
+                                            'reason': accept_context,
+                                            'confidence': 'high',
+                                        })
+                                else:
+                                    # LIKELY: do NOT touch Status (false confidence is what burned us on Heaton).
+                                    # Only annotate Notes + send amber alert. Dedup: skip if already flagged
+                                    # or if the user has manually set a definitive status.
+                                    if "[LIKELY ACCEPTED — VERIFY" in existing_notes:
+                                        print(f"  Skipping LIKELY alert for row {row_num} — already flagged in Notes")
+                                    elif current_status in ['Accepted', 'Rejected', 'STP']:
+                                        print(f"  Skipping LIKELY alert for row {row_num} — definitive status already set ({current_status!r})")
+                                    else:
+                                        likely_note = f"[LIKELY ACCEPTED — VERIFY: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
+                                        new_notes = f"{existing_notes} | {likely_note}" if existing_notes else likely_note
+                                        sheet.update_cell(row_num, notes_col, new_notes)
+                                        print(f"  Notes flagged LIKELY ACCEPTED for row {row_num} (status unchanged: {current_status!r})")
+                                        alerts.append({
+                                            'type': 'ACCEPTED',
+                                            'address': record.get('Address'),
+                                            'purchase_price': clean_price(record.get('Purchase Contract Price', '')),
+                                            'counter_price': None, 'difference': None,
+                                            'row': row_num, 'alert_col': alert_sent_col,
+                                            'reason': accept_context,
+                                            'confidence': 'likely',
+                                            'preserved_status': current_status,
+                                        })
                                 break
                         # Skip to next email — don't process as counter
                         continue
@@ -783,20 +885,41 @@ def send_alerts(alerts, back_on_market=[]):
         html += "</table></body></html>"
         send_email("⚠️ CLOSE DEAL ALERT - Counter Within $30k of Your Offer!", html)
 
-    accepted = [a for a in alerts if a['type'] == 'ACCEPTED']
-    if accepted:
+    # Split ACCEPTED alerts by confidence — HIGH gets the confident "DEAL WON"
+    # email; LIKELY gets a hedged "VERIFY" email so the user knows to check
+    # the original message before treating as a real win (Status is unchanged
+    # in the sheet for LIKELY — only Notes is flagged).
+    high_conf = [a for a in alerts if a['type'] == 'ACCEPTED' and a.get('confidence') != 'likely']
+    likely = [a for a in alerts if a['type'] == 'ACCEPTED' and a.get('confidence') == 'likely']
+
+    if high_conf:
         html = "<html><body>"
         html += "<h2 style='color:#22c55e;'>🎉 BID ACCEPTED — DEAL WON!</h2>"
         html += "<p style='font-size:16px;'>Congratulations! The following bid(s) have been accepted:</p>"
         html += "<table border='1' cellpadding='8' style='border-collapse:collapse;width:100%;'>"
         html += "<tr style='background:#166534;color:white;'><th>Address</th><th>Your Offer</th><th>Details</th></tr>"
-        for a in accepted:
+        for a in high_conf:
             offer_str = f"${a['purchase_price']:,}" if a.get('purchase_price') else "N/A"
             html += f"<tr><td><b>{a['address']}</b></td><td>{offer_str}</td><td>{a.get('reason', '')[:150]}</td></tr>"
         html += "</table>"
         html += "<p style='color:#22c55e;font-weight:bold;font-size:18px;'>⚡ TAKE IMMEDIATE ACTION — Proceed to closing!</p>"
         html += "</body></html>"
-        send_email("🎉 BID ACCEPTED — " + ", ".join(a['address'] for a in accepted[:3]), html)
+        send_email("🎉 BID ACCEPTED — " + ", ".join(a['address'] for a in high_conf[:3]), html)
+
+    if likely:
+        html = "<html><body>"
+        html += "<h2 style='color:#f59e0b;'>⚠️ LIKELY ACCEPTED — VERIFY</h2>"
+        html += "<p style='font-size:14px;'>The following email(s) matched positive acceptance language but did NOT explicitly name your bid. The keyword may be describing a competing offer being accepted. <b>Open the actual email in Christian's Gmail and confirm before treating as a win.</b></p>"
+        html += "<table border='1' cellpadding='8' style='border-collapse:collapse;width:100%;'>"
+        html += "<tr style='background:#92400e;color:white;'><th>Address</th><th>Your Offer</th><th>Status (unchanged)</th><th>Matched context (verify against email)</th></tr>"
+        for a in likely:
+            offer_str = f"${a['purchase_price']:,}" if a.get('purchase_price') else "N/A"
+            preserved = a.get('preserved_status') or '(unknown)'
+            html += f"<tr><td><b>{a['address']}</b></td><td>{offer_str}</td><td><i>{preserved}</i></td><td style='font-style:italic;color:#475569;'>{a.get('reason', '')[:200]}</td></tr>"
+        html += "</table>"
+        html += "<p style='color:#92400e;font-weight:bold;font-size:14px;'>Sheet Status was LEFT UNCHANGED. The Notes column has been tagged [LIKELY ACCEPTED — VERIFY] so you can review. After verifying the actual email, manually update Status to Accepted (real win) or Rejected (false positive).</p>"
+        html += "</body></html>"
+        send_email("⚠️ LIKELY ACCEPTED (VERIFY) — " + ", ".join(a['address'] for a in likely[:3]), html)
 
     rejected = [a for a in alerts if a['type'] == 'REJECTED']
     if rejected:
