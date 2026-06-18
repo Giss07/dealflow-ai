@@ -715,6 +715,7 @@ def api_preforeclosure_import():
     added = 0
     skipped = 0
     skipped_details = []
+    new_pfs = []  # track newly-added rows to enqueue an auto-scan after commit
     try:
         for row_num, row in enumerate(reader, start=2):
             address = find_col(row, ["address", "street", "situs", "site address", "property address"])
@@ -749,9 +750,45 @@ def api_preforeclosure_import():
                 mls_status="unknown",
             )
             db.add(pf)
+            new_pfs.append(pf)
             added += 1
         db.commit()
-        return jsonify({"added": added, "skipped": skipped, "skipped_details": skipped_details})
+
+        # Auto-enqueue a ScanJob for the newly-added properties so MLS status
+        # populates without requiring a manual Scan Selected click. Reuses the
+        # existing /api/scan-jobs plumbing — worker picks up within ~5s.
+        new_ids = [pf.id for pf in new_pfs if pf.id is not None]
+        scan_job_id = None
+        scan_skipped_reason = None
+        if new_ids:
+            from database import ScanJob
+            from datetime import datetime as dt, timedelta
+            active = db.query(ScanJob).filter(ScanJob.status.in_(["pending", "running"])).first()
+            if active:
+                scan_skipped_reason = (
+                    f"a scan job (id={active.id}) is already in progress; "
+                    f"click Scan Selected manually once it finishes"
+                )
+            else:
+                job = ScanJob(
+                    status="pending",
+                    property_ids=json.dumps(new_ids),
+                    total=len(new_ids),
+                    created_at=dt.utcnow(),
+                    expires_at=dt.utcnow() + timedelta(hours=2),
+                )
+                db.add(job)
+                db.commit()
+                scan_job_id = job.id
+                logger.info(f"[AUTO_SCAN_ENQUEUED] import_added={added} scan_job_id={job.id} property_count={len(new_ids)}")
+
+        return jsonify({
+            "added": added,
+            "skipped": skipped,
+            "skipped_details": skipped_details,
+            "scan_job_id": scan_job_id,
+            "scan_skipped_reason": scan_skipped_reason,
+        })
     except Exception as e:
         db.rollback()
         return jsonify({"error": str(e)}), 500
