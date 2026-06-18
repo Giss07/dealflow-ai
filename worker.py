@@ -72,7 +72,7 @@ def run_full():
 
 # TODO: intermittent gmail_only subprocess abort w/ truncated stderr (only "Traceback (most recent call last):" reaches stderr) — container healthy, not OOM — watch for recurrence (first seen 2026-06-10 23:02:39 UTC)
 def run_gmail_only():
-    """Run dealflow_updater in gmail_only mode (only during 6AM-6PM PT, 13 runs/day)."""
+    """Run dealflow_updater in gmail_only mode (only during 6AM-6PM PT, 26 runs/day — fires at :00 and :30)."""
     now_pst = datetime.now(PST)
     hour = now_pst.hour
     if hour < 6 or hour > 18:
@@ -800,7 +800,9 @@ if __name__ == "__main__":
     # filters so only the registration matching 8 AM Pacific proceeds.
     schedule.every().day.at("15:00").do(run_full)           # 8AM PDT = 15:00 UTC (summer)
     schedule.every().day.at("16:00").do(run_full)           # 8AM PST = 16:00 UTC (winter)
-    schedule.every().hour.at(":00").do(run_gmail_only)      # Hourly Gmail check (6AM-6PM PT only, checked inside func)
+    # Gmail check fires twice per hour (:00 and :30), gated to 6AM-6PM PT inside run_gmail_only — 26 runs/day total
+    schedule.every().hour.at(":00").do(run_gmail_only)
+    schedule.every().hour.at(":30").do(run_gmail_only)
 
     # Schedule DealFlow AI pipeline (Mon & Thu at 7AM PST = 14:00 UTC) — PAUSED
     # schedule.every().monday.at("14:00").do(run_dealflow_pipeline)
@@ -825,7 +827,7 @@ if __name__ == "__main__":
     logger.info("  - 8 AM Pacific daily (DST-aware, 15:00 or 16:00 UTC): Full updater")
     logger.info("  - 15:00 UTC daily: check_upcoming_auctions notification digest")
     logger.info("  - DISABLED: rescan_nod_properties (manual only via /admin/run-cron)")
-    logger.info("  - Hourly 6AM-6PM PT (13 runs/day): Gmail-only counter checks")
+    logger.info("  - Every 30 min 6AM-6PM PT (26 runs/day, :00 and :30): Gmail-only counter checks")
     logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")
 
     # Start a tiny health server so Railway healthcheck passes
