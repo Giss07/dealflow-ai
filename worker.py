@@ -790,6 +790,146 @@ def run_dealflow_pipeline():
         logger.error(f"Pipeline failed: {e}")
 
 
+# ─── MLS Tier Scheduler (Phase 2) ──────────────────────────────────────────
+# Tier-aware daily MLS rescanning for the Pre-Foreclosure tab.
+# Reuses ScanJob + check_pending_scan_jobs + run_preforeclosure_scan unchanged.
+
+MLS_TIER_HARD_CAP = int(os.getenv("MLS_TIER_HARD_CAP", "200"))
+MLS_T3_DAILY_LIMIT = int(os.getenv("MLS_T3_DAILY_LIMIT", "50"))
+MLS_T4_WEEKLY_LIMIT = int(os.getenv("MLS_T4_WEEKLY_LIMIT", "200"))
+
+
+def select_due_properties():
+    """Decide which PreForeclosure IDs to scan today, by tier.
+
+    Returns a dict: {"ids": [..], "tier_breakdown": {"T1": n, "T2": n, ...},
+    "weekday": "Monday"|...}.  All selections are read-only.
+    """
+    from database import init_db, get_session, PreForeclosure
+    from datetime import datetime as dt, timedelta
+    from sqlalchemy import or_, and_
+
+    init_db()
+    db = get_session()
+    try:
+        today_pst = datetime.now(PST)
+        is_monday = today_pst.weekday() == 0  # 0=Mon
+
+        not_archived = or_(PreForeclosure.is_archived == False, PreForeclosure.is_archived == None)
+        not_offer = PreForeclosure.mls_status != "offer-submitted"
+        scan_ok = or_(PreForeclosure.scan_error_count <= 3, PreForeclosure.scan_error_count == None)
+        skip_base = and_(not_archived, not_offer, scan_ok)
+
+        # T1 — auction
+        t1_ids = [p.id for p in db.query(PreForeclosure.id).filter(
+            skip_base, PreForeclosure.mls_status == "auction"
+        ).all()]
+
+        # T2 — live MLS
+        t2_ids = [p.id for p in db.query(PreForeclosure.id).filter(
+            skip_base, PreForeclosure.mls_status.in_(["on-market", "pending"])
+        ).all()]
+
+        # T3 — unscanned, capped at MLS_T3_DAILY_LIMIT (oldest date_added first
+        # so the oldest unscanned imports get priority)
+        t3_ids = [p.id for p in db.query(PreForeclosure.id).filter(
+            skip_base, PreForeclosure.last_scanned == None
+        ).order_by(PreForeclosure.date_added.asc().nullslast()).limit(MLS_T3_DAILY_LIMIT).all()]
+
+        # T4 — stale dormant (Monday only), capped at MLS_T4_WEEKLY_LIMIT,
+        # oldest last_scanned first so the full pool rotates over ~4-5 weeks
+        t4_ids = []
+        if is_monday:
+            cutoff = dt.utcnow() - timedelta(days=30)
+            t4_ids = [p.id for p in db.query(PreForeclosure.id).filter(
+                skip_base,
+                PreForeclosure.mls_status.in_(["unknown", "pre-foreclosure"]),
+                PreForeclosure.last_scanned != None,
+                PreForeclosure.last_scanned < cutoff,
+            ).order_by(PreForeclosure.last_scanned.asc()).limit(MLS_T4_WEEKLY_LIMIT).all()]
+
+        # Deduplicate while preserving insertion order (a property could appear
+        # in multiple selectors in unusual data states — scan once, not twice)
+        seen = set()
+        combined = []
+        for tid in (t1_ids + t2_ids + t3_ids + t4_ids):
+            if tid not in seen:
+                seen.add(tid)
+                combined.append(tid)
+
+        return {
+            "ids": combined,
+            "tier_breakdown": {
+                "T1_auction": len(t1_ids),
+                "T2_live_mls": len(t2_ids),
+                "T3_unscanned": len(t3_ids),
+                "T4_stale_dormant": len(t4_ids),
+                "after_dedup": len(combined),
+            },
+            "weekday": today_pst.strftime("%A"),
+        }
+    finally:
+        db.close()
+
+
+def run_mls_tier_scan():
+    """Daily MLS tier scan — enqueues a ScanJob with the IDs selected by
+    select_due_properties(). The worker's existing check_pending_scan_jobs()
+    picks it up within ~5s and runs it via run_preforeclosure_scan.
+
+    DST gate: only proceeds when Pacific local hour == 8 (mirrors run_full).
+    Hard cap: aborts if select_due_properties returns > MLS_TIER_HARD_CAP IDs.
+    Reuses the ScanJob plumbing — no new scan path.
+    """
+    now_pst = datetime.now(PST)
+    if now_pst.hour != 8:
+        return
+    logger.info(f"=== MLS TIER SCAN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
+
+    try:
+        selection = select_due_properties()
+        breakdown = selection["tier_breakdown"]
+        weekday = selection["weekday"]
+        ids = selection["ids"]
+        logger.info(f"  [MLS_TIER_SELECTION] {weekday} — {breakdown}")
+
+        if not ids:
+            logger.info("  No properties due — nothing to scan.")
+            return
+
+        if len(ids) > MLS_TIER_HARD_CAP:
+            logger.error(f"  [MLS_TIER_CAP_EXCEEDED] selected {len(ids)} > cap {MLS_TIER_HARD_CAP} — ABORTING (no scan calls made). Tier breakdown: {breakdown}")
+            return
+
+        # Reuse the existing ScanJob plumbing — same as POST /api/scan-jobs.
+        # Block if there's already a pending/running job (manual scan in flight).
+        from database import init_db, get_session, ScanJob
+        from datetime import datetime as dt, timedelta
+        init_db()
+        db = get_session()
+        try:
+            active = db.query(ScanJob).filter(ScanJob.status.in_(["pending", "running"])).first()
+            if active:
+                logger.warning(f"  [MLS_TIER_SKIP] existing scan job {active.id} ({active.status}) — skipping today's tier run to avoid pile-up")
+                return
+
+            job = ScanJob(
+                status="pending",
+                property_ids=json.dumps(ids),
+                total=len(ids),
+                created_at=dt.utcnow(),
+                expires_at=dt.utcnow() + timedelta(hours=2),
+            )
+            db.add(job)
+            db.commit()
+            logger.info(f"  [MLS_TIER_ENQUEUED] scan_job_id={job.id} property_count={len(ids)} estimated_cost=${len(ids)*COST_OPENWEB_NINJA:.3f}")
+        finally:
+            db.close()
+
+    except Exception as e:
+        logger.error(f"run_mls_tier_scan failed: {e}", exc_info=True)
+
+
 if __name__ == "__main__":
     logger.info("DealFlow Worker starting...")
     logger.info(f"Current time PST: {datetime.now(PST).strftime('%Y-%m-%d %H:%M %Z')}")
@@ -808,11 +948,24 @@ if __name__ == "__main__":
     # schedule.every().monday.at("14:00").do(run_dealflow_pipeline)
     # schedule.every().thursday.at("14:00").do(run_dealflow_pipeline)
 
-    # Pre-foreclosure MLS scan — disabled by default, manual-only via dashboard
-    # Set MLS_AUTO_SCAN_ENABLED=true to enable automatic every-3-day scanning
+    # Pre-foreclosure MLS tier scan — disabled by default, manual-only via dashboard.
+    # Set MLS_AUTO_SCAN_ENABLED=true to enable daily 8 AM PT tier scan.
+    # Tiers (selected each day by select_due_properties):
+    #   T1 auction:       mls_status='auction'                          (daily, all)
+    #   T2 live MLS:      mls_status IN ('on-market','pending')         (daily, all)
+    #   T3 unscanned:     last_scanned IS NULL                          (daily, capped 50)
+    #   T4 stale dormant: mls_status IN ('unknown','pre-foreclosure')
+    #                     AND last_scanned > 30 days ago                (Monday only, capped 200)
+    # SKIP: is_archived, mls_status='offer-submitted', scan_error_count > 3
+    # Cost: ~$0.23/day Tue-Sun + $0.73 Mon = ~$2.11/wk = ~$9/month at $0.0025/scan.
+    # Hard cap: MLS_TIER_HARD_CAP (default 200) — if selector returns more, abort.
     mls_auto = os.getenv("MLS_AUTO_SCAN_ENABLED", "false").lower() == "true"
     if mls_auto:
-        schedule.every(3).days.at("09:00").do(run_preforeclosure_scan)
+        # Register at BOTH PDT and PST offsets — run_mls_tier_scan's inner gate
+        # filters so only the registration matching 8 AM Pacific proceeds (same
+        # DST-aware pattern as run_full above).
+        schedule.every().day.at("15:00").do(run_mls_tier_scan)  # 8AM PDT
+        schedule.every().day.at("16:00").do(run_mls_tier_scan)  # 8AM PST
 
     # Auction notification digest — daily at 8AM Pacific = 15:00 UTC
     schedule.every().day.at("15:00").do(check_upcoming_auctions)
@@ -823,7 +976,7 @@ if __name__ == "__main__":
     # schedule.every(3).days.at("13:00").do(rescan_nod_properties)
 
     logger.info("Scheduled (UTC times, Railway server):")
-    logger.info(f"  - Pre-foreclosure MLS scan: {'ENABLED every 3 days 09:00 UTC' if mls_auto else 'MANUAL ONLY (MLS_AUTO_SCAN_ENABLED=false)'}")
+    logger.info(f"  - Pre-foreclosure MLS tier scan: {'ENABLED daily 8 AM PT (DST-aware, T1+T2+T3 daily, T4 Mondays)' if mls_auto else 'MANUAL ONLY (MLS_AUTO_SCAN_ENABLED=false)'}")
     logger.info("  - 8 AM Pacific daily (DST-aware, 15:00 or 16:00 UTC): Full updater")
     logger.info("  - 15:00 UTC daily: check_upcoming_auctions notification digest")
     logger.info("  - DISABLED: rescan_nod_properties (manual only via /admin/run-cron)")
