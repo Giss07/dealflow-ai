@@ -842,21 +842,119 @@ def check_existing_counter_alerts(records, sheet, headers):
 # EMAIL SENDER
 # ============================================================
 
-def send_email(subject, html_body):
+def send_email(subject, html_body, property_label=None, alert_type=None):
+    """Send an alert via the dealflow.alerts@gmail.com SMTP account.
+
+    Two-attempt retry with 5-second backoff (mirrors notifications.py).
+    Failures log to stderr at ERROR with [GMAIL_ALERT_FAILED] sentinel
+    AND attempt a fallback via the GMAIL_USER personal account so a
+    broken alerts-account doesn't silently lose wins.
+
+    Also writes to SentNotification audit log so we can answer
+    'did this alert fire?' definitively.
+
+    Args:
+        subject: email subject line
+        html_body: HTML content
+        property_label: address or other identifier for the audit log
+        alert_type: 'hot' / 'close' / 'accepted' / 'likely_accepted' /
+                    'rejected' / 'back_on_market' — for audit log notification_type
+    """
+    import time as _t
+    error_msg = None
+    sent_ok = False
+
+    for attempt in (1, 2):
+        try:
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = YOUR_GMAIL
+            msg['To'] = ', '.join(ALERT_EMAILS)
+            msg.attach(MIMEText(html_body, 'html'))
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=20) as server:
+                server.login(YOUR_GMAIL, YOUR_APP_PASSWORD)
+                server.sendmail(YOUR_GMAIL, ALERT_EMAILS, msg.as_string())
+            print(f"  Email sent (attempt {attempt}): {subject}")
+            sent_ok = True
+            error_msg = None
+            break
+        except Exception as e:
+            error_msg = f"{type(e).__name__}: {str(e)[:200]}"
+            # ERROR to stderr so the worker's subprocess wrapper surfaces it
+            sys.stderr.write(f"[GMAIL_ALERT_FAILED] attempt {attempt}/2 for {subject!r}: {error_msg}\n")
+            sys.stderr.flush()
+            if attempt == 1:
+                _t.sleep(5)
+
+    # Audit log — write to Postgres SentNotification (best-effort; never raises)
     try:
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = YOUR_GMAIL
-        msg['To'] = ', '.join(ALERT_EMAILS)
-        msg.attach(MIMEText(html_body, 'html'))
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(YOUR_GMAIL, YOUR_APP_PASSWORD)
-            server.sendmail(YOUR_GMAIL, ALERT_EMAILS, msg.as_string())
-        print(f"  Email sent!")
-        return True
+        _audit_log_alert(property_label, alert_type, subject, sent_ok, error_msg)
     except Exception as e:
-        print(f"  Email error: {e}")
-        return False
+        sys.stderr.write(f"[AUDIT_LOG_FAILED] {type(e).__name__}: {str(e)[:200]}\n")
+
+    if not sent_ok:
+        # Fallback: send via GMAIL_USER personal account so user finds out
+        try:
+            _send_fallback_alert(subject, error_msg)
+        except Exception as e:
+            sys.stderr.write(f"[FALLBACK_ALERT_FAILED] {type(e).__name__}: {str(e)[:200]}\n")
+
+    return sent_ok
+
+
+def _audit_log_alert(property_label, alert_type, subject, sent_ok, error_msg):
+    """Write outbound-alert attempt to SentNotification table for audit.
+
+    property_id is left NULL — dealflow_updater works off sheet addresses,
+    not PreForeclosure IDs. The property_label goes into email_subject so
+    "did the Coral St alert fire today?" is a single grep.
+    """
+    if not alert_type:
+        return  # Skip audit for one-off email_sent flows that didn't pass a type
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from database import get_session, SentNotification
+    from datetime import datetime as _dt
+    db = get_session()
+    try:
+        full_subject = f"[{property_label or 'unknown'}] {subject}"[:500]
+        db.add(SentNotification(
+            property_id=None,
+            notification_type=f"gmail_alert_{alert_type}",
+            sent_at=_dt.utcnow(),
+            email_subject=full_subject,
+            email_status="sent" if sent_ok else "failed",
+            error_message=error_msg,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _send_fallback_alert(original_subject, error_msg):
+    """If the primary dealflow.alerts SMTP fails after retries, send a plain-text
+    notice via the GMAIL_USER personal account so the user finds out.
+    """
+    fallback_user = os.getenv('GMAIL_USER')
+    fallback_pw = os.getenv('GMAIL_PASSWORD')
+    fallback_to = os.getenv('ALERT_EMAIL') or fallback_user
+    if not (fallback_user and fallback_pw and fallback_to):
+        sys.stderr.write(f"[FALLBACK_ALERT_SKIPPED] GMAIL_USER/GMAIL_PASSWORD/ALERT_EMAIL not set\n")
+        return
+    body = (f"DealFlow attempted to send an alert from dealflow.alerts@gmail.com but BOTH "
+            f"SMTP attempts failed.\n\n"
+            f"Original subject: {original_subject}\n"
+            f"Error: {error_msg}\n\n"
+            f"Check Christian's Gmail inbox manually for the original HUD/agent email "
+            f"and the live property status. This fallback was sent from {fallback_user}.")
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = f"❌ DealFlow ALERT DELIVERY FAILED — original: {original_subject[:80]}"
+    msg['From'] = fallback_user
+    msg['To'] = fallback_to
+    msg.attach(MIMEText(body, 'plain'))
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=20) as server:
+        server.login(fallback_user, fallback_pw)
+        server.sendmail(fallback_user, [fallback_to], msg.as_string())
+    sys.stderr.write(f"[FALLBACK_ALERT_SENT] via {fallback_user} → {fallback_to}\n")
 
 def send_alerts(alerts, back_on_market=[]):
     hot = [a for a in alerts if a['type'] == 'HOT']
@@ -870,7 +968,8 @@ def send_alerts(alerts, back_on_market=[]):
             offer_to_net = int(a['counter_price'] / 0.94)
             html += f"<tr><td><b>{a['address']}</b></td><td>${a['purchase_price']:,}</td><td>${a['counter_price']:,}</td><td style='color:green;'><b>${abs(a['difference']):,} BELOW your offer!</b></td><td style='color:blue;'><b>${offer_to_net:,}</b></td></tr>"
         html += "</table></body></html>"
-        send_email("🚨 HOT ALERT - Counter At or Below Your Offer Price!", html)
+        send_email("🚨 HOT ALERT - Counter At or Below Your Offer Price!", html,
+                   property_label=", ".join(a['address'] for a in hot[:3]), alert_type='hot')
 
     close = [a for a in alerts if a['type'] == 'CLOSE']
     if close:
@@ -883,7 +982,8 @@ def send_alerts(alerts, back_on_market=[]):
             offer_to_net = int(a['counter_price'] / 0.94)
             html += f"<tr><td><b>{a['address']}</b></td><td>${a['purchase_price']:,}</td><td>${a['counter_price']:,}</td><td style='color:orange;'><b>${a['difference']:,} apart</b></td><td style='color:blue;'><b>${offer_to_net:,}</b></td></tr>"
         html += "</table></body></html>"
-        send_email("⚠️ CLOSE DEAL ALERT - Counter Within $30k of Your Offer!", html)
+        send_email("⚠️ CLOSE DEAL ALERT - Counter Within $30k of Your Offer!", html,
+                   property_label=", ".join(a['address'] for a in close[:3]), alert_type='close')
 
     # Split ACCEPTED alerts by confidence — HIGH gets the confident "DEAL WON"
     # email; LIKELY gets a hedged "VERIFY" email so the user knows to check
@@ -904,7 +1004,8 @@ def send_alerts(alerts, back_on_market=[]):
         html += "</table>"
         html += "<p style='color:#22c55e;font-weight:bold;font-size:18px;'>⚡ TAKE IMMEDIATE ACTION — Proceed to closing!</p>"
         html += "</body></html>"
-        send_email("🎉 BID ACCEPTED — " + ", ".join(a['address'] for a in high_conf[:3]), html)
+        send_email("🎉 BID ACCEPTED — " + ", ".join(a['address'] for a in high_conf[:3]), html,
+                   property_label=", ".join(a['address'] for a in high_conf[:3]), alert_type='accepted')
 
     if likely:
         html = "<html><body>"
@@ -919,7 +1020,8 @@ def send_alerts(alerts, back_on_market=[]):
         html += "</table>"
         html += "<p style='color:#92400e;font-weight:bold;font-size:14px;'>Sheet Status was LEFT UNCHANGED. The Notes column has been tagged [LIKELY ACCEPTED — VERIFY] so you can review. After verifying the actual email, manually update Status to Accepted (real win) or Rejected (false positive).</p>"
         html += "</body></html>"
-        send_email("⚠️ LIKELY ACCEPTED (VERIFY) — " + ", ".join(a['address'] for a in likely[:3]), html)
+        send_email("⚠️ LIKELY ACCEPTED (VERIFY) — " + ", ".join(a['address'] for a in likely[:3]), html,
+                   property_label=", ".join(a['address'] for a in likely[:3]), alert_type='likely_accepted')
 
     rejected = [a for a in alerts if a['type'] == 'REJECTED']
     if rejected:
@@ -932,7 +1034,8 @@ def send_alerts(alerts, back_on_market=[]):
             offer_str = f"${a['purchase_price']:,}" if a.get('purchase_price') else "N/A"
             html += f"<tr><td><b>{a['address']}</b></td><td>{offer_str}</td><td>{a.get('reason', 'Unknown')}</td></tr>"
         html += "</table></body></html>"
-        send_email("❌ Offer Rejected — " + ", ".join(a['address'] for a in rejected[:3]), html)
+        send_email("❌ Offer Rejected — " + ", ".join(a['address'] for a in rejected[:3]), html,
+                   property_label=", ".join(a['address'] for a in rejected[:3]), alert_type='rejected')
 
     if back_on_market:
         hud = [a for a in back_on_market if str(a.get('lead_source','')).upper() == 'HUD']
@@ -956,7 +1059,8 @@ def send_alerts(alerts, back_on_market=[]):
             html += "</table>"
         html += "</body></html>"
         subject = "🚨 HUD BACK ON MARKET!" if hud else "🔄 BACK ON MARKET - Previously Pending Properties!"
-        send_email(subject, html)
+        send_email(subject, html,
+                   property_label=", ".join(a['address'] for a in back_on_market[:3]), alert_type='back_on_market')
 
 # ============================================================
 # GMAIL-ONLY RUN (counters only, no Zillow)
