@@ -43,6 +43,37 @@ sys.path.insert(0, os.path.dirname(__file__))
 COST_OPENWEB_NINJA = 0.0025
 
 
+# Sentinels written to subprocess stderr by dealflow_updater.send_email /
+# email_sender.send_via_resend. The subprocess can exit 0 (send_email catches
+# exceptions and returns False without raising), so without explicit scanning
+# these lines would be silently discarded — which is exactly what hid the
+# 3 silent ENETUNREACH failures on 2026-06-24/25/26.
+_ALERT_FAILURE_SENTINELS = (
+    "[RESEND_ALERT_FAILED]",
+    "[AUDIT_LOG_FAILED]",
+    # legacy SMTP sentinels — kept for the transition deploy in case any
+    # in-flight subprocess still emits them; safe to delete in a later cleanup
+    "[GMAIL_ALERT_FAILED]",
+    "[FALLBACK_ALERT_FAILED]",
+    "[FALLBACK_ALERT_SENT]",
+    "[FALLBACK_ALERT_SKIPPED]",
+)
+
+
+def _surface_stderr_sentinels(stderr_text):
+    """Log alert-failure sentinels at ERROR level even on exit-0 subprocess.
+
+    Reads each line of the subprocess's stderr and re-emits any line containing
+    a known failure sentinel via logger.error, so Railway log filters catch
+    delivery failures in real time without needing to query SentNotification.
+    """
+    if not stderr_text:
+        return
+    for line in stderr_text.splitlines():
+        if any(s in line for s in _ALERT_FAILURE_SENTINELS):
+            logger.error(line.strip())
+
+
 def run_full():
     """Run dealflow_updater in full mode — daily at 8 AM Pacific (DST-aware).
 
@@ -64,6 +95,9 @@ def run_full():
             logger.error(f"Full run exited {result.returncode}: {result.stderr[:500]}")
         else:
             logger.info("Full run completed successfully")
+        # Always surface alert-failure sentinels from subprocess stderr —
+        # exit-0 does NOT mean alerts delivered (send_email catches and returns False).
+        _surface_stderr_sentinels(result.stderr)
     except subprocess.TimeoutExpired:
         logger.error("Full run timed out after 30 minutes")
     except Exception as e:
@@ -89,6 +123,9 @@ def run_gmail_only():
             logger.error(f"Gmail check exited {result.returncode}: {result.stderr[:500]}")
         else:
             logger.info("Gmail check completed")
+        # Always surface alert-failure sentinels from subprocess stderr —
+        # exit-0 does NOT mean alerts delivered (send_email catches and returns False).
+        _surface_stderr_sentinels(result.stderr)
     except subprocess.TimeoutExpired:
         logger.error("Gmail check timed out after 5 minutes")
     except Exception as e:

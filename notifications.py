@@ -22,35 +22,23 @@ DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://dealflow-ai.up.railway.app")
 
 
 def _send_email(subject, body_html, body_text):
-    """Send an email via Gmail SMTP SSL. Retries once on connection failure.
+    """Send an email via Resend HTTP API.
 
-    Returns True if sent, False on failure. Does NOT log to sent_notifications
-    (caller handles that via log_notification).
+    Was SMTP_SSL to smtp.gmail.com — replaced because outbound SMTP
+    fails from Railway with OSError ENETUNREACH (3 confirmed silent
+    failures 2026-06-24/25/26). Resend uses HTTPS port 443 which
+    Railway always permits.
+
+    Returns True if sent, False on failure. Does NOT log to
+    sent_notifications (caller handles that via log_notification).
     """
-    if not GMAIL_USER or not GMAIL_PASSWORD:
-        logger.error("GMAIL_USER or GMAIL_PASSWORD not set — cannot send email")
-        return False
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = GMAIL_USER
-    msg["To"] = ALERT_EMAIL
-    msg.attach(MIMEText(body_text, "plain"))
-    msg.attach(MIMEText(body_html, "html"))
-
-    for attempt in range(2):
-        try:
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                server.login(GMAIL_USER, GMAIL_PASSWORD)
-                server.sendmail(GMAIL_USER, ALERT_EMAIL, msg.as_string())
-            logger.info(f"Email sent: {subject}")
-            return True
-        except (smtplib.SMTPException, ConnectionError, OSError) as e:
-            logger.warning(f"SMTP attempt {attempt+1}/2 failed: {e}")
-            if attempt == 0:
-                time.sleep(5)
-    logger.error(f"Email failed after 2 attempts: {subject}")
-    return False
+    from email_sender import send_via_resend
+    sent_ok, error = send_via_resend([ALERT_EMAIL], subject, body_html, body_text)
+    if sent_ok:
+        logger.info(f"Email sent: {subject}")
+    else:
+        logger.error(f"Email failed: {subject} — {error}")
+    return sent_ok
 
 
 def log_notification(db, property_id, notification_type, subject, sent_ok, error_msg=None):

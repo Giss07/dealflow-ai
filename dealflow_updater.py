@@ -843,61 +843,36 @@ def check_existing_counter_alerts(records, sheet, headers):
 # ============================================================
 
 def send_email(subject, html_body, property_label=None, alert_type=None):
-    """Send an alert via the dealflow.alerts@gmail.com SMTP account.
+    """Send an alert via Resend HTTP API.
 
-    Two-attempt retry with 5-second backoff (mirrors notifications.py).
-    Failures log to stderr at ERROR with [GMAIL_ALERT_FAILED] sentinel
-    AND attempt a fallback via the GMAIL_USER personal account so a
-    broken alerts-account doesn't silently lose wins.
+    Replaces Gmail SMTP, which failed with OSError ENETUNREACH from
+    Railway (outbound SMTP egress blocked or IPv6 route pothole — 3
+    confirmed silent failures in 3 days on 2026-06-24/25/26). Resend
+    uses HTTPS port 443 which Railway always permits.
 
-    Also writes to SentNotification audit log so we can answer
-    'did this alert fire?' definitively.
+    Retry + sentinel logic lives in email_sender.send_via_resend.
+    Failures write [RESEND_ALERT_FAILED] to stderr, which the worker
+    surfaces in Railway logs via _surface_stderr_sentinels (even when
+    the subprocess exits 0).
+
+    Also writes to SentNotification audit log.
 
     Args:
         subject: email subject line
         html_body: HTML content
-        property_label: address or other identifier for the audit log
+        property_label: address or identifier for the audit log
         alert_type: 'hot' / 'close' / 'accepted' / 'likely_accepted' /
-                    'rejected' / 'back_on_market' — for audit log notification_type
+                    'rejected' / 'back_on_market' — for audit log
     """
-    import time as _t
-    error_msg = None
-    sent_ok = False
-
-    for attempt in (1, 2):
-        try:
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = YOUR_GMAIL
-            msg['To'] = ', '.join(ALERT_EMAILS)
-            msg.attach(MIMEText(html_body, 'html'))
-            with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=20) as server:
-                server.login(YOUR_GMAIL, YOUR_APP_PASSWORD)
-                server.sendmail(YOUR_GMAIL, ALERT_EMAILS, msg.as_string())
-            print(f"  Email sent (attempt {attempt}): {subject}")
-            sent_ok = True
-            error_msg = None
-            break
-        except Exception as e:
-            error_msg = f"{type(e).__name__}: {str(e)[:200]}"
-            # ERROR to stderr so the worker's subprocess wrapper surfaces it
-            sys.stderr.write(f"[GMAIL_ALERT_FAILED] attempt {attempt}/2 for {subject!r}: {error_msg}\n")
-            sys.stderr.flush()
-            if attempt == 1:
-                _t.sleep(5)
+    from email_sender import send_via_resend
+    sent_ok, error_msg = send_via_resend(ALERT_EMAILS, subject, html_body)
 
     # Audit log — write to Postgres SentNotification (best-effort; never raises)
     try:
         _audit_log_alert(property_label, alert_type, subject, sent_ok, error_msg)
     except Exception as e:
         sys.stderr.write(f"[AUDIT_LOG_FAILED] {type(e).__name__}: {str(e)[:200]}\n")
-
-    if not sent_ok:
-        # Fallback: send via GMAIL_USER personal account so user finds out
-        try:
-            _send_fallback_alert(subject, error_msg)
-        except Exception as e:
-            sys.stderr.write(f"[FALLBACK_ALERT_FAILED] {type(e).__name__}: {str(e)[:200]}\n")
+        sys.stderr.flush()
 
     return sent_ok
 
@@ -907,7 +882,10 @@ def _audit_log_alert(property_label, alert_type, subject, sent_ok, error_msg):
 
     property_id is left NULL — dealflow_updater works off sheet addresses,
     not PreForeclosure IDs. The property_label goes into email_subject so
-    "did the Coral St alert fire today?" is a single grep.
+    "did the Coral St alert fire today?" is a single grep. notification_type
+    keeps the 'gmail_alert_' prefix for backward-compat with existing audit
+    rows; semantically these are "outbound user alerts" regardless of the
+    underlying provider.
     """
     if not alert_type:
         return  # Skip audit for one-off email_sent flows that didn't pass a type
@@ -928,33 +906,6 @@ def _audit_log_alert(property_label, alert_type, subject, sent_ok, error_msg):
         db.commit()
     finally:
         db.close()
-
-
-def _send_fallback_alert(original_subject, error_msg):
-    """If the primary dealflow.alerts SMTP fails after retries, send a plain-text
-    notice via the GMAIL_USER personal account so the user finds out.
-    """
-    fallback_user = os.getenv('GMAIL_USER')
-    fallback_pw = os.getenv('GMAIL_PASSWORD')
-    fallback_to = os.getenv('ALERT_EMAIL') or fallback_user
-    if not (fallback_user and fallback_pw and fallback_to):
-        sys.stderr.write(f"[FALLBACK_ALERT_SKIPPED] GMAIL_USER/GMAIL_PASSWORD/ALERT_EMAIL not set\n")
-        return
-    body = (f"DealFlow attempted to send an alert from dealflow.alerts@gmail.com but BOTH "
-            f"SMTP attempts failed.\n\n"
-            f"Original subject: {original_subject}\n"
-            f"Error: {error_msg}\n\n"
-            f"Check Christian's Gmail inbox manually for the original HUD/agent email "
-            f"and the live property status. This fallback was sent from {fallback_user}.")
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = f"❌ DealFlow ALERT DELIVERY FAILED — original: {original_subject[:80]}"
-    msg['From'] = fallback_user
-    msg['To'] = fallback_to
-    msg.attach(MIMEText(body, 'plain'))
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=20) as server:
-        server.login(fallback_user, fallback_pw)
-        server.sendmail(fallback_user, [fallback_to], msg.as_string())
-    sys.stderr.write(f"[FALLBACK_ALERT_SENT] via {fallback_user} → {fallback_to}\n")
 
 def send_alerts(alerts, back_on_market=[]):
     hot = [a for a in alerts if a['type'] == 'HOT']
