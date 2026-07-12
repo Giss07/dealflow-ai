@@ -808,7 +808,7 @@ def check_existing_counter_alerts(records, sheet, headers):
 
     # Get or create Alert Sent column
     if 'Alert Sent' not in headers:
-        sheet.update_cell(1, 17, 'Alert Sent')
+        sheet.update_cell(1, len(headers) + 1, 'Alert Sent')
         headers.append('Alert Sent')
         print("  Added 'Alert Sent' column to sheet")
 

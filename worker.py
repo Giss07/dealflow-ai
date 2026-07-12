@@ -827,6 +827,18 @@ def run_dealflow_pipeline():
         logger.error(f"Pipeline failed: {e}")
 
 
+def run_photo_sync():
+    """Create/link a per-address Drive photo folder for any new sheet rows
+    (column C non-blank, column S blank). Idempotent; guarded so a failure
+    never breaks the schedule loop."""
+    try:
+        from photo_folder_sync import sync
+        logger.info("Photo folder sync starting...")
+        sync()
+    except Exception as e:
+        logger.error(f"Photo folder sync failed: {e}", exc_info=True)
+
+
 # ─── MLS Tier Scheduler (Phase 2) ──────────────────────────────────────────
 # Tier-aware daily MLS rescanning for the Pre-Foreclosure tab.
 # Reuses ScanJob + check_pending_scan_jobs + run_preforeclosure_scan unchanged.
@@ -1007,6 +1019,9 @@ if __name__ == "__main__":
     # Auction notification digest — daily at 8AM Pacific = 15:00 UTC
     schedule.every().day.at("15:00").do(check_upcoming_auctions)
 
+    # Photo folder auto-sync — every 15 min, creates/links Drive folders for new sheet rows
+    schedule.every(15).minutes.do(run_photo_sync)
+
     # Auto-rescan disabled May 7 2026 — use manual batch scanning until OpenWeb Ninja Pro upgrade.
     # Function rescan_nod_properties() still exists and is callable via /admin/run-cron/rescan-nod-properties.
     # To re-enable: uncomment the line below.
@@ -1016,6 +1031,7 @@ if __name__ == "__main__":
     logger.info(f"  - Pre-foreclosure MLS tier scan: {'ENABLED daily 8 AM PT (DST-aware, T1+T2+T3 daily, T4 Mondays)' if mls_auto else 'MANUAL ONLY (MLS_AUTO_SCAN_ENABLED=false)'}")
     logger.info("  - 8 AM Pacific daily (DST-aware, 15:00 or 16:00 UTC): Full updater")
     logger.info("  - 15:00 UTC daily: check_upcoming_auctions notification digest")
+    logger.info("  - Every 15 min: photo folder auto-sync for new sheet rows")
     logger.info("  - DISABLED: rescan_nod_properties (manual only via /admin/run-cron)")
     logger.info("  - Every 30 min 6AM-6PM PT (26 runs/day, :00 and :30): Gmail-only counter checks")
     logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")
