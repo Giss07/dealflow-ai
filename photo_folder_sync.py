@@ -20,12 +20,12 @@ import time
 import warnings
 warnings.filterwarnings("ignore")
 
-from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-SA_KEY_PATH = os.path.join(HERE, "dealflow-sheets-b59dc0c02384.json")
+# Reuse the same env-first cred loader as dealflow_updater so this works on
+# Railway (GOOGLE_SERVICE_ACCOUNT_JSON env var) as well as locally (file fallback).
+from dealflow_updater import _load_credentials
 
 SHEET_ID    = "1GMp9LbZLgY_uaTjiDQ9cTcy4I1QxOqLsNZWORwkUMCY"
 TAB_NAME    = "Properties_Offer_Tracker_Template"
@@ -41,7 +41,7 @@ SCOPES = [
 
 
 def _clients():
-    creds = Credentials.from_service_account_file(SA_KEY_PATH, scopes=SCOPES)
+    creds = _load_credentials(SCOPES)
     return (
         build("sheets", "v4", credentials=creds, cache_discovery=False),
         build("drive", "v3", credentials=creds, cache_discovery=False),
