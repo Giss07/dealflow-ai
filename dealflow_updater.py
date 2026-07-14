@@ -433,6 +433,74 @@ def extract_counter_price(email_text):
                 continue
     return None
 
+
+# ── HUD Case # / Bid Amount extractors (used by LIKELY→HIGH promoter) ─────
+
+HUD_CASE_NUMBER_PATTERNS = [
+    # 043-1234567-703 (with sub-case), 043-1234567, 043-123456 (older 6-digit)
+    r'case\s*(?:#|number|no\.?)?\s*[:.]?\s*(\d{3}-\d{6,7}(?:-\d{1,3})?)',
+    r'fha\s*case\s*(?:#|number|no\.?)?\s*[:.]?\s*(\d{3}-\d{6,7}(?:-\d{1,3})?)',
+]
+
+def extract_hud_case_number(email_text):
+    """Return the first HUD-format case number found, e.g. '043-1234567-703',
+    or None. Case-insensitive."""
+    text = email_text.lower()
+    for pat in HUD_CASE_NUMBER_PATTERNS:
+        m = re.search(pat, text)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+BID_AMOUNT_PATTERNS = [
+    # "your bid has been provisionally accepted at $209,000.00"
+    r'provisionally\s*accepted\s*(?:at|for|of|:)?\s*\$?\s*([\d,]+(?:\.\d+)?)',
+    # "your bid of $209,000" / "bid amount: $209,000" / "accepted bid $209,000"
+    r'(?:your\s*bid|bid\s*amount|accepted\s*bid|winning\s*bid)\s*(?:of|at|:|is|was)?\s*\$?\s*([\d,]+(?:\.\d+)?)',
+    # "for the (net) amount of $209,000"
+    r'for\s*the\s*(?:net\s*)?amount\s*of\s*\$?\s*([\d,]+(?:\.\d+)?)',
+]
+
+def extract_accepted_bid_amount(email_text):
+    """Return the accepted bid as an int (dollars, cents dropped) or None.
+    Skips numbers outside a sane property-price range."""
+    text = email_text.lower()
+    for pat in BID_AMOUNT_PATTERNS:
+        m = re.search(pat, text)
+        if m:
+            raw = m.group(1).replace(',', '').split('.')[0]
+            try:
+                amt = int(raw)
+                if 10000 < amt < 5000000:
+                    return amt
+            except ValueError:
+                continue
+    return None
+
+
+def _case_numbers_match(a, b):
+    """Case numbers match if equal, or one is a prefix of the other
+    (handles sub-case suffixes like 043-1234567 vs 043-1234567-703)."""
+    if not a or not b:
+        return False
+    a = a.strip()
+    b = b.strip()
+    if not a or not b:
+        return False
+    return a == b or a.startswith(b) or b.startswith(a)
+
+
+def _bid_matches_purchase(bid_amount, purchase_price_str):
+    """Exact dollar match on the whole-dollar amount (cents/formatting ignored)."""
+    if bid_amount is None or not purchase_price_str:
+        return False
+    p = clean_price(purchase_price_str)
+    if not p:
+        return False
+    return int(bid_amount) == int(p)
+
+
 def read_christian_emails(sheet, records):
     print("\n--- Checking Christian's Gmail for Counter Emails ---")
     sheet_addresses = get_all_addresses(records)
@@ -466,8 +534,8 @@ def read_christian_emails(sheet, records):
                     for part in msg.walk():
                         if part.get_content_type() == 'text/plain':
                             body += part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                        elif part.get_content_type() == 'text/html' and not body:
-                            html_body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                        elif part.get_content_type() == 'text/html':
+                            html_body += part.get_payload(decode=True).decode('utf-8', errors='ignore')
                 else:
                     ct = msg.get_content_type()
                     payload = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
@@ -476,11 +544,17 @@ def read_christian_emails(sheet, records):
                     else:
                         body = payload
 
-                # If no plain text, strip HTML tags
-                if not body and html_body:
-                    body = re.sub(r'<[^>]+>', ' ', html_body)
-                    body = re.sub(r'&nbsp;', ' ', body)
-                    body = re.sub(r'\s+', ' ', body).strip()
+                # Always fold the HTML body in — Gmail forwards commonly carry the
+                # actual HUD notification content in the HTML part while text/plain
+                # is just the wrapper boilerplate ("---------- Forwarded message ----------").
+                # The old guard skipped HTML whenever any plain text was present,
+                # which meant HIGH-confidence keywords like "your bid has been
+                # provisionally accepted" (only in the HTML) never reached the parser.
+                if html_body:
+                    stripped = re.sub(r'<[^>]+>', ' ', html_body)
+                    stripped = re.sub(r'&nbsp;', ' ', stripped)
+                    stripped = re.sub(r'\s+', ' ', stripped).strip()
+                    body = f"{body} {stripped}" if body else stripped
 
                 subject = msg.get('Subject', '')
                 sender = msg.get('From', '').lower()
@@ -567,28 +641,79 @@ def read_christian_emails(sheet, records):
                                             'confidence': 'high',
                                         })
                                 else:
-                                    # LIKELY: do NOT touch Status (false confidence is what burned us on Heaton).
-                                    # Only annotate Notes + send amber alert. Dedup: skip if already flagged
-                                    # or if the user has manually set a definitive status.
-                                    if "[LIKELY ACCEPTED — VERIFY" in existing_notes:
-                                        print(f"  Skipping LIKELY alert for row {row_num} — already flagged in Notes")
-                                    elif current_status in ['Accepted', 'Rejected', 'STP']:
-                                        print(f"  Skipping LIKELY alert for row {row_num} — definitive status already set ({current_status!r})")
+                                    # LIKELY: try to PROMOTE to HIGH by cross-checking two independent
+                                    # signals against the matched row — HUD Case # (column U) AND the
+                                    # accepted bid amount (vs column E Purchase Contract Price).
+                                    # Both must match — a single-signal match is not enough. If either
+                                    # is missing or mismatched we KEEP the LIKELY signal (never suppress).
+                                    row_case_number = (record.get('HUD Case #') or '').strip()
+                                    email_case_number = extract_hud_case_number(full_text)
+                                    email_bid_amount = extract_accepted_bid_amount(full_text)
+                                    purchase_price_str = record.get('Purchase Contract Price', '')
+
+                                    case_match = _case_numbers_match(row_case_number, email_case_number)
+                                    bid_match = _bid_matches_purchase(email_bid_amount, purchase_price_str)
+                                    promote = case_match and bid_match
+
+                                    if promote:
+                                        # PROMOTED — treat as HIGH: write Status=Accepted, tag Notes, alert high
+                                        if current_status not in ['STP', 'Accepted']:
+                                            sheet.update_cell(row_num, status_col, 'Accepted')
+                                            accept_note = (
+                                                f"[ACCEPTED (promoted from LIKELY — Case# {email_case_number} "
+                                                f"+ Bid ${email_bid_amount:,} matched): {accept_context} — "
+                                                f"{datetime.now().strftime('%m/%d/%Y')}]"
+                                            )
+                                            new_notes = f"{existing_notes} | {accept_note}" if existing_notes else accept_note
+                                            sheet.update_cell(row_num, notes_col, new_notes)
+                                            print(f"  🎉 PROMOTED LIKELY→HIGH for row {row_num} (Case# + Bid matched)")
+                                            alerts.append({
+                                                'type': 'ACCEPTED',
+                                                'address': record.get('Address'),
+                                                'purchase_price': clean_price(purchase_price_str),
+                                                'counter_price': None, 'difference': None,
+                                                'row': row_num, 'alert_col': alert_sent_col,
+                                                'reason': f"{accept_context} (promoted: case# {email_case_number}, bid ${email_bid_amount:,})",
+                                                'confidence': 'high',
+                                                'promoted_from': 'likely',
+                                            })
+                                        else:
+                                            print(f"  Skipping promoted ACCEPTED for row {row_num} — status already {current_status!r}")
                                     else:
-                                        likely_note = f"[LIKELY ACCEPTED — VERIFY: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
-                                        new_notes = f"{existing_notes} | {likely_note}" if existing_notes else likely_note
-                                        sheet.update_cell(row_num, notes_col, new_notes)
-                                        print(f"  Notes flagged LIKELY ACCEPTED for row {row_num} (status unchanged: {current_status!r})")
-                                        alerts.append({
-                                            'type': 'ACCEPTED',
-                                            'address': record.get('Address'),
-                                            'purchase_price': clean_price(record.get('Purchase Contract Price', '')),
-                                            'counter_price': None, 'difference': None,
-                                            'row': row_num, 'alert_col': alert_sent_col,
-                                            'reason': accept_context,
-                                            'confidence': 'likely',
-                                            'preserved_status': current_status,
-                                        })
+                                        # Standard LIKELY path: annotate Notes + send hedged amber alert.
+                                        # Dedup: skip if already flagged or a definitive status is set.
+                                        why_not = []
+                                        if not case_match:
+                                            why_not.append(
+                                                f"case# mismatch (row={row_case_number!r}, email={email_case_number!r})"
+                                                if row_case_number or email_case_number else "no case# on row or in email"
+                                            )
+                                        if not bid_match:
+                                            why_not.append(
+                                                f"bid mismatch (email=${email_bid_amount}, row=${clean_price(purchase_price_str)})"
+                                                if email_bid_amount else "no bid amount extracted"
+                                            )
+                                        print(f"  Not promoting LIKELY→HIGH for row {row_num}: {'; '.join(why_not)}")
+
+                                        if "[LIKELY ACCEPTED — VERIFY" in existing_notes:
+                                            print(f"  Skipping LIKELY alert for row {row_num} — already flagged in Notes")
+                                        elif current_status in ['Accepted', 'Rejected', 'STP']:
+                                            print(f"  Skipping LIKELY alert for row {row_num} — definitive status already set ({current_status!r})")
+                                        else:
+                                            likely_note = f"[LIKELY ACCEPTED — VERIFY: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
+                                            new_notes = f"{existing_notes} | {likely_note}" if existing_notes else likely_note
+                                            sheet.update_cell(row_num, notes_col, new_notes)
+                                            print(f"  Notes flagged LIKELY ACCEPTED for row {row_num} (status unchanged: {current_status!r})")
+                                            alerts.append({
+                                                'type': 'ACCEPTED',
+                                                'address': record.get('Address'),
+                                                'purchase_price': clean_price(purchase_price_str),
+                                                'counter_price': None, 'difference': None,
+                                                'row': row_num, 'alert_col': alert_sent_col,
+                                                'reason': accept_context,
+                                                'confidence': 'likely',
+                                                'preserved_status': current_status,
+                                            })
                                 break
                         # Skip to next email — don't process as counter
                         continue
