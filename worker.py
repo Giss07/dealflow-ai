@@ -418,10 +418,14 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
     pf.previous_mls_status = prev_status
     pf.last_scanned = dt.utcnow()
 
+    # Transient server-side statuses worth retrying — vendor returns these during
+    # brief outages/overload. Same retry approach as scripts/run_distressed.py.
+    RETRYABLE_STATUS = {500, 502, 503, 504}
+
     # Retry with backoff
     result_data = None
     lookup_error = None
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             resp = req.get(
                 "https://api.openwebninja.com/realtime-zillow-data/property-details-address",
@@ -430,12 +434,22 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
                 timeout=30,
             )
             if resp.status_code == 429:
-                wait = 2 ** (attempt + 1)
-                logger.warning(f"  OpenWeb rate limited (429), waiting {wait}s")
-                time.sleep(wait)
-                continue
+                if attempt < 3:
+                    wait = 2 ** (attempt + 1)
+                    logger.warning(f"  OpenWeb rate limited (429), waiting {wait}s")
+                    time.sleep(wait)
+                    continue
+                # final attempt: fall through to the non-2xx handler below → recorded as failure
             if resp.status_code == 404:
                 # Property not found — clean not-found, not an error
+                break
+            if resp.status_code in RETRYABLE_STATUS:
+                if attempt < 3:
+                    wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                    logger.warning(f"  OpenWeb HTTP {resp.status_code} (transient), retrying in {wait}s (attempt {attempt+1}/4)")
+                    time.sleep(wait)
+                    continue
+                lookup_error = f"OpenWeb HTTP {resp.status_code} (after 4 attempts)"
                 break
             if resp.status_code not in (200, 201):
                 lookup_error = f"OpenWeb HTTP {resp.status_code}"
@@ -452,12 +466,12 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
 
         except req.exceptions.Timeout:
             lookup_error = "OpenWeb timeout"
-            logger.warning(f"  OpenWeb timeout attempt {attempt+1}/3 for {pf.address}")
-            if attempt < 2:
+            logger.warning(f"  OpenWeb timeout attempt {attempt+1}/4 for {pf.address}")
+            if attempt < 3:
                 time.sleep(2 ** attempt)
         except req.exceptions.ConnectionError as e:
             lookup_error = f"Connection error: {str(e)[:80]}"
-            if attempt < 2:
+            if attempt < 3:
                 time.sleep(2 ** attempt)
         except (ValueError, KeyError) as e:
             lookup_error = f"Response parse error: {str(e)[:80]}"
