@@ -898,11 +898,22 @@ def select_due_properties():
             skip_base, PreForeclosure.mls_status.in_(["on-market", "pending"])
         ).all()]
 
-        # T3 — unscanned, capped at MLS_T3_DAILY_LIMIT (oldest date_added first
-        # so the oldest unscanned imports get priority)
-        t3_ids = [p.id for p in db.query(PreForeclosure.id).filter(
-            skip_base, PreForeclosure.last_scanned == None
-        ).order_by(PreForeclosure.date_added.asc().nullslast()).limit(MLS_T3_DAILY_LIMIT).all()]
+        # T3 — unscanned, capped at MLS_T3_DAILY_LIMIT. Prioritize soonest auction
+        # date first so imminent auctions get scanned before ones months out.
+        # auction_date is a MM/DD/YYYY string populated at import, so parse it in
+        # Python — a lexical string sort misorders dates across months/years. Rows
+        # with no/unparseable auction date sort last, tiebroken by oldest import.
+        def _t3_sort_key(row):
+            raw = (row.auction_date or "").strip()
+            try:
+                auction = dt.strptime(raw, "%m/%d/%Y")
+            except (ValueError, TypeError):
+                auction = None
+            return (auction is None, auction or dt.max, row.date_added or dt.max)
+        t3_rows = db.query(
+            PreForeclosure.id, PreForeclosure.auction_date, PreForeclosure.date_added
+        ).filter(skip_base, PreForeclosure.last_scanned == None).all()
+        t3_ids = [r.id for r in sorted(t3_rows, key=_t3_sort_key)[:MLS_T3_DAILY_LIMIT]]
 
         # T4 — stale dormant (Monday only), capped at MLS_T4_WEEKLY_LIMIT,
         # oldest last_scanned first so the full pool rotates over ~4-5 weeks
