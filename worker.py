@@ -416,6 +416,7 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
 
     prev_status = pf.mls_status
     pf.previous_mls_status = prev_status
+    prev_last_scanned = pf.last_scanned   # restored on hard failure so the row isn't parked out of T3
     pf.last_scanned = dt.utcnow()
 
     # Transient server-side statuses worth retrying — vendor returns these during
@@ -478,7 +479,11 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
             break
 
     if lookup_error:
-        # Real failure — increment error count
+        # Real failure — increment error count. Restore last_scanned so a failed
+        # scan doesn't count as "scanned": the row stays in the T3 unscanned tier
+        # (last_scanned still NULL) and is retried on the next run instead of being
+        # parked ~30 days until T4.
+        pf.last_scanned = prev_last_scanned
         pf.scan_error_count = (pf.scan_error_count or 0) + 1
         pf.last_scan_error = lookup_error
         pf.ai_notes = f"OpenWeb lookup failed: {lookup_error}"
