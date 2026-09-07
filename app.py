@@ -711,6 +711,11 @@ def api_preforeclosure_import():
                         return val
         return ""
 
+    # Phone-category values that must never end up in property_type. The skip-trace
+    # CSVs carry a "Phone Type" column, and find_col's substring match on a bare
+    # "type" candidate used to grab it — storing "Mobile"/"OtherPhone" as the type.
+    PHONE_TYPE_VALUES = {"mobile", "landline", "otherphone", "cell", "voip", "wireless"}
+
     db = get_session()
     added = 0
     skipped = 0
@@ -738,12 +743,18 @@ def api_preforeclosure_import():
             val_clean = val_raw.replace("$", "").replace(",", "").strip()
             auction = find_col(row, ["auction date", "sale date", "trustee sale", "foreclosure date"])
             source = "auction" if auction else "pre-foreclosure"
+            # property_type: match specific columns only. A bare "type" candidate
+            # substring-matched the skip-trace "Phone Type" column and stored phone
+            # categories ("Mobile"/"OtherPhone") as the type. Reject any that slip through.
+            ptype = find_col(row, ["property type", "land use", "property use", "use code"]).strip()
+            if ptype.lower() in PHONE_TYPE_VALUES:
+                ptype = ""
             pf = PreForeclosure(
                 address=address,
                 city=city,
                 state=find_col(row, ["state", "situs state"]) or "CA",
                 zip_code=zip_code,
-                property_type=find_col(row, ["property type", "type", "land use"]) or "SFR",
+                property_type=ptype or "SFR",
                 source_list=source,
                 estimated_value=float(val_clean) if val_clean and val_clean.replace(".", "").isdigit() else None,
                 auction_date=auction,
