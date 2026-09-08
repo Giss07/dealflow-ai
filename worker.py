@@ -575,6 +575,20 @@ def _scan_via_openweb_ninja(pf, api_key, delay_seconds, new_on_market):
     pf.price_change_date = _parse_date_safe(result_data.get("priceChangeDateString")) or pf.price_change_date
     pf.days_on_zillow = result_data.get("daysOnZillow") if isinstance(result_data.get("daysOnZillow"), int) else pf.days_on_zillow
 
+    # Property type from Zillow's authoritative homeType. This runs only in the
+    # success path — after the lookup_error / not-found / address-mismatch guards
+    # above have already returned — and only overwrites property_type when homeType
+    # maps to a known value. A failed or empty scan (no result_data) never reaches
+    # here, and an absent/unrecognized homeType leaves the existing value untouched.
+    _PTYPE_MAP = {
+        "SINGLE_FAMILY": "SFR", "CONDO": "Condo", "TOWNHOUSE": "Condo",
+        "MULTI_FAMILY": "MFR", "APARTMENT": "MFR",
+        "MANUFACTURED": "Manufactured", "LOT": "Land", "LAND": "Land",
+    }
+    mapped_ptype = _PTYPE_MAP.get((result_data.get("homeType") or "").upper())
+    if mapped_ptype:
+        pf.property_type = mapped_ptype
+
     # Build notes
     notes = [f"Zillow: {home_status}"]
     if price:
