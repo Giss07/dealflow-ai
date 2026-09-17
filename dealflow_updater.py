@@ -48,7 +48,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import time
 import re
-from datetime import datetime
+import hashlib
+from datetime import datetime, timedelta
 import pytz
 
 # ============================================================
@@ -58,6 +59,11 @@ import pytz
 SERVICE_ACCOUNT_FILE = os.getenv('SERVICE_ACCOUNT_FILE', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dealflow-sheets-b59dc0c02384.json'))
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID', '')
+
+# How far back the Gmail scanner looks, regardless of read/unread state. The
+# scanner dedupes against a persistent Message-ID ledger, so re-seeing an email
+# inside this window is harmless. Overridable via env for tuning.
+EMAIL_LOOKBACK_DAYS = int(os.getenv('EMAIL_LOOKBACK_DAYS', '2'))
 
 
 def _load_credentials(scopes):
@@ -519,15 +525,56 @@ def read_christian_emails(sheet, records):
         mail = imaplib.IMAP4_SSL('imap.gmail.com')
         mail.login(CHRISTIAN_GMAIL, CHRISTIAN_APP_PASSWORD)
         mail.select('inbox')
-        status, messages = mail.search(None, 'UNSEEN')
+
+        # Scan a rolling window regardless of read/unread state, then dedupe
+        # against a persistent ledger of already-processed Message-IDs. The old
+        # UNSEEN-only gate silently dropped any email marked read (opened on a
+        # phone, touched by a Gmail filter, etc.) before the 30-min run fired.
+        # IMAP SINCE is date-granular, so this covers a bit more than
+        # EMAIL_LOOKBACK_DAYS; the ledger makes the overlap harmless.
+        since_date = (datetime.now() - timedelta(days=EMAIL_LOOKBACK_DAYS)).strftime('%d-%b-%Y')
+        status, messages = mail.search(None, 'SINCE', since_date)
         email_ids = messages[0].split()
-        print(f"Found {len(email_ids)} unread emails in Christian's inbox")
+
+        try:
+            from database import load_processed_message_ids, mark_email_processed
+            processed_ids = load_processed_message_ids(since_days=EMAIL_LOOKBACK_DAYS + 5)
+        except Exception as e:
+            print(f"  Could not load processed-email ledger (fail-open): {e}")
+            processed_ids = set()
+            mark_email_processed = None
+
+        print(f"Found {len(email_ids)} emails since {since_date} in Christian's inbox "
+              f"(read+unread); {len(processed_ids)} already in processed ledger")
+
+        def _remember(mid, subj):
+            """Record a message as processed so later runs skip it. In-memory
+            set guards this run; the DB ledger guards future runs."""
+            if not mid:
+                return
+            processed_ids.add(mid)
+            if mark_email_processed:
+                try:
+                    mark_email_processed(mid, subj)
+                except Exception as exc:
+                    print(f"  Could not record processed email {mid!r}: {exc}")
 
         for email_id in email_ids:
             try:
                 status, msg_data = mail.fetch(email_id, '(RFC822)')
                 raw_email = msg_data[0][1]
                 msg = email.message_from_bytes(raw_email)
+
+                # Dedup key: RFC822 Message-ID, or a synthetic hash of stable
+                # headers if the message lacks one. Skip anything already handled.
+                msg_id = (msg.get('Message-ID') or '').strip()
+                if not msg_id:
+                    raw_key = '|'.join([
+                        msg.get('Subject', ''), msg.get('Date', ''), msg.get('From', '')
+                    ]).encode('utf-8', 'ignore')
+                    msg_id = 'synthetic:' + hashlib.md5(raw_key).hexdigest()
+                if msg_id in processed_ids:
+                    continue
                 body = ''
                 html_body = ''
                 if msg.is_multipart():
@@ -569,6 +616,7 @@ def read_christian_emails(sheet, records):
                 is_own_alert = any(sig in subject_lower for sig in own_alert_signatures)
                 if is_own_alert:
                     print(f"  Skipping forwarded alert email: {subject[:60]}")
+                    _remember(msg_id, subject)
                     continue
 
                 # HUD/bid-specific: extract address from email body or subject
@@ -716,6 +764,7 @@ def read_christian_emails(sheet, records):
                                             })
                                 break
                         # Skip to next email — don't process as counter
+                        _remember(msg_id, subject)
                         continue
 
                     counter_price = extract_counter_price(full_text)
@@ -799,6 +848,12 @@ def read_christian_emails(sheet, records):
                                 print(f"  Could not extract price from email")
                 else:
                     print(f"  No match - ignoring email")
+
+                # Reached a normal terminal state (counter / rejection / no
+                # match) — record it so future windowed runs skip it. The
+                # except path below intentionally does NOT mark, so a transient
+                # error retries on the next run instead of being lost.
+                _remember(msg_id, subject)
             except Exception as e:
                 print(f"  Error processing email: {e}")
                 continue

@@ -19,6 +19,8 @@ load_dotenv()
 
 import json
 import time
+import subprocess
+import threading
 import logging
 import schedule
 import pytz
@@ -104,32 +106,80 @@ def run_full():
         logger.error(f"Full run failed: {e}")
 
 
-# TODO: intermittent gmail_only subprocess abort w/ truncated stderr (only "Traceback (most recent call last):" reaches stderr) — container healthy, not OOM — watch for recurrence (first seen 2026-06-10 23:02:39 UTC)
+def _log_subprocess_failure(label, result):
+    """Log the FULL stderr/stdout tail of a failed subprocess.
+
+    The old code logged `result.stderr[:500]`, and the child's stderr leads with
+    warning spam (urllib3 NotOpenSSLWarning, google FutureWarning, …), so the
+    first 500 chars were consumed before the real traceback — which is why prior
+    aborts showed only 'Traceback (most recent call last):'. Here we drop the
+    known warning lines and log the whole remaining traceback, and name the
+    signal when the child was killed rather than exiting cleanly."""
+    rc = result.returncode
+    if rc < 0:
+        logger.error(f"{label} killed by signal {-rc}")
+    else:
+        logger.error(f"{label} exited {rc}")
+    if result.stderr:
+        noise = ('NotOpenSSLWarning', 'FutureWarning', 'warnings.warn',
+                 'urllib3 v2 only supports', 'past its end of life')
+        real = [ln for ln in result.stderr.splitlines()
+                if ln.strip() and not any(n in ln for n in noise)]
+        if real:
+            logger.error(f"{label} stderr:\n" + "\n".join(real))
+    if result.stdout:
+        logger.error(f"{label} stdout tail:\n" + result.stdout.strip()[-1200:])
+
+
+def _run_gmail_subprocess():
+    """One gmail_only attempt. Returns (ok, retryable).
+
+    `retryable` is True on an abnormal exit (non-zero / signal death) that is
+    worth another attempt. Retrying is safe because the Gmail scanner now
+    dedupes against a persistent Message-ID ledger, so a re-run cannot re-alert
+    an email a prior (aborted) attempt already recorded."""
+    result = subprocess.run(
+        [sys.executable, '-u', os.path.join(os.path.dirname(__file__), 'dealflow_updater.py'), 'gmail_only'],
+        timeout=300, capture_output=True, text=True,
+        env={**os.environ, 'PYTHONUNBUFFERED': '1'},
+    )
+    # Always surface alert-failure sentinels from subprocess stderr —
+    # exit-0 does NOT mean alerts delivered (send_email catches and returns False).
+    _surface_stderr_sentinels(result.stderr)
+    if result.returncode == 0:
+        logger.info("Gmail check completed")
+        return True, False
+    _log_subprocess_failure("Gmail check", result)
+    return False, True
+
+
 def run_gmail_only():
-    """Run dealflow_updater in gmail_only mode (only during 6AM-6PM PT, 26 runs/day — fires at :00 and :30)."""
+    """Run dealflow_updater in gmail_only mode (only during 6AM-6PM PT, 26 runs/day — fires at :00 and :30).
+
+    Retries once on an abnormal subprocess exit (the intermittent gmail_only
+    abort first seen 2026-06-10). The retry is safe because the scanner dedupes
+    processed messages against a persistent ledger — no email is re-alerted."""
     now_pst = datetime.now(PST)
     hour = now_pst.hour
     if hour < 6 or hour > 18:
         logger.info(f"Skipping Gmail check — outside 6AM-6PM PT (currently {hour}:00)")
         return
     logger.info(f"=== GMAIL-ONLY RUN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} ===")
-    try:
-        import subprocess
-        result = subprocess.run(
-            [sys.executable, os.path.join(os.path.dirname(__file__), 'dealflow_updater.py'), 'gmail_only'],
-            timeout=300, capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            logger.error(f"Gmail check exited {result.returncode}: {result.stderr[:500]}")
-        else:
-            logger.info("Gmail check completed")
-        # Always surface alert-failure sentinels from subprocess stderr —
-        # exit-0 does NOT mean alerts delivered (send_email catches and returns False).
-        _surface_stderr_sentinels(result.stderr)
-    except subprocess.TimeoutExpired:
-        logger.error("Gmail check timed out after 5 minutes")
-    except Exception as e:
-        logger.error(f"Gmail-only run failed: {e}")
+    MAX_ATTEMPTS = 2
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            ok, retryable = _run_gmail_subprocess()
+            if ok or not retryable:
+                return
+        except subprocess.TimeoutExpired:
+            logger.error(f"Gmail check timed out after 5 minutes (attempt {attempt}/{MAX_ATTEMPTS})")
+        except Exception as e:
+            logger.error(f"Gmail-only run failed (attempt {attempt}/{MAX_ATTEMPTS}): {e}")
+            return  # parent-side error — retrying won't help
+        if attempt < MAX_ATTEMPTS:
+            logger.warning(f"Retrying Gmail check (attempt {attempt + 1}/{MAX_ATTEMPTS})")
+            time.sleep(5)
+    logger.error(f"Gmail check failed after {MAX_ATTEMPTS} attempts")
 
 
 def estimate_scan_cost(property_ids):

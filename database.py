@@ -310,11 +310,86 @@ class PipelineRun(Base):
     error = Column(Text)
 
 
+class ProcessedEmail(Base):
+    """Ledger of inbox messages the Gmail scanner has already handled.
+
+    The scanner searches a rolling date window (read + unread) instead of the
+    old UNSEEN-only gate, so it needs an explicit dedup key to avoid re-alerting
+    the same email on every run. We key on the RFC822 Message-ID header (or a
+    synthetic hash when a message lacks one).
+    """
+    __tablename__ = "processed_emails"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    message_id = Column(String(512), unique=True, index=True)
+    subject = Column(Text)
+    processed_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 def init_db():
     """Create all tables."""
     engine = get_engine()
     Base.metadata.create_all(engine)
     logger.info("Database initialized")
+
+
+def _ensure_processed_emails_table():
+    """Idempotently create just the processed_emails table.
+
+    The gmail_only subprocess does not call init_db(), so the ledger creates
+    itself on first use rather than depending on another service's startup."""
+    try:
+        ProcessedEmail.__table__.create(bind=get_engine(), checkfirst=True)
+    except Exception as e:
+        logger.warning(f"Could not ensure processed_emails table: {e}")
+
+
+def load_processed_message_ids(since_days=7):
+    """Return the set of Message-IDs processed within the last `since_days`.
+
+    Fail-open: returns an empty set on any DB error so a database hiccup never
+    stops the scanner from running (worst case is a duplicate alert, never a
+    missed one)."""
+    from datetime import timedelta
+    _ensure_processed_emails_table()
+    session = get_session()
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=since_days)
+        rows = (
+            session.query(ProcessedEmail.message_id)
+            .filter(ProcessedEmail.processed_at >= cutoff)
+            .all()
+        )
+        return {r[0] for r in rows if r[0]}
+    except Exception as e:
+        logger.warning(f"load_processed_message_ids failed (fail-open): {e}")
+        return set()
+    finally:
+        session.close()
+
+
+def mark_email_processed(message_id, subject=None):
+    """Record a Message-ID as processed. Idempotent and fail-open."""
+    if not message_id:
+        return
+    session = get_session()
+    try:
+        exists = (
+            session.query(ProcessedEmail.id)
+            .filter_by(message_id=message_id)
+            .first()
+        )
+        if exists:
+            return
+        session.add(ProcessedEmail(message_id=message_id, subject=(subject or "")[:2000]))
+        session.commit()
+    except Exception as e:
+        # A concurrent run may have inserted the same id (unique constraint) —
+        # that is fine; log and move on either way.
+        session.rollback()
+        logger.warning(f"mark_email_processed failed for {message_id!r}: {e}")
+    finally:
+        session.close()
 
 
 def save_deal(listing, session=None):
