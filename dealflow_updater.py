@@ -87,6 +87,12 @@ ALERT_EMAILS = os.getenv('ALERT_EMAILS', '').split(',') if os.getenv('ALERT_EMAI
 
 CLOSE_DEAL_THRESHOLD = 30000
 
+# Google Sheets allows 60 write requests/minute/user. Pace below that and retry
+# on 429 so a large email backlog cannot silently drop sheet updates.
+SHEETS_WRITE_INTERVAL = float(os.getenv('SHEETS_WRITE_INTERVAL', '1.1'))
+SHEETS_MAX_RETRIES = int(os.getenv('SHEETS_MAX_RETRIES', '6'))
+SHEETS_RETRY_BACKOFF = int(os.getenv('SHEETS_RETRY_BACKOFF', '20'))
+
 OPENWEB_NINJA_API_KEY = os.getenv('OPENWEB_NINJA_API_KEY', '')
 
 PST = pytz.timezone('America/Los_Angeles')
@@ -118,6 +124,52 @@ def get_run_mode_from_schedule():
 # GOOGLE SHEETS
 # ============================================================
 
+def _install_write_throttle(sheet):
+    """Pace update_cell under the Sheets quota and retry 429s instead of losing writes.
+
+    Sheets allows 60 write requests/minute/user. A single scan writes up to 4
+    cells per matched email, so a backlog of ~15 emails blows the quota — on
+    2026-09-17 a 48-email window 429'd on 31 of them, silently dropping two bid
+    acceptances. Worse, the dropped emails never reached the dedup ledger, so a
+    later run reprocessed them out of order (see the Accepted-downgrade guard in
+    read_christian_emails).
+
+    Pacing is per-process. Production and a local run share one service-account
+    quota, so a manual run alongside the scheduler can still hit 429 — that is
+    what the retry is for.
+    """
+    real_update_cell = sheet.update_cell
+    state = {'last_write': 0.0}
+
+    def throttled_update_cell(row, col, value):
+        for attempt in range(SHEETS_MAX_RETRIES):
+            gap = SHEETS_WRITE_INTERVAL - (time.time() - state['last_write'])
+            if gap > 0:
+                time.sleep(gap)
+            try:
+                result = real_update_cell(row, col, value)
+                state['last_write'] = time.time()
+                return result
+            except gspread.exceptions.APIError as e:
+                # Prefer the HTTP status; gspread renders its "[code]" prefix from
+                # the JSON error body, which is not always populated, so the string
+                # check alone can miss a real quota error.
+                status = getattr(getattr(e, 'response', None), 'status_code', None)
+                if status != 429 and '429' not in str(e):
+                    raise
+                backoff = SHEETS_RETRY_BACKOFF * (attempt + 1)
+                print(f"  [sheets] write quota hit on R{row}C{col} — retrying in {backoff}s "
+                      f"(attempt {attempt + 1}/{SHEETS_MAX_RETRIES})")
+                time.sleep(backoff)
+                state['last_write'] = time.time()
+        raise RuntimeError(
+            f"Sheets write to R{row}C{col} failed after {SHEETS_MAX_RETRIES} quota retries"
+        )
+
+    sheet.update_cell = throttled_update_cell
+    return sheet
+
+
 def connect_to_sheet():
     print("Connecting to Google Sheet...")
     scopes = [
@@ -127,7 +179,8 @@ def connect_to_sheet():
     creds = _load_credentials(scopes)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).sheet1
-    print("Connected!")
+    _install_write_throttle(sheet)
+    print(f"Connected! (writes paced at {SHEETS_WRITE_INTERVAL}s)")
     return sheet
 
 def get_zillow_urls_from_sheet():
@@ -521,6 +574,23 @@ def read_christian_emails(sheet, records):
         return []
 
     alerts = []
+
+    # Live Status per row for the duration of this run. `records` is a snapshot
+    # taken before the loop, so a row this run already wrote is stale there —
+    # on 2026-09-17 a single run processed a counter notice and then the
+    # acceptance for the same HUD case: the counter wrote 'Counter', the
+    # acceptance re-read the stale 'Accepted' from the snapshot, skipped its
+    # write as redundant, and the row was left downgraded. Read Status through
+    # _status_now() and record every write with _set_status().
+    live_status = {}
+
+    def _status_now(row_num, record):
+        return live_status.get(row_num, record.get('Status (/Accepted/Rejected/Counter)', ''))
+
+    def _set_status(row_num, value):
+        sheet.update_cell(row_num, status_col, value)
+        live_status[row_num] = value
+
     try:
         mail = imaplib.IMAP4_SSL('imap.gmail.com')
         mail.login(CHRISTIAN_GMAIL, CHRISTIAN_APP_PASSWORD)
@@ -664,7 +734,7 @@ def read_christian_emails(sheet, records):
                         for i, record in enumerate(records):
                             if record.get('Address', '').strip().lower() == matched_address:
                                 row_num = i + 2
-                                current_status = record.get('Status (/Accepted/Rejected/Counter)', '')
+                                current_status = _status_now(row_num, record)
                                 existing_notes = record.get('Notes', '') or ''
                                 try:
                                     alert_sent_col = headers.index('Alert Sent') + 1
@@ -674,7 +744,7 @@ def read_christian_emails(sheet, records):
                                 if accept_confidence == "high":
                                     # HIGH: write Status to Accepted, note in Notes, alert
                                     if current_status not in ['STP', 'Accepted']:
-                                        sheet.update_cell(row_num, status_col, 'Accepted')
+                                        _set_status(row_num, 'Accepted')
                                         accept_note = f"[ACCEPTED: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
                                         new_notes = f"{existing_notes} | {accept_note}" if existing_notes else accept_note
                                         sheet.update_cell(row_num, notes_col, new_notes)
@@ -706,7 +776,7 @@ def read_christian_emails(sheet, records):
                                     if promote:
                                         # PROMOTED — treat as HIGH: write Status=Accepted, tag Notes, alert high
                                         if current_status not in ['STP', 'Accepted']:
-                                            sheet.update_cell(row_num, status_col, 'Accepted')
+                                            _set_status(row_num, 'Accepted')
                                             accept_note = (
                                                 f"[ACCEPTED (promoted from LIKELY — Case# {email_case_number} "
                                                 f"+ Bid ${email_bid_amount:,} matched): {accept_context} — "
@@ -780,6 +850,7 @@ def read_christian_emails(sheet, records):
                                 existing_counter = record.get('Counter Price', '')
                                 existing_date = record.get('Counter Date', '')
                                 existing_notes = record.get('Notes', '')
+                                current_status = _status_now(row_num, record)
 
                                 if existing_counter and clean_price(existing_counter):
                                     # Save previous counter to notes
@@ -797,16 +868,30 @@ def read_christian_emails(sheet, records):
                                 # Update with new counter price and date
                                 sheet.update_cell(row_num, counter_price_col, f"${counter_price:,}")
                                 sheet.update_cell(row_num, counter_date_col, counter_date)
-                                sheet.update_cell(row_num, status_col, 'Counter')
+
+                                # A counter notice must never downgrade a settled row.
+                                # HUD sends the counter notice and the acceptance for the
+                                # same case, and inbox order is not outcome order — whichever
+                                # is processed last would otherwise win, turning an Accepted
+                                # deal back into 'Counter'. This mirrors the guard the
+                                # rejection path below already has. Counter price/date are
+                                # still recorded; only Status is protected.
+                                if current_status in ['Accepted', 'STP']:
+                                    print(f"  Status left as {current_status!r} for row {row_num} — "
+                                          f"a counter notice must not downgrade a settled deal "
+                                          f"(counter price/date still recorded)")
+                                else:
+                                    _set_status(row_num, 'Counter')
                                 print(f"  Sheet updated for row {row_num}!")
 
-                                # Check alert thresholds
+                                # Check alert thresholds — skipped for settled rows, where a
+                                # "counter below your offer" alert would be actively misleading.
                                 purchase_price = clean_price(record.get('Purchase Contract Price', ''))
                                 try:
                                     alert_sent_col = headers.index('Alert Sent') + 1
                                 except ValueError:
                                     alert_sent_col = None
-                                if purchase_price:
+                                if purchase_price and current_status not in ['Accepted', 'STP']:
                                     diff = counter_price - purchase_price
                                     if diff <= 0:
                                         alerts.append({'type': 'HOT', 'address': record.get('Address'), 'purchase_price': purchase_price, 'counter_price': counter_price, 'difference': diff, 'row': row_num, 'alert_col': alert_sent_col})
@@ -821,9 +906,9 @@ def read_christian_emails(sheet, records):
                                 for i, record in enumerate(records):
                                     if record.get('Address', '').strip().lower() == matched_address:
                                         row_num = i + 2
-                                        current_status = record.get('Status (/Accepted/Rejected/Counter)', '')
+                                        current_status = _status_now(row_num, record)
                                         if current_status not in ['Rejected', 'STP', 'Accepted']:
-                                            sheet.update_cell(row_num, status_col, 'Rejected')
+                                            _set_status(row_num, 'Rejected')
                                             existing_notes = record.get('Notes', '')
                                             rejection_note = f"[Rejected: {rejection_context} — {datetime.now().strftime('%m/%d/%Y')}]"
                                             new_notes = f"{existing_notes} | {rejection_note}" if existing_notes else rejection_note
@@ -1088,6 +1173,24 @@ def _audit_log_alert(property_label, alert_type, subject, sent_ok, error_msg):
         db.close()
 
 def send_alerts(alerts, back_on_market=[]):
+    """Send the alert digests. Returns the set of addresses actually delivered.
+
+    Callers use the return value to decide whether to stamp 'Alert Sent' = Yes.
+    Previously they stamped it unconditionally, so a failed send (e.g. a missing
+    RESEND_API_KEY) still marked the row as alerted and the miss was invisible —
+    the row looked handled and no later run would retry it.
+    """
+    delivered = set()
+
+    def _dispatch(group, subject, html, alert_type):
+        """Send one digest; record its addresses only if the send succeeded."""
+        label = ", ".join(a['address'] for a in group[:3])
+        if send_email(subject, html, property_label=label, alert_type=alert_type):
+            delivered.update(a['address'] for a in group)
+        else:
+            print(f"  [alert] {alert_type} digest FAILED to send — "
+                  f"not marking Alert Sent for: {label}")
+
     hot = [a for a in alerts if a['type'] == 'HOT']
     if hot:
         html = "<html><body>"
@@ -1099,8 +1202,7 @@ def send_alerts(alerts, back_on_market=[]):
             offer_to_net = int(a['counter_price'] / 0.94)
             html += f"<tr><td><b>{a['address']}</b></td><td>${a['purchase_price']:,}</td><td>${a['counter_price']:,}</td><td style='color:green;'><b>${abs(a['difference']):,} BELOW your offer!</b></td><td style='color:blue;'><b>${offer_to_net:,}</b></td></tr>"
         html += "</table></body></html>"
-        send_email("🚨 HOT ALERT - Counter At or Below Your Offer Price!", html,
-                   property_label=", ".join(a['address'] for a in hot[:3]), alert_type='hot')
+        _dispatch(hot, "🚨 HOT ALERT - Counter At or Below Your Offer Price!", html, 'hot')
 
     close = [a for a in alerts if a['type'] == 'CLOSE']
     if close:
@@ -1113,8 +1215,7 @@ def send_alerts(alerts, back_on_market=[]):
             offer_to_net = int(a['counter_price'] / 0.94)
             html += f"<tr><td><b>{a['address']}</b></td><td>${a['purchase_price']:,}</td><td>${a['counter_price']:,}</td><td style='color:orange;'><b>${a['difference']:,} apart</b></td><td style='color:blue;'><b>${offer_to_net:,}</b></td></tr>"
         html += "</table></body></html>"
-        send_email("⚠️ CLOSE DEAL ALERT - Counter Within $30k of Your Offer!", html,
-                   property_label=", ".join(a['address'] for a in close[:3]), alert_type='close')
+        _dispatch(close, "⚠️ CLOSE DEAL ALERT - Counter Within $30k of Your Offer!", html, 'close')
 
     # Split ACCEPTED alerts by confidence — HIGH gets the confident "DEAL WON"
     # email; LIKELY gets a hedged "VERIFY" email so the user knows to check
@@ -1135,8 +1236,8 @@ def send_alerts(alerts, back_on_market=[]):
         html += "</table>"
         html += "<p style='color:#22c55e;font-weight:bold;font-size:18px;'>⚡ TAKE IMMEDIATE ACTION — Proceed to closing!</p>"
         html += "</body></html>"
-        send_email("🎉 BID ACCEPTED — " + ", ".join(a['address'] for a in high_conf[:3]), html,
-                   property_label=", ".join(a['address'] for a in high_conf[:3]), alert_type='accepted')
+        _dispatch(high_conf, "🎉 BID ACCEPTED — " + ", ".join(a['address'] for a in high_conf[:3]),
+                  html, 'accepted')
 
     if likely:
         html = "<html><body>"
@@ -1151,8 +1252,8 @@ def send_alerts(alerts, back_on_market=[]):
         html += "</table>"
         html += "<p style='color:#92400e;font-weight:bold;font-size:14px;'>Sheet Status was LEFT UNCHANGED. The Notes column has been tagged [LIKELY ACCEPTED — VERIFY] so you can review. After verifying the actual email, manually update Status to Accepted (real win) or Rejected (false positive).</p>"
         html += "</body></html>"
-        send_email("⚠️ LIKELY ACCEPTED (VERIFY) — " + ", ".join(a['address'] for a in likely[:3]), html,
-                   property_label=", ".join(a['address'] for a in likely[:3]), alert_type='likely_accepted')
+        _dispatch(likely, "⚠️ LIKELY ACCEPTED (VERIFY) — " + ", ".join(a['address'] for a in likely[:3]),
+                  html, 'likely_accepted')
 
     rejected = [a for a in alerts if a['type'] == 'REJECTED']
     if rejected:
@@ -1165,8 +1266,8 @@ def send_alerts(alerts, back_on_market=[]):
             offer_str = f"${a['purchase_price']:,}" if a.get('purchase_price') else "N/A"
             html += f"<tr><td><b>{a['address']}</b></td><td>{offer_str}</td><td>{a.get('reason', 'Unknown')}</td></tr>"
         html += "</table></body></html>"
-        send_email("❌ Offer Rejected — " + ", ".join(a['address'] for a in rejected[:3]), html,
-                   property_label=", ".join(a['address'] for a in rejected[:3]), alert_type='rejected')
+        _dispatch(rejected, "❌ Offer Rejected — " + ", ".join(a['address'] for a in rejected[:3]),
+                  html, 'rejected')
 
     if back_on_market:
         hud = [a for a in back_on_market if str(a.get('lead_source','')).upper() == 'HUD']
@@ -1190,8 +1291,9 @@ def send_alerts(alerts, back_on_market=[]):
             html += "</table>"
         html += "</body></html>"
         subject = "🚨 HUD BACK ON MARKET!" if hud else "🔄 BACK ON MARKET - Previously Pending Properties!"
-        send_email(subject, html,
-                   property_label=", ".join(a['address'] for a in back_on_market[:3]), alert_type='back_on_market')
+        _dispatch(back_on_market, subject, html, 'back_on_market')
+
+    return delivered
 
 # ============================================================
 # GMAIL-ONLY RUN (counters only, no Zillow)
@@ -1220,9 +1322,14 @@ def run_gmail_only(sheet, records, headers):
     # Send alerts
     if unique_alerts:
         print(f"\nSending {len(unique_alerts)} alert(s)...")
-        send_alerts(unique_alerts)
+        delivered = send_alerts(unique_alerts)
         for a in unique_alerts:
             if 'row' in a and 'alert_col' in a and a['alert_col']:
+                if a['address'] not in delivered:
+                    # Leave the flag unset so the miss stays visible and a later
+                    # run can still pick the row up.
+                    print(f"  Alert Sent NOT marked for {a['address']} — send failed")
+                    continue
                 sheet.update_cell(a['row'], a['alert_col'], 'Yes')
                 print(f"  Marked Alert Sent for: {a['address']}")
     else:
@@ -1325,9 +1432,12 @@ def run_full(sheet, records, headers, status_col):
     # Send all alerts
     if unique_alerts or back_on_market:
         print(f"\nSending alerts...")
-        send_alerts(unique_alerts, back_on_market)
+        delivered = send_alerts(unique_alerts, back_on_market)
         for a in unique_alerts + back_on_market:
             if 'row' in a and 'alert_col' in a and a['alert_col']:
+                if a['address'] not in delivered:
+                    print(f"  Alert Sent NOT marked for {a['address']} — send failed")
+                    continue
                 sheet.update_cell(a['row'], a['alert_col'], 'Yes')
                 print(f"  Marked Alert Sent for: {a['address']}")
     else:
