@@ -297,6 +297,61 @@ def check_mls_status(address: str, zip_code: str):
 
 
 @mcp.tool()
+def find_builder_zones(zip_code: str):
+    """Find new-construction (builder) listings in a California zip code and
+    the regular for-sale listings — older homes, lots, teardowns — sitting
+    within half a mile of one. Returns each nearby listing with its price,
+    distance in miles, and the name of the builder next door, closest first.
+    Read-only: reports live Zillow data without writing to the database.
+    """
+    logger.info(f"[find_builder_zones] zip={zip_code}")
+
+    key = os.getenv("OPENWEB_NINJA_API_KEY", "")
+    if not key:
+        return json.dumps({"status": "error", "error": "OPENWEB_NINJA_API_KEY not configured on server"})
+
+    import builder_zones as bz
+    result = bz.find_builder_zones_for_zip(zip_code, key)
+    if "error" in result:
+        return json.dumps({"status": "error", "zip": zip_code, "error": result["error"]})
+
+    builds = [{
+        "address": f"{b['address']}, {b['city']} {b['zip_code']}".strip(),
+        "builder": b["builder_name"],
+        "price": b["price"],
+        "type": b["home_type"],
+        "url": b["listing_url"],
+    } for b in result["new_builds"]]
+
+    matches = [{
+        "address": f"{m['listing']['address']}, {m['listing']['city']} {m['listing']['zip_code']}".strip(),
+        "price": m["listing"]["price"],
+        "distance_miles": m["distance_miles"],
+        "builder": m["new_build"]["builder_name"],
+        "builder_address": m["new_build"]["address"],
+        "beds": m["listing"]["beds"],
+        "baths": m["listing"]["baths"],
+        "sqft": m["listing"]["sqft"],
+        "type": m["listing"]["home_type"],
+        "days": m["listing"]["days_on_zillow"],
+        "url": m["listing"]["listing_url"],
+    } for m in result["matches"]]
+
+    logger.info(f"[find_builder_zones] zip={zip_code} {len(builds)} new build(s), "
+                f"{len(matches)} nearby listing(s) of {result['resale_count']} resale")
+    return json.dumps({
+        "status": "ok",
+        "zip": zip_code,
+        "radius_miles": result["radius_miles"],
+        "new_build_count": len(builds),
+        "new_builds": builds,
+        "nearby_listing_count": len(matches),
+        "resale_scanned": result["resale_count"],
+        "nearby_listings": matches,
+    })
+
+
+@mcp.tool()
 def score_deal(price: str, arv: str, rehab_estimate: str, holding_months: str, interest_rate: str, selling_cost_pct: str, target_profit_pct: str):
     """Score a real estate deal 1-100 for fix-and-flip profit potential.
     Returns score, reasoning, max offer, estimated profit, and ROI.

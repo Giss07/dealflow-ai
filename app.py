@@ -1289,14 +1289,20 @@ def admin_run_cron(job_name):
     jobs = {
         "check-upcoming-auctions": ("check_upcoming_auctions", "worker"),
         "rescan-nod-properties": ("rescan_nod_properties", "worker"),
+        "builder-zone-scan": ("run_builder_zone_scan", "worker"),
+        "builder-zone-matches": ("run_builder_zone_matches", "worker"),
     }
     if job_name not in jobs:
         return jsonify({"error": f"Unknown job: {job_name}", "available": list(jobs.keys())}), 404
     func_name, module = jobs[job_name]
     def _run():
         try:
-            from worker import check_upcoming_auctions, rescan_nod_properties
-            {"check_upcoming_auctions": check_upcoming_auctions, "rescan_nod_properties": rescan_nod_properties}[func_name]()
+            from worker import (check_upcoming_auctions, rescan_nod_properties,
+                                run_builder_zone_scan, run_builder_zone_matches)
+            {"check_upcoming_auctions": check_upcoming_auctions,
+             "rescan_nod_properties": rescan_nod_properties,
+             "run_builder_zone_scan": run_builder_zone_scan,
+             "run_builder_zone_matches": run_builder_zone_matches}[func_name]()
         except Exception as e:
             logger.error(f"Manual cron trigger failed: {e}", exc_info=True)
     threading.Thread(target=_run, daemon=True).start()

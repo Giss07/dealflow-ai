@@ -19,6 +19,7 @@ AI-powered fix-and-flip deal finder for **74 Inland Empire zip codes**. Scrapes 
 | `app.py` | Flask API + dashboard server |
 | `dashboard/index.html` | Full web dashboard (PWA, mobile-friendly) |
 | `dealflow_updater.py` | Monitors Gmail for counters, checks Zillow status |
+| `builder_zones.py` | Builder Zones — new-construction tracking + listings within 0.5 mi (see NOTES-builder-zones.md) |
 | `worker.py` | Railway 24/7 scheduler |
 
 ## Dashboard Features

@@ -1073,6 +1073,204 @@ def run_mls_tier_scan():
         logger.error(f"run_mls_tier_scan failed: {e}", exc_info=True)
 
 
+# ── BUILDER ZONES ─────────────────────────────────────────────────────
+# Two daily jobs, 30 minutes apart:
+#   1. run_builder_zone_scan    — pull new-construction listings for the target
+#                                 zips into new_builds (dedup on zpid)
+#   2. run_builder_zone_matches — find regular for-sale listings (older homes,
+#                                 lots, teardowns) within BUILDER_ZONE_RADIUS_MILES
+#                                 of a new build and email the digest via Resend
+#
+# Job 2 reuses job 1's cached zip searches (builder_zones._search_cache,
+# TTL BUILDER_ZONE_SEARCH_TTL, default 2h), so at the default 30-minute gap it
+# makes ZERO extra API calls. Widen the gap past the TTL and job 2 re-pays for
+# every zip.
+#
+# Cost: 1 call per zip per page. 74 zips x 2 pages = 148 calls = $0.37/day
+# (~$11/month) — that is well past the free Basic tier's 100 requests/MONTH,
+# so this stays off until BUILDER_ZONES_ENABLED=true is set deliberately.
+
+
+def _builder_zone_api_key():
+    key = os.getenv("OPENWEB_NINJA_API_KEY", "")
+    if not key:
+        logger.error("OPENWEB_NINJA_API_KEY not set — cannot run Builder Zones")
+    return key
+
+
+def run_builder_zone_scan():
+    """Daily: pull new-construction listings for the target zips into new_builds.
+
+    DST gate: only proceeds when Pacific local hour == 9 (mirrors run_full's
+    8 AM gate — registered at both 16:00 and 17:00 UTC).
+    """
+    now_pst = datetime.now(PST)
+    if now_pst.hour != 9:
+        return
+
+    import builder_zones as bz
+
+    zips = bz.target_zips()
+    logger.info(f"=== BUILDER ZONE SCAN started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} "
+                f"— {len(zips)} zip(s), up to {bz.max_pages()} page(s) each ===")
+
+    api_key = _builder_zone_api_key()
+    if not api_key:
+        return {"error": "OPENWEB_NINJA_API_KEY not configured"}
+
+    from database import init_db, get_session
+    init_db()
+
+    calls_before = bz.calls_made()
+    totals = {"added": 0, "skipped": 0, "found": 0, "zips_scanned": 0, "zip_errors": 0}
+    db = get_session()
+    try:
+        for zip_code in zips:
+            try:
+                new_builds, _resale, err = bz.scan_zip(zip_code, api_key)
+                if err:
+                    logger.warning(f"  [bz] zip={zip_code} search failed: {err}")
+                    totals["zip_errors"] += 1
+                    continue
+                totals["zips_scanned"] += 1
+                totals["found"] += len(new_builds)
+                if new_builds:
+                    res = bz.save_new_builds(new_builds, db=db)
+                    totals["added"] += res["added"]
+                    totals["skipped"] += res["skipped"]
+                    logger.info(f"  [bz] zip={zip_code} {len(new_builds)} new build(s) "
+                                f"— {res['added']} new, {res['skipped']} already known")
+            except Exception as e:
+                totals["zip_errors"] += 1
+                logger.error(f"  [bz] zip={zip_code} failed: {e}", exc_info=True)
+    finally:
+        db.close()
+
+    calls = bz.calls_made() - calls_before
+    logger.info(f"[BUILDER_ZONE_SCAN_DONE] zips={totals['zips_scanned']}/{len(zips)} "
+                f"errors={totals['zip_errors']} new_builds_seen={totals['found']} "
+                f"added={totals['added']} already_known={totals['skipped']} "
+                f"api_calls={calls} cost=${calls * COST_OPENWEB_NINJA:.3f}")
+    return totals
+
+
+def run_builder_zone_matches():
+    """Daily: find for-sale listings near a new build and email the digest.
+
+    Runs 30 minutes after run_builder_zone_scan so every zip search is served
+    from cache. Matches each resale listing against the new builds stored for
+    that zip (plus any seen live this run), keeps the nearest one, and emails
+    only pairings that have not been alerted on before.
+
+    DST gate: only proceeds when Pacific local hour == 9.
+    """
+    now_pst = datetime.now(PST)
+    if now_pst.hour != 9:
+        return
+
+    import builder_zones as bz
+
+    zips = bz.target_zips()
+    radius = bz.radius_miles()
+    logger.info(f"=== BUILDER ZONE MATCH started at {now_pst.strftime('%Y-%m-%d %H:%M %Z')} "
+                f"— {len(zips)} zip(s), radius {radius} mi ===")
+
+    api_key = _builder_zone_api_key()
+    if not api_key:
+        return {"error": "OPENWEB_NINJA_API_KEY not configured"}
+
+    from database import init_db, get_session, NewBuild, new_build_to_dict
+    init_db()
+
+    calls_before = bz.calls_made()
+    pending = []
+    zip_errors = 0
+    matched_total = 0
+    db = get_session()
+    try:
+        for zip_code in zips:
+            try:
+                live_builds, resale, err = bz.scan_zip(zip_code, api_key)
+                if err:
+                    logger.warning(f"  [bz] zip={zip_code} search failed: {err}")
+                    zip_errors += 1
+                    continue
+                if not resale:
+                    continue
+
+                # Stored builds first (they carry the DB id the match rows
+                # point at), then any live build not yet stored.
+                stored = [new_build_to_dict(nb) for nb in
+                          db.query(NewBuild).filter_by(zip_code=zip_code).all()]
+                known_zpids = {b["zpid"] for b in stored if b.get("zpid")}
+                builds = stored + [b for b in live_builds
+                                   if not b.get("zpid") or b["zpid"] not in known_zpids]
+                builds = [b for b in builds
+                          if b.get("latitude") is not None and b.get("longitude") is not None]
+                if not builds:
+                    continue
+
+                matches = bz.match_listings(resale, builds, radius=radius)
+                matched_total += len(matches)
+                if matches:
+                    logger.info(f"  [bz] zip={zip_code} {len(matches)} listing(s) within "
+                                f"{radius} mi of {len(builds)} new build(s)")
+                    pending.extend(bz.save_matches(matches, db=db))
+            except Exception as e:
+                zip_errors += 1
+                logger.error(f"  [bz] zip={zip_code} match failed: {e}", exc_info=True)
+    finally:
+        db.close()
+
+    calls = bz.calls_made() - calls_before
+    logger.info(f"[BUILDER_ZONE_MATCH] matches={matched_total} un-alerted={len(pending)} "
+                f"zip_errors={zip_errors} api_calls={calls} cost=${calls * COST_OPENWEB_NINJA:.3f}")
+
+    if not pending:
+        logger.info("  No new builder-zone matches to email.")
+        return {"matches": matched_total, "emailed": 0, "zip_errors": zip_errors}
+
+    # Closest first, capped per email. Anything over the cap keeps alert_sent
+    # false and goes out on the next run rather than being dropped.
+    pending.sort(key=lambda p: p["match"]["distance_miles"])
+    cap = int(os.getenv("BUILDER_ZONE_MAX_EMAIL_ROWS", "50"))
+    batch = pending[:cap]
+    if len(pending) > cap:
+        logger.info(f"  Emailing closest {cap} of {len(pending)} — the rest go out next run.")
+
+    sent_ok, error = bz.send_match_email([p["match"] for p in batch])
+    if not sent_ok:
+        logger.error(f"[BUILDER_ZONE_EMAIL_FAILED] {error}")
+        return {"matches": matched_total, "emailed": 0, "error": error, "zip_errors": zip_errors}
+
+    # Only flip alert_sent once Resend accepted the message.
+    from datetime import datetime as dt
+    from database import BuilderZoneMatch
+    db = get_session()
+    try:
+        ids = [p["id"] for p in batch if p["id"] is not None]
+        marked = 0
+        for row in db.query(BuilderZoneMatch).filter(BuilderZoneMatch.id.in_(ids)).all():
+            row.alert_sent = True
+            row.alert_sent_at = dt.utcnow()
+            marked += 1
+        db.commit()
+        if marked != len(ids):
+            logger.error(f"[BUILDER_ZONE_MARK_INCOMPLETE] emailed {len(ids)} but marked {marked} "
+                         f"— the unmarked ones will re-send next run")
+    except Exception as e:
+        db.rollback()
+        # An email went out that we could not mark — say so loudly, because the
+        # next run will send it again.
+        logger.error(f"[BUILDER_ZONE_MARK_FAILED] emailed {len(batch)} match(es) but could not "
+                     f"set alert_sent — expect a duplicate digest next run: {e}", exc_info=True)
+    finally:
+        db.close()
+
+    logger.info(f"[BUILDER_ZONE_EMAIL_SENT] {len(batch)} match(es) emailed")
+    return {"matches": matched_total, "emailed": len(batch), "zip_errors": zip_errors}
+
+
 if __name__ == "__main__":
     logger.info("DealFlow Worker starting...")
     logger.info(f"Current time PST: {datetime.now(PST).strftime('%Y-%m-%d %H:%M %Z')}")
@@ -1113,6 +1311,19 @@ if __name__ == "__main__":
     # Auction notification digest — daily at 8AM Pacific = 15:00 UTC
     schedule.every().day.at("15:00").do(check_upcoming_auctions)
 
+    # Builder Zones — new-construction scan at 9 AM Pacific, nearby-listing
+    # match + email 30 minutes later (job 2 reads job 1's cached zip searches,
+    # so the gap must stay inside BUILDER_ZONE_SEARCH_TTL). Registered at both
+    # PDT and PST offsets; the inner hour==9 gate keeps it to one run per day.
+    # OFF by default — 74 zips x 2 pages is ~$0.37/day, far past the free
+    # OpenWeb Ninja tier. Set BUILDER_ZONES_ENABLED=true to turn on.
+    builder_zones_on = os.getenv("BUILDER_ZONES_ENABLED", "false").lower() == "true"
+    if builder_zones_on:
+        schedule.every().day.at("16:00").do(run_builder_zone_scan)      # 9AM PDT
+        schedule.every().day.at("17:00").do(run_builder_zone_scan)      # 9AM PST
+        schedule.every().day.at("16:30").do(run_builder_zone_matches)   # 9:30AM PDT
+        schedule.every().day.at("17:30").do(run_builder_zone_matches)   # 9:30AM PST
+
     # Photo folder auto-sync — every 15 min, creates/links Drive folders for new sheet rows
     schedule.every(15).minutes.do(run_photo_sync)
 
@@ -1126,6 +1337,12 @@ if __name__ == "__main__":
     logger.info("  - 8 AM Pacific daily (DST-aware, 15:00 or 16:00 UTC): Full updater")
     logger.info("  - 15:00 UTC daily: check_upcoming_auctions notification digest")
     logger.info("  - Every 15 min: photo folder auto-sync for new sheet rows")
+    if builder_zones_on:
+        import builder_zones as _bz
+        logger.info(f"  - Builder Zones: ENABLED — new-build scan 9 AM PT, match+email 9:30 AM PT "
+                    f"({len(_bz.target_zips())} zips, {_bz.radius_miles()} mi radius)")
+    else:
+        logger.info("  - Builder Zones: DISABLED (set BUILDER_ZONES_ENABLED=true)")
     logger.info("  - DISABLED: rescan_nod_properties (manual only via /admin/run-cron)")
     logger.info("  - Every 30 min 6AM-6PM PT (26 runs/day, :00 and :30): Gmail-only counter checks")
     logger.info("  - PAUSED: Mon & Thu DealFlow AI scraper pipeline")

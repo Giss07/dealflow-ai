@@ -326,6 +326,112 @@ class ProcessedEmail(Base):
     processed_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class NewBuild(Base):
+    """A new-construction listing found by the Builder Zones scan.
+
+    One row per builder listing seen in a target zip. Deduped on zpid
+    (address+zip fallback for the rare listing with no zpid) — a build that
+    stays on the market for months keeps its original date_found and has
+    last_seen/price refreshed instead of being inserted again.
+    """
+    __tablename__ = "new_builds"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    zpid = Column(String(50), unique=True, index=True, nullable=True)
+    address = Column(String(255))
+    city = Column(String(100))
+    state = Column(String(10), default="CA")
+    zip_code = Column(String(10), index=True)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    builder_name = Column(String(255))
+    price = Column(Float)
+    home_type = Column(String(50))
+    listing_url = Column(Text)
+    source = Column(String(50), default="openweb_ninja")
+    date_found = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+
+
+def new_build_to_dict(nb):
+    return {
+        "id": nb.id,
+        "zpid": nb.zpid,
+        "address": nb.address,
+        "city": nb.city,
+        "state": nb.state,
+        "zip_code": nb.zip_code,
+        "latitude": nb.latitude,
+        "longitude": nb.longitude,
+        "builder_name": nb.builder_name,
+        "price": nb.price,
+        "home_type": nb.home_type,
+        "listing_url": nb.listing_url,
+        "source": nb.source,
+        "date_found": nb.date_found.isoformat() + "Z" if nb.date_found else None,
+        "last_seen": nb.last_seen.isoformat() + "Z" if nb.last_seen else None,
+    }
+
+
+class BuilderZoneMatch(Base):
+    """A regular for-sale listing sitting within the alert radius of a new build.
+
+    listing_key is the dedupe identity of the resale listing ("zpid:123" or
+    "addr:<normalized>|<zip>"); together with new_build_id it keeps the daily
+    job from re-emailing the same pairing every morning. alert_sent flips only
+    after Resend accepts the message.
+    """
+    __tablename__ = "builder_zone_matches"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    listing_key = Column(String(300), index=True)
+    listing_zpid = Column(String(50), index=True)
+    listing_address = Column(String(255))
+    city = Column(String(100))
+    state = Column(String(10), default="CA")
+    zip_code = Column(String(10), index=True)
+    listing_price = Column(Float)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    home_type = Column(String(50))
+    listing_url = Column(Text)
+    days_on_zillow = Column(Integer)
+
+    new_build_id = Column(Integer, index=True)   # references new_builds.id
+    builder_name = Column(String(255))
+    new_build_address = Column(String(255))
+    distance_miles = Column(Float)
+
+    alert_sent = Column(Boolean, default=False)
+    alert_sent_at = Column(DateTime)
+    date_found = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+
+
+def builder_zone_match_to_dict(m):
+    return {
+        "id": m.id,
+        "listing_zpid": m.listing_zpid,
+        "listing_address": m.listing_address,
+        "city": m.city,
+        "state": m.state,
+        "zip_code": m.zip_code,
+        "listing_price": m.listing_price,
+        "latitude": m.latitude,
+        "longitude": m.longitude,
+        "home_type": m.home_type,
+        "listing_url": m.listing_url,
+        "days_on_zillow": m.days_on_zillow,
+        "new_build_id": m.new_build_id,
+        "builder_name": m.builder_name,
+        "new_build_address": m.new_build_address,
+        "distance_miles": m.distance_miles,
+        "alert_sent": m.alert_sent or False,
+        "alert_sent_at": m.alert_sent_at.isoformat() + "Z" if m.alert_sent_at else None,
+        "date_found": m.date_found.isoformat() + "Z" if m.date_found else None,
+    }
+
+
 def init_db():
     """Create all tables."""
     engine = get_engine()
