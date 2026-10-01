@@ -44,6 +44,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 #   Pro tier: 10,000 requests/month
 COST_OPENWEB_NINJA = 0.0025
 
+# ── Gmail scanner subprocess budget ──────────────────────────────────
+# Was a hardcoded 300s. On 2026-10-01 the scanner crossed that ceiling and
+# every run from 10:00 AM on was killed mid-window, so 8 HUD counter notices
+# sat unprocessed for hours while the logs showed only "timed out". The
+# scanner's own triage pass is the real fix; this is headroom so a slow run
+# (big window, Sheets 429 backoff) finishes instead of dying.
+GMAIL_SUBPROCESS_TIMEOUT = int(os.getenv("GMAIL_SUBPROCESS_TIMEOUT", "600"))
+
 
 # Sentinels written to subprocess stderr by dealflow_updater.send_email /
 # email_sender.send_via_resend. The subprocess can exit 0 (send_email catches
@@ -138,16 +146,32 @@ def _run_gmail_subprocess():
     worth another attempt. Retrying is safe because the Gmail scanner now
     dedupes against a persistent Message-ID ledger, so a re-run cannot re-alert
     an email a prior (aborted) attempt already recorded."""
-    result = subprocess.run(
-        [sys.executable, '-u', os.path.join(os.path.dirname(__file__), 'dealflow_updater.py'), 'gmail_only'],
-        timeout=300, capture_output=True, text=True,
-        env={**os.environ, 'PYTHONUNBUFFERED': '1'},
-    )
+    started = time.time()
+    try:
+        result = subprocess.run(
+            [sys.executable, '-u', os.path.join(os.path.dirname(__file__), 'dealflow_updater.py'), 'gmail_only'],
+            timeout=GMAIL_SUBPROCESS_TIMEOUT, capture_output=True, text=True,
+            env={**os.environ, 'PYTHONUNBUFFERED': '1'},
+        )
+    except subprocess.TimeoutExpired as e:
+        # Log what the child managed to say before it was killed. Without this
+        # the only evidence of the 2026-10-01 stall was the word "timed out",
+        # which said nothing about which inbox or which message it died on.
+        elapsed = time.time() - started
+        logger.error(f"Gmail check exceeded {GMAIL_SUBPROCESS_TIMEOUT}s budget (ran {elapsed:.0f}s) — killed")
+        partial = e.stdout.decode('utf-8', 'ignore') if isinstance(e.stdout, bytes) else (e.stdout or '')
+        if partial:
+            logger.error("Gmail check partial stdout tail:\n" + partial.strip()[-1500:])
+        raise
     # Always surface alert-failure sentinels from subprocess stderr —
     # exit-0 does NOT mean alerts delivered (send_email catches and returns False).
     _surface_stderr_sentinels(result.stderr)
+    elapsed = time.time() - started
     if result.returncode == 0:
-        logger.info("Gmail check completed")
+        # Duration is logged on every run: the 2026-10-01 failure was preceded by
+        # a 290s success, which would have been an obvious warning sign.
+        level = logger.warning if elapsed > GMAIL_SUBPROCESS_TIMEOUT * 0.6 else logger.info
+        level(f"Gmail check completed in {elapsed:.0f}s")
         return True, False
     _log_subprocess_failure("Gmail check", result)
     return False, True
@@ -172,7 +196,7 @@ def run_gmail_only():
             if ok or not retryable:
                 return
         except subprocess.TimeoutExpired:
-            logger.error(f"Gmail check timed out after 5 minutes (attempt {attempt}/{MAX_ATTEMPTS})")
+            logger.error(f"Gmail check timed out after {GMAIL_SUBPROCESS_TIMEOUT}s (attempt {attempt}/{MAX_ATTEMPTS})")
         except Exception as e:
             logger.error(f"Gmail-only run failed (attempt {attempt}/{MAX_ATTEMPTS}): {e}")
             return  # parent-side error — retrying won't help

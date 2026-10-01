@@ -91,6 +91,11 @@ CLOSE_DEAL_THRESHOLD = 30000
 # on 429 so a large email backlog cannot silently drop sheet updates.
 SHEETS_WRITE_INTERVAL = float(os.getenv('SHEETS_WRITE_INTERVAL', '1.1'))
 SHEETS_MAX_RETRIES = int(os.getenv('SHEETS_MAX_RETRIES', '6'))
+# IMAP socket timeout. imaplib defaults to no timeout, so a stalled connect or
+# fetch hangs until the worker's subprocess budget runs out and the whole run is
+# killed — losing every email it had not reached yet. A bounded timeout turns
+# that into a fast, visible failure that the next run retries.
+IMAP_TIMEOUT = int(os.getenv('IMAP_TIMEOUT', '60'))
 SHEETS_RETRY_BACKOFF = int(os.getenv('SHEETS_RETRY_BACKOFF', '20'))
 
 OPENWEB_NINJA_API_KEY = os.getenv('OPENWEB_NINJA_API_KEY', '')
@@ -592,7 +597,7 @@ def read_christian_emails(sheet, records):
         live_status[row_num] = value
 
     try:
-        mail = imaplib.IMAP4_SSL('imap.gmail.com')
+        mail = imaplib.IMAP4_SSL('imap.gmail.com', timeout=IMAP_TIMEOUT)
         mail.login(CHRISTIAN_GMAIL, CHRISTIAN_APP_PASSWORD)
         mail.select('inbox')
 
@@ -617,6 +622,60 @@ def read_christian_emails(sheet, records):
         print(f"Found {len(email_ids)} emails since {since_date} in Christian's inbox "
               f"(read+unread); {len(processed_ids)} already in processed ledger")
 
+        # --- Cheap triage pass: headers only, BEFORE downloading any body ---
+        #
+        # The loop below used to fetch the full RFC822 of every message in the
+        # window and only then check the ledger, so a run paid full download cost
+        # for messages it was about to skip. On 2026-10-01 that killed the
+        # scanner outright: 53 messages in the 2-day window, ~45 already
+        # processed, and the 8 new HUD counter notices sat at the END of the list
+        # (IMAP SINCE returns oldest first). Every 30-minute run re-downloaded
+        # the old 45, hit the worker's subprocess timeout, got killed, and never
+        # reached the new ones — 4 consecutive runs failed and nothing reached
+        # the sheet.
+        #
+        # BODY.PEEK[HEADER.FIELDS ...] is ~1 KB per message against ~50-200 KB
+        # for a HUD forward with its HTML part, and PEEK does not set \Seen, so
+        # triage leaves the unread state alone. Only messages that survive
+        # triage get a full fetch (which still marks them read, as before).
+        def _peek_msg_id(eid):
+            """Return (msg_id, subject) from headers alone, or (None, None).
+
+            None means "could not decide cheaply" — the caller then falls
+            through to the full fetch, so a header hiccup can never drop an
+            email. The synthetic-id fallback must stay byte-identical to the
+            full-message path below or the ledger would not match."""
+            try:
+                st, dd = mail.fetch(eid, '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID SUBJECT DATE FROM)])')
+                raw = b''.join(part[1] for part in dd
+                               if isinstance(part, tuple) and part[1])
+                if not raw:
+                    return None, None
+                hdr = email.message_from_bytes(raw)
+                mid = (hdr.get('Message-ID') or '').strip()
+                subj = hdr.get('Subject', '')
+                if not mid:
+                    raw_key = '|'.join([
+                        subj, hdr.get('Date', ''), hdr.get('From', '')
+                    ]).encode('utf-8', 'ignore')
+                    mid = 'synthetic:' + hashlib.md5(raw_key).hexdigest()
+                return mid, subj
+            except Exception as exc:
+                print(f"  Header peek failed for {eid!r} ({exc}) — will fetch in full")
+                return None, None
+
+        triage_start = time.time()
+        pending = []          # [(email_id, msg_id_or_None)]
+        skipped_known = 0
+        for email_id in email_ids:
+            peek_id, _peek_subj = _peek_msg_id(email_id)
+            if peek_id and peek_id in processed_ids:
+                skipped_known += 1
+                continue
+            pending.append((email_id, peek_id))
+        print(f"  Triage: {skipped_known} already-processed skipped on headers alone, "
+              f"{len(pending)} to fetch in full ({time.time() - triage_start:.1f}s)")
+
         def _remember(mid, subj):
             """Record a message as processed so later runs skip it. In-memory
             set guards this run; the DB ledger guards future runs."""
@@ -629,7 +688,7 @@ def read_christian_emails(sheet, records):
                 except Exception as exc:
                     print(f"  Could not record processed email {mid!r}: {exc}")
 
-        for email_id in email_ids:
+        for email_id, peeked_msg_id in pending:
             try:
                 status, msg_data = mail.fetch(email_id, '(RFC822)')
                 raw_email = msg_data[0][1]
@@ -637,7 +696,9 @@ def read_christian_emails(sheet, records):
 
                 # Dedup key: RFC822 Message-ID, or a synthetic hash of stable
                 # headers if the message lacks one. Skip anything already handled.
-                msg_id = (msg.get('Message-ID') or '').strip()
+                # (Triage above already dropped known ids; this re-check keeps the
+                # guard in place for messages whose header peek failed.)
+                msg_id = peeked_msg_id or (msg.get('Message-ID') or '').strip()
                 if not msg_id:
                     raw_key = '|'.join([
                         msg.get('Subject', ''), msg.get('Date', ''), msg.get('From', '')
@@ -1494,7 +1555,7 @@ def run_test():
     # ── 2. Christian's Gmail (IMAP read) ───────────────────
     print("\n[ 2 / 4 ] Christian's Gmail (unmatched.dealflow@gmail.com)")
     def test_christian_gmail():
-        mail = imaplib.IMAP4_SSL('imap.gmail.com')
+        mail = imaplib.IMAP4_SSL('imap.gmail.com', timeout=IMAP_TIMEOUT)
         mail.login(CHRISTIAN_GMAIL, CHRISTIAN_APP_PASSWORD)
         mail.select('inbox')
         status, messages = mail.search(None, 'UNSEEN')
