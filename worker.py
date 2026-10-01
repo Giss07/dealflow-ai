@@ -1341,6 +1341,12 @@ if __name__ == "__main__":
         import builder_zones as _bz
         logger.info(f"  - Builder Zones: ENABLED — new-build scan 9 AM PT, match+email 9:30 AM PT "
                     f"({len(_bz.target_zips())} zips, {_bz.radius_miles()} mi radius)")
+        # The digest reads BUILDER_ZONE_ALERT_EMAILS only — never the shared
+        # ALERT_EMAILS — so an unset variable means matches are found and
+        # nothing is emailed. Say so at startup instead of at 9:30 AM.
+        if not _bz.alert_recipients():
+            logger.error("  - [BUILDER_ZONE_NO_RECIPIENTS] BUILDER_ZONE_ALERT_EMAILS is not set — "
+                         "matches will be stored but no digest will be sent")
     else:
         logger.info("  - Builder Zones: DISABLED (set BUILDER_ZONES_ENABLED=true)")
     logger.info("  - DISABLED: rescan_nod_properties (manual only via /admin/run-cron)")

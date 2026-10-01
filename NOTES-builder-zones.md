@@ -87,9 +87,15 @@ you are still on Basic.
 | `BUILDER_ZONE_SEARCH_TTL` | `7200` | Seconds a zip search stays cached (keep > the 30-min job gap) |
 | `BUILDER_ZONE_EXCLUDE_HOME_TYPES` | `MANUFACTURED` | New-build home types that do not count as a builder zone |
 | `BUILDER_ZONE_MAX_EMAIL_ROWS` | `50` | Matches per digest; the remainder keeps `alert_sent=false` and goes out next run |
+| `BUILDER_ZONE_ALERT_EMAILS` | *(unset)* | **Required for the digest.** Comma-separated recipients. No fallback — unset means no email goes out |
 
-Reuses `OPENWEB_NINJA_API_KEY`, `RESEND_API_KEY`, and `ALERT_EMAILS` /
-`ALERT_EMAIL` — no new credentials.
+Reuses `OPENWEB_NINJA_API_KEY` and `RESEND_API_KEY` — no new credentials.
+
+Recipients come from `BUILDER_ZONE_ALERT_EMAILS` **only**. This feature does
+not read the shared `ALERT_EMAILS` / `ALERT_EMAIL`, so enabling it cannot
+change who receives auction digests or counter-offer alerts. There is no
+fallback: with the variable unset the digest does not send, the matches keep
+`alert_sent=false`, and they go out on the next run once it is set.
 
 The 74-zip default list was restored from the retired `scraper.py` (removed in
 commit 744c68a when Apify was dropped) — it is the same Inland Empire set the
@@ -111,10 +117,12 @@ Resend call. Trigger `POST /admin/run-cron/builder-zone-matches` (during the
 ## Deploy checklist
 
 1. `DATABASE_URL="postgresql://..." python migrate_new_builds.py`
-2. Set `BUILDER_ZONES_ENABLED=true` on the Railway **worker** service
+2. Set `BUILDER_ZONE_ALERT_EMAILS` on the Railway **worker** service — without
+   it the match job finds matches and sends nothing
+3. Set `BUILDER_ZONES_ENABLED=true` on the worker
    (optionally `BUILDER_ZONE_ZIPS` to start small)
-3. Redeploy the **mcp** service so `find_builder_zones` registers
-4. Watch for `[BUILDER_ZONE_SCAN_DONE]` and `[BUILDER_ZONE_MATCH]` in worker logs
+4. Redeploy the **mcp** service so `find_builder_zones` registers
+5. Watch for `[BUILDER_ZONE_SCAN_DONE]` and `[BUILDER_ZONE_MATCH]` in worker logs
 
 ## Known limits
 

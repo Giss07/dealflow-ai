@@ -14,6 +14,10 @@ BY_OWNER_OTHER — verified against the live API 2026-09-23), so we pull the
 zip's FOR_SALE listings once and classify new construction client-side off
 the Zillow marketing flags.
 
+Recipients come from BUILDER_ZONE_ALERT_EMAILS only — this feature does not
+read the shared ALERT_EMAILS, so turning it on cannot change who receives any
+existing alert.
+
 Cost control: both daily jobs read the SAME zip search. search_zip() caches
 each (zip, page, listing_type) response for BUILDER_ZONE_SEARCH_TTL seconds
 (default 2h) in-process, so scheduling the match job within the TTL of the
@@ -580,17 +584,29 @@ def format_match_email(matches):
     return subject, html, "\n".join(text_lines)
 
 
+def alert_recipients():
+    """Who gets the Builder Zones digest.
+
+    Deliberately its OWN variable, not the shared ALERT_EMAILS: builder-zone
+    matches are a different audience from auction and counter-offer alerts.
+    There is no fallback — an unset BUILDER_ZONE_ALERT_EMAILS means the digest
+    does not send, and the matches keep alert_sent=false so they go out on the
+    next run once the variable is set. Nothing is lost, but nothing arrives
+    either, so set it before enabling the jobs.
+    """
+    raw = os.getenv("BUILDER_ZONE_ALERT_EMAILS", "")
+    return [a.strip() for a in raw.split(",") if a.strip()]
+
+
 def send_match_email(matches):
     """Send the digest via Resend. Returns (sent_ok, error)."""
     if not matches:
         return False, "no matches"
     from email_sender import send_via_resend
 
-    recipients = [a.strip() for a in
-                  os.getenv("ALERT_EMAILS", os.getenv("ALERT_EMAIL", "")).split(",")
-                  if a.strip()]
+    recipients = alert_recipients()
     if not recipients:
-        return False, "ALERT_EMAIL / ALERT_EMAILS not set"
+        return False, "BUILDER_ZONE_ALERT_EMAILS not set"
 
     subject, html, text = format_match_email(matches)
     return send_via_resend(recipients, subject, html, text)

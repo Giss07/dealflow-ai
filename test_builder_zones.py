@@ -203,6 +203,36 @@ def test_email():
     check("plural subject", "2 listings" in s2, s2)
 
 
+def test_recipients():
+    print("\n=== Digest recipients ===")
+    saved = {k: os.environ.get(k) for k in
+             ("BUILDER_ZONE_ALERT_EMAILS", "ALERT_EMAILS", "ALERT_EMAIL")}
+    try:
+        # Only BUILDER_ZONE_ALERT_EMAILS counts. ALERT_EMAILS must NOT leak in —
+        # enabling Builder Zones cannot change who gets the other alerts.
+        os.environ.pop("BUILDER_ZONE_ALERT_EMAILS", None)
+        os.environ["ALERT_EMAILS"] = "someone@example.com"
+        os.environ["ALERT_EMAIL"] = "someone-else@example.com"
+        check("ALERT_EMAILS is not used as a fallback", bz.alert_recipients() == [],
+              bz.alert_recipients())
+
+        m = bz.match_listings([INSIDE], [BUILD], radius=0.5)
+        ok, err = bz.send_match_email(m)
+        check("send refuses with no recipients, naming the right variable",
+              ok is False and err == "BUILDER_ZONE_ALERT_EMAILS not set", (ok, err))
+
+        os.environ["BUILDER_ZONE_ALERT_EMAILS"] = " a@example.com , b@example.com ,, "
+        check("comma list parsed and trimmed",
+              bz.alert_recipients() == ["a@example.com", "b@example.com"],
+              bz.alert_recipients())
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def test_worker_jobs():
     print("\n=== Worker jobs (hour gate patched, email stubbed) ===")
     _reset_db()
@@ -297,6 +327,7 @@ if __name__ == "__main__":
     test_persistence()
     test_alert_dedupe()
     test_email()
+    test_recipients()
     test_worker_jobs()
     if LIVE:
         test_live(LIVE_ZIP)
