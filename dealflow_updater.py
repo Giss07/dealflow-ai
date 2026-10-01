@@ -95,7 +95,7 @@ SHEETS_MAX_RETRIES = int(os.getenv('SHEETS_MAX_RETRIES', '6'))
 # fetch hangs until the worker's subprocess budget runs out and the whole run is
 # killed — losing every email it had not reached yet. A bounded timeout turns
 # that into a fast, visible failure that the next run retries.
-IMAP_TIMEOUT = int(os.getenv('IMAP_TIMEOUT', '60'))
+IMAP_TIMEOUT = int(os.getenv('IMAP_TIMEOUT', '180'))
 SHEETS_RETRY_BACKOFF = int(os.getenv('SHEETS_RETRY_BACKOFF', '20'))
 
 OPENWEB_NINJA_API_KEY = os.getenv('OPENWEB_NINJA_API_KEY', '')
@@ -622,71 +622,87 @@ def read_christian_emails(sheet, records):
         print(f"Found {len(email_ids)} emails since {since_date} in Christian's inbox "
               f"(read+unread); {len(processed_ids)} already in processed ledger")
 
-        # --- Cheap triage pass: headers only, BEFORE downloading any body ---
+        # --- Triage pass: ONE batched header fetch, BEFORE any body download ---
         #
-        # The loop below used to fetch the full RFC822 of every message in the
-        # window and only then check the ledger, so a run paid full download cost
-        # for messages it was about to skip. On 2026-10-01 that killed the
-        # scanner outright: 53 messages in the 2-day window, ~45 already
-        # processed, and the 8 new HUD counter notices sat at the END of the list
-        # (IMAP SINCE returns oldest first). Every 30-minute run re-downloaded
-        # the old 45, hit the worker's subprocess timeout, got killed, and never
-        # reached the new ones — 4 consecutive runs failed and nothing reached
-        # the sheet.
+        # Two things were wrong here, found in sequence on 2026-10-01.
         #
-        # BODY.PEEK[HEADER.FIELDS ...] is ~1 KB per message against ~50-200 KB
-        # for a HUD forward with its HTML part, and PEEK does not set \Seen, so
-        # triage leaves the unread state alone. Only messages that survive
-        # triage get a full fetch (which still marks them read, as before).
-        def _peek_msg_id(eid):
-            """Return (msg_id, subject) from headers alone, or (None, None).
+        # 1. The loop below used to fetch the full RFC822 of every message in the
+        #    window and only then check the ledger, so a run paid full download
+        #    cost for messages it was about to skip.
+        # 2. The real cost is not bytes, it is ROUND TRIPS. Every IMAP command
+        #    to Gmail from the Railway container costs ~10s (measured: SELECT
+        #    10.1s, SEARCH 10.1s, and a per-message header triage of 53 messages
+        #    took 533s — 10.06s each). Fetching headers one message at a time
+        #    was just as fatal as fetching bodies: the run blew its budget and
+        #    was killed before reaching the newest mail, which sat at the end of
+        #    the list because IMAP SINCE returns oldest first.
+        #
+        # So the triage is a SINGLE batched fetch for the whole window (chunked
+        # only to bound the response size), turning ~53 round trips into 1.
+        # BODY.PEEK does not set \Seen, so triage leaves unread state alone.
+        # Only messages that survive get a full fetch (still marked read, as
+        # before). Any id the server does not return falls through to the full
+        # fetch, so a gap can never silently drop an email.
+        def _fetch_headers_bulk(ids):
+            """{seq_id: (msg_id, subject)} from one batched header fetch per chunk.
 
-            None means "could not decide cheaply" — the caller then falls
-            through to the full fetch, so a header hiccup can never drop an
-            email. The synthetic-id fallback must stay byte-identical to the
-            full-message path below or the ledger would not match."""
-            try:
-                st, dd = mail.fetch(eid, '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID SUBJECT DATE FROM)])')
-                raw = b''.join(part[1] for part in dd
-                               if isinstance(part, tuple) and part[1])
-                if not raw:
-                    return None, None
-                hdr = email.message_from_bytes(raw)
-                mid = (hdr.get('Message-ID') or '').strip()
-                subj = hdr.get('Subject', '')
-                if not mid:
-                    raw_key = '|'.join([
-                        subj, hdr.get('Date', ''), hdr.get('From', '')
-                    ]).encode('utf-8', 'ignore')
-                    mid = 'synthetic:' + hashlib.md5(raw_key).hexdigest()
-                return mid, subj
-            except Exception as exc:
-                print(f"  Header peek failed for {eid!r} ({exc}) — will fetch in full")
-                return None, None
+            A missing id means "undecided" — the caller then fetches it in full.
+            The synthetic-id fallback must stay byte-identical to the
+            full-message path below or ledger keys would not match.
+            """
+            out = {}
+            chunk_size = int(os.getenv('IMAP_HEADER_CHUNK', '100'))
+            for pos in range(0, len(ids), chunk_size):
+                chunk = ids[pos:pos + chunk_size]
+                try:
+                    st, dd = mail.fetch(
+                        b','.join(chunk),
+                        '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID SUBJECT DATE FROM)])')
+                except Exception as exc:
+                    print(f"  Bulk header fetch failed for {len(chunk)} id(s) ({exc}) "
+                          f"— they will be fetched in full")
+                    continue
+                if st != 'OK' or not dd:
+                    print(f"  Bulk header fetch returned {st!r} for {len(chunk)} id(s) "
+                          f"— they will be fetched in full")
+                    continue
+                for item in dd:
+                    if not (isinstance(item, tuple) and len(item) >= 2 and item[1]):
+                        continue
+                    seq_match = re.match(rb'\s*(\d+)', item[0] or b'')
+                    if not seq_match:
+                        continue
+                    hdr = email.message_from_bytes(item[1])
+                    mid = (hdr.get('Message-ID') or '').strip()
+                    subj = hdr.get('Subject', '')
+                    if not mid:
+                        raw_key = '|'.join([
+                            subj, hdr.get('Date', ''), hdr.get('From', '')
+                        ]).encode('utf-8', 'ignore')
+                        mid = 'synthetic:' + hashlib.md5(raw_key).hexdigest()
+                    out[seq_match.group(1)] = (mid, subj)
+            return out
 
         triage_start = time.time()
+        chunk_size = int(os.getenv('IMAP_HEADER_CHUNK', '100'))
+        batches = (len(email_ids) + chunk_size - 1) // chunk_size
+        header_map = _fetch_headers_bulk(email_ids)
         pending = []          # [(email_id, msg_id_or_None)]
         skipped_known = 0
+        undecided = 0
         for email_id in email_ids:
-            peek_id, _peek_subj = _peek_msg_id(email_id)
-            if peek_id and peek_id in processed_ids:
+            info = header_map.get(email_id)
+            if info is None:
+                undecided += 1
+                pending.append((email_id, None))
+                continue
+            if info[0] in processed_ids:
                 skipped_known += 1
                 continue
-            pending.append((email_id, peek_id))
-        print(f"  Triage: {skipped_known} already-processed skipped on headers alone, "
-              f"{len(pending)} to fetch in full ({time.time() - triage_start:.1f}s)")
-
-        def _remember(mid, subj):
-            """Record a message as processed so later runs skip it. In-memory
-            set guards this run; the DB ledger guards future runs."""
-            if not mid:
-                return
-            processed_ids.add(mid)
-            if mark_email_processed:
-                try:
-                    mark_email_processed(mid, subj)
-                except Exception as exc:
-                    print(f"  Could not record processed email {mid!r}: {exc}")
+            pending.append((email_id, info[0]))
+        print(f"  Triage: {len(email_ids)} header(s) via {batches} batched fetch(es) in "
+              f"{time.time() - triage_start:.1f}s — {skipped_known} already processed, "
+              f"{len(pending)} to fetch in full ({undecided} undecided)")
 
         for email_id, peeked_msg_id in pending:
             try:

@@ -7,6 +7,12 @@ message in the lookback window and only then checked the dedup ledger, so each
 worker's subprocess timeout, and was killed before reaching the newest
 messages. Eight HUD counter notices went unprocessed for hours.
 
+The first fix (headers instead of bodies) was not enough, and the second
+measurement is the important one: every IMAP command to Gmail from the Railway
+container costs ~10s, so a per-message header pass over 53 messages still took
+533s and still blew the budget. The cost is ROUND TRIPS, not bytes — hence the
+batched fetch, and hence the round-trip assertion below.
+
 This test stubs IMAP and the sheet (no network, no Google, no DB) and asserts
 that an already-ledgered message is skipped on its headers alone — never
 fetched in full.
@@ -51,6 +57,7 @@ class FakeIMAP:
         self.messages = messages          # {id: dict(subject, sender, date, msg_id, body)}
         self.full_fetches = []
         self.header_fetches = []
+        self.round_trips = 0
         self.logged_out = False
 
     def login(self, user, pw):
@@ -63,14 +70,25 @@ class FakeIMAP:
         return "OK", [b" ".join(k.encode() for k in self.messages)]
 
     def fetch(self, eid, spec):
-        key = eid.decode() if isinstance(eid, bytes) else str(eid)
-        m = self.messages[key]
+        raw = eid.decode() if isinstance(eid, bytes) else str(eid)
+        keys = [k for k in raw.split(",") if k]
+        self.round_trips += 1
         if "PEEK" in spec:
-            self.header_fetches.append(key)
-            payload = _hdr_bytes(m["subject"], m["sender"], m["date"], m["msg_id"])
-        else:
-            self.full_fetches.append(key)
-            payload = _msg_bytes(m["subject"], m["sender"], m["date"], m["msg_id"], m["body"])
+            # Batched header fetch — one response per requested message, each
+            # prefixed with its sequence number (what imaplib really returns).
+            self.header_fetches.extend(keys)
+            out = []
+            for k in keys:
+                m = self.messages[k]
+                payload = _hdr_bytes(m["subject"], m["sender"], m["date"], m["msg_id"])
+                out.append((f"{k} (BODY[HEADER.FIELDS (MESSAGE-ID SUBJECT DATE FROM)] "
+                            f"{{{len(payload)}}}".encode(), payload))
+                out.append(b")")
+            return "OK", out
+        assert len(keys) == 1, "full fetches stay per-message"
+        m = self.messages[keys[0]]
+        self.full_fetches.append(keys[0])
+        payload = _msg_bytes(m["subject"], m["sender"], m["date"], m["msg_id"], m["body"])
         return "OK", [(b"1 (RFC822 {%d}" % len(payload), payload), b")"]
 
     def logout(self):
@@ -135,8 +153,12 @@ def run():
         print("\n=== Header triage ===")
         du.read_christian_emails(FakeSheet(), [])
 
-        check("every message triaged on headers first", len(fake.header_fetches) == 3,
+        check("every message triaged on headers first", sorted(fake.header_fetches) == ["1", "2", "3"],
               fake.header_fetches)
+        # The 2026-10-01 killer was round trips, not bytes: ~10s per IMAP command
+        # against Gmail from Railway. 3 messages must cost ONE header fetch, not three.
+        check("headers come back in a single batched round trip",
+              fake.round_trips == 2, f"{fake.round_trips} fetch commands (1 batched header + 1 full body)")
         check("ledgered message never fetched in full", "1" not in fake.full_fetches,
               f"full fetches: {fake.full_fetches}")
         check("synthetic-id message also skipped on headers", "3" not in fake.full_fetches,
