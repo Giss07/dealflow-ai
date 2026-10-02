@@ -99,8 +99,9 @@ class FakeSheet:
     HEADERS = ["Address", "Purchase Contract Price", "Counter Price", "Counter Date",
                "Status (/Accepted/Rejected/Counter)", "Notes", "Alert Sent", "HUD Case #"]
 
-    def __init__(self):
+    def __init__(self, records=None):
         self.updates = []
+        self.records = records or []
 
     def row_values(self, n):
         return list(self.HEADERS)
@@ -109,7 +110,11 @@ class FakeSheet:
         self.updates.append((row, col, value))
 
     def get_all_records(self):
-        return []
+        return list(self.records)
+
+    def writes_to(self, column_name):
+        col = self.HEADERS.index(column_name) + 1
+        return [(r, v) for (r, c, v) in self.updates if c == col]
 
 
 def run():
@@ -166,6 +171,11 @@ def run():
         check("only the new message is downloaded in full", fake.full_fetches == ["2"],
               fake.full_fetches)
         check("connection closed cleanly", fake.logged_out)
+        # 840677b deleted the _remember helper, so every call raised NameError
+        # into the loop's except and NOTHING was ever ledgered — every run
+        # reprocessed the same mail and re-alerted. Assert the write happens.
+        check("the processed message is written to the ledger", marked == [NEW],
+              f"ledger writes: {marked}")
     finally:
         du.imaplib.IMAP4_SSL = orig_imap
         database.load_processed_message_ids, database.mark_email_processed = orig_load, orig_mark
@@ -194,7 +204,92 @@ def run():
         du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD = orig_creds
 
 
+GURNSEY = "116 Gurnsey Ave, Red Bluff, CA 96080"
+
+
+def _counter_email(mid, amount):
+    return dict(
+        subject=f"Fwd: P260 - HUD - Bid Counter Offer Notice - 043-746923",
+        sender="Natalie Serna <natalie@example.com>",
+        date="Fri, 2 Oct 2026 10:22:09 -0700",
+        msg_id=mid,
+        body=(f"Address: {GURNSEY} The minimum acceptable net to HUD offer "
+              f"amount for this property as {amount:,}.00"),
+    )
+
+
+def _record(counter_price, alert_sent):
+    return {
+        "Address": GURNSEY,
+        "Purchase Contract Price": 190000,
+        "Counter Price": counter_price,
+        "Counter Date": "10/01/2026",
+        "Status (/Accepted/Rejected/Counter)": "Counter",
+        "Notes": "",
+        "Alert Sent": alert_sent,
+        "HUD Case #": "043-746923",
+    }
+
+
+def _run_counter_case(label, email_amount, row_counter, alert_sent):
+    """Process one counter email against one row; return (alerts, sheet)."""
+    import dealflow_updater as du
+    import database
+
+    msgs = {"1": _counter_email("<counter-notice-1@mail.gmail.com>", email_amount)}
+    fake = FakeIMAP(msgs)
+    records = [_record(row_counter, alert_sent)]
+    sheet = FakeSheet(records)
+
+    orig_imap = du.imaplib.IMAP4_SSL
+    orig_load, orig_mark = database.load_processed_message_ids, database.mark_email_processed
+    orig_creds = (du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD)
+    du.imaplib.IMAP4_SSL = lambda host, **kw: fake
+    database.load_processed_message_ids = lambda since_days=7: set()
+    database.mark_email_processed = lambda mid, subject=None: None
+    du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD = "fake@example.com", "fake-pw"
+    try:
+        alerts = du.read_christian_emails(sheet, records)
+    finally:
+        du.imaplib.IMAP4_SSL = orig_imap
+        database.load_processed_message_ids, database.mark_email_processed = orig_load, orig_mark
+        du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD = orig_creds
+    return alerts, sheet
+
+
+def test_alert_once_per_counter():
+    print("\n=== One alert per property per counter ===")
+
+    # HUD re-forwards the SAME $217,500 counter that was already alerted.
+    alerts, sheet = _run_counter_case("repeat", 217500, 217500.0, "Yes")
+    check("re-forwarded identical counter does not re-alert", alerts == [],
+          [(a["type"], a["address"]) for a in alerts])
+    check("no 'previous counter' note written when nothing changed",
+          sheet.writes_to("Notes") == [], sheet.writes_to("Notes"))
+
+    # Same counter, but never alerted yet -> must alert ($27,500 gap, inside $30k).
+    alerts, _sheet = _run_counter_case("first", 217500, 217500.0, "")
+    check("an un-alerted counter still alerts once",
+          len(alerts) == 1 and alerts[0]["type"] == "CLOSE",
+          [(a["type"], a["difference"]) for a in alerts])
+
+    # A genuinely NEW counter round on an already-alerted row -> alert again,
+    # and the flag must be cleared so the recovery path can retry a failed send.
+    alerts, sheet = _run_counter_case("new round", 210000, 217500.0, "Yes")
+    check("a changed counter alerts again",
+          len(alerts) == 1 and alerts[0]["type"] == "CLOSE",
+          [(a["type"], a["counter_price"]) for a in alerts])
+    cleared = [(r, v) for (r, v) in sheet.writes_to("Alert Sent") if v == ""]
+    check("Alert Sent cleared for the new round", len(cleared) == 1, sheet.writes_to("Alert Sent"))
+
+    # Counter far above the offer -> no alert, threshold unchanged at $30k.
+    alerts, _sheet = _run_counter_case("far", 260000, 217500.0, "")
+    check("counter beyond the $30k rule still does not alert", alerts == [],
+          [(a["type"], a["difference"]) for a in alerts])
+
+
 if __name__ == "__main__":
     run()
+    test_alert_once_per_counter()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.exit(1 if FAILS else 0)

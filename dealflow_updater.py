@@ -596,6 +596,22 @@ def read_christian_emails(sheet, records):
         sheet.update_cell(row_num, status_col, value)
         live_status[row_num] = value
 
+    # Live 'Alert Sent' for the duration of this run, for the same reason as
+    # live_status above: `records` is a pre-loop snapshot, so a row this run has
+    # already alerted on still reads blank there.
+    alert_col_idx = headers.index('Alert Sent') + 1 if 'Alert Sent' in headers else None
+    live_alert_sent = {}
+
+    def _alert_sent_now(row_num, record):
+        return live_alert_sent.get(row_num, (record.get('Alert Sent') or '').strip())
+
+    def _set_alert_sent(row_num, value):
+        """Write the Alert Sent flag. Clearing it is what lets a NEW counter
+        round alert again after an earlier round was already alerted."""
+        if alert_col_idx:
+            sheet.update_cell(row_num, alert_col_idx, value)
+        live_alert_sent[row_num] = value
+
     try:
         mail = imaplib.IMAP4_SSL('imap.gmail.com', timeout=IMAP_TIMEOUT)
         mail.login(CHRISTIAN_GMAIL, CHRISTIAN_APP_PASSWORD)
@@ -621,6 +637,26 @@ def read_christian_emails(sheet, records):
 
         print(f"Found {len(email_ids)} emails since {since_date} in Christian's inbox "
               f"(read+unread); {len(processed_ids)} already in processed ledger")
+
+        def _remember(mid, subj):
+            """Record a message as processed so later runs skip it. In-memory
+            set guards this run; the DB ledger guards future runs.
+
+            Deleted by accident in 840677b (the batched-triage rewrite replaced
+            the whole span this helper sat in), which made every call raise
+            NameError into the loop's except — so no email was ever ledgered,
+            every run reprocessed the same mail, and 116 Gurnsey Ave re-alerted
+            every 30 minutes on 2026-10-02. test_gmail_triage now asserts the
+            ledger is written, which is what would have caught it.
+            """
+            if not mid:
+                return
+            processed_ids.add(mid)
+            if mark_email_processed:
+                try:
+                    mark_email_processed(mid, subj)
+                except Exception as exc:
+                    print(f"  Could not record processed email {mid!r}: {exc}")
 
         # --- Triage pass: ONE batched header fetch, BEFORE any body download ---
         #
@@ -929,7 +965,12 @@ def read_christian_emails(sheet, records):
                                 existing_notes = record.get('Notes', '')
                                 current_status = _status_now(row_num, record)
 
-                                if existing_counter and clean_price(existing_counter):
+                                # Only worth a history note when the number actually moved.
+                                # A re-forwarded notice carrying the same counter was appending
+                                # "[Previous counter: $217,500 ... ]" to Notes on every run,
+                                # which is both noise and a wasted Sheets write.
+                                if (existing_counter and clean_price(existing_counter)
+                                        and abs(clean_price(existing_counter) - counter_price) >= 1):
                                     # Save previous counter to notes
                                     prev_price = clean_price(existing_counter)
                                     prev_price_fmt = f"${prev_price:,}" if prev_price else existing_counter
@@ -970,7 +1011,31 @@ def read_christian_emails(sheet, records):
                                     alert_sent_col = None
                                 if purchase_price and current_status not in ['Accepted', 'STP']:
                                     diff = counter_price - purchase_price
-                                    if diff <= 0:
+
+                                    # One alert per property per COUNTER. HUD re-forwards the
+                                    # same counter notice day after day, and the email path used
+                                    # to queue an alert every time it saw one — unlike the
+                                    # sheet-scan path, which has always skipped rows marked
+                                    # Alert Sent. That is why 116 Gurnsey Ave alerted on 09/25,
+                                    # 09/28, 09/29 and 09/30 for one unchanged $217,500 counter.
+                                    # A CHANGED counter is a new round: clear the flag so it
+                                    # alerts again (and so the sheet-scan recovery path can
+                                    # pick it up too if this send fails).
+                                    prev_counter = clean_price(existing_counter)
+                                    counter_changed = abs((prev_counter or 0) - counter_price) >= 1
+                                    already_alerted = _alert_sent_now(row_num, record) == 'Yes'
+                                    if already_alerted and counter_changed:
+                                        _set_alert_sent(row_num, '')
+                                        already_alerted = False
+                                        print(f"  New counter round for row {row_num} "
+                                              f"(${prev_counter or 0:,.0f} -> ${counter_price:,.0f}) "
+                                              f"— Alert Sent cleared so it can alert again")
+
+                                    if already_alerted:
+                                        print(f"  Alert already sent for row {row_num} at "
+                                              f"${counter_price:,.0f} — not re-alerting "
+                                              f"(HUD re-sends the same notice daily)")
+                                    elif diff <= 0:
                                         alerts.append({'type': 'HOT', 'address': record.get('Address'), 'purchase_price': purchase_price, 'counter_price': counter_price, 'difference': diff, 'row': row_num, 'alert_col': alert_sent_col})
                                     elif diff <= CLOSE_DEAL_THRESHOLD:
                                         alerts.append({'type': 'CLOSE', 'address': record.get('Address'), 'purchase_price': purchase_price, 'counter_price': counter_price, 'difference': diff, 'row': row_num, 'alert_col': alert_sent_col})
