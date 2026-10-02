@@ -308,8 +308,61 @@ def test_alert_once_per_email():
           [(a["type"], a["difference"]) for a in alerts5])
 
 
+def test_failed_send_recovers():
+    print("\n=== A failed send stays retryable ===")
+    import dealflow_updater as du
+
+    alert = {"type": "CLOSE", "address": GURNSEY, "purchase_price": 190000,
+             "counter_price": 217500, "difference": 27500,
+             "row": 2, "alert_col": FakeSheet.HEADERS.index("Alert Sent") + 1}
+
+    def _run(delivered):
+        """run_gmail_only with the email scan and the sender stubbed out."""
+        sheet = FakeSheet([_record(217500.0, "Yes")])
+        orig_read = du.read_christian_emails
+        orig_existing = du.check_existing_counter_alerts
+        orig_send = du.send_alerts
+        du.read_christian_emails = lambda s, r: [dict(alert)]
+        du.check_existing_counter_alerts = lambda r, s, h: []
+        du.send_alerts = lambda alerts, back_on_market=[]: set(delivered)
+        try:
+            du.run_gmail_only(sheet, sheet.get_all_records(), list(FakeSheet.HEADERS))
+        finally:
+            du.read_christian_emails = orig_read
+            du.check_existing_counter_alerts = orig_existing
+            du.send_alerts = orig_send
+        return sheet
+
+    # Send FAILS on a row already marked 'Yes' from an earlier counter round.
+    # The stale 'Yes' used to stand, and with the email already in the dedup
+    # ledger nothing ever retried it — the alert was lost.
+    sheet = _run(delivered=[])
+    check("failed send clears the stale 'Yes'",
+          sheet.writes_to("Alert Sent") == [(2, "")], sheet.writes_to("Alert Sent"))
+
+    # With the flag cleared, the sheet-scan recovery path re-queues the row.
+    records = [_record(217500.0, "")]
+    requeued = du.check_existing_counter_alerts(records, FakeSheet(records),
+                                                list(FakeSheet.HEADERS))
+    check("the cleared row is re-queued by the recovery path",
+          len(requeued) == 1 and requeued[0]["type"] == "CLOSE",
+          [(a["type"], a["difference"]) for a in requeued])
+
+    # A successful send still stamps 'Yes' and nothing is cleared.
+    sheet2 = _run(delivered=[GURNSEY])
+    check("successful send stamps 'Yes'",
+          sheet2.writes_to("Alert Sent") == [(2, "Yes")], sheet2.writes_to("Alert Sent"))
+
+    # And a row still marked 'Yes' is not re-queued, so no repeats.
+    records2 = [_record(217500.0, "Yes")]
+    check("a delivered row is not re-queued",
+          du.check_existing_counter_alerts(records2, FakeSheet(records2),
+                                           list(FakeSheet.HEADERS)) == [])
+
+
 if __name__ == "__main__":
     run()
     test_alert_once_per_email()
+    test_failed_send_recovers()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.exit(1 if FAILS else 0)

@@ -1292,6 +1292,25 @@ def _audit_log_alert(property_label, alert_type, subject, sent_ok, error_msg):
     finally:
         db.close()
 
+def _clear_alert_sent(sheet, alert):
+    """Blank the Alert Sent cell for an alert whose send failed.
+
+    Keeps the column honest — it means "delivered", not "attempted" — and is
+    what lets check_existing_counter_alerts re-queue the row on a later run.
+    Without it, a failed send on a row already marked 'Yes' from an earlier
+    counter round was lost: the email is in the dedup ledger (so the email path
+    skips it) and the sheet-scan path skips 'Yes' rows.
+
+    Best-effort: a Sheets error here must not abort the remaining alerts.
+    """
+    try:
+        sheet.update_cell(alert['row'], alert['alert_col'], '')
+        print(f"  Alert Sent cleared for {alert['address']} — send failed, "
+              f"a later run will retry it")
+    except Exception as exc:
+        print(f"  Could not clear Alert Sent for {alert['address']}: {exc}")
+
+
 def send_alerts(alerts, back_on_market=[]):
     """Send the alert digests. Returns the set of addresses actually delivered.
 
@@ -1446,9 +1465,15 @@ def run_gmail_only(sheet, records, headers):
         for a in unique_alerts:
             if 'row' in a and 'alert_col' in a and a['alert_col']:
                 if a['address'] not in delivered:
-                    # Leave the flag unset so the miss stays visible and a later
-                    # run can still pick the row up.
-                    print(f"  Alert Sent NOT marked for {a['address']} — send failed")
+                    # Clear the flag rather than leaving whatever was there.
+                    # 'Alert Sent' means "an alert was delivered", so a failed
+                    # send must not leave a stale 'Yes' from an earlier round
+                    # standing — that combination lost the alert outright: the
+                    # email is already in the dedup ledger so the email path
+                    # will not see it again, and check_existing_counter_alerts
+                    # skips rows marked 'Yes', so nothing retried it. Clearing
+                    # hands the row back to that recovery path on the next run.
+                    _clear_alert_sent(sheet, a)
                     continue
                 sheet.update_cell(a['row'], a['alert_col'], 'Yes')
                 print(f"  Marked Alert Sent for: {a['address']}")
@@ -1556,7 +1581,7 @@ def run_full(sheet, records, headers, status_col):
         for a in unique_alerts + back_on_market:
             if 'row' in a and 'alert_col' in a and a['alert_col']:
                 if a['address'] not in delivered:
-                    print(f"  Alert Sent NOT marked for {a['address']} — send failed")
+                    _clear_alert_sent(sheet, a)
                     continue
                 sheet.update_cell(a['row'], a['alert_col'], 'Yes')
                 print(f"  Marked Alert Sent for: {a['address']}")
