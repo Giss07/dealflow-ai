@@ -596,22 +596,6 @@ def read_christian_emails(sheet, records):
         sheet.update_cell(row_num, status_col, value)
         live_status[row_num] = value
 
-    # Live 'Alert Sent' for the duration of this run, for the same reason as
-    # live_status above: `records` is a pre-loop snapshot, so a row this run has
-    # already alerted on still reads blank there.
-    alert_col_idx = headers.index('Alert Sent') + 1 if 'Alert Sent' in headers else None
-    live_alert_sent = {}
-
-    def _alert_sent_now(row_num, record):
-        return live_alert_sent.get(row_num, (record.get('Alert Sent') or '').strip())
-
-    def _set_alert_sent(row_num, value):
-        """Write the Alert Sent flag. Clearing it is what lets a NEW counter
-        round alert again after an earlier round was already alerted."""
-        if alert_col_idx:
-            sheet.update_cell(row_num, alert_col_idx, value)
-        live_alert_sent[row_num] = value
-
     try:
         mail = imaplib.IMAP4_SSL('imap.gmail.com', timeout=IMAP_TIMEOUT)
         mail.login(CHRISTIAN_GMAIL, CHRISTIAN_APP_PASSWORD)
@@ -1012,30 +996,24 @@ def read_christian_emails(sheet, records):
                                 if purchase_price and current_status not in ['Accepted', 'STP']:
                                     diff = counter_price - purchase_price
 
-                                    # One alert per property per COUNTER. HUD re-forwards the
-                                    # same counter notice day after day, and the email path used
-                                    # to queue an alert every time it saw one — unlike the
-                                    # sheet-scan path, which has always skipped rows marked
-                                    # Alert Sent. That is why 116 Gurnsey Ave alerted on 09/25,
-                                    # 09/28, 09/29 and 09/30 for one unchanged $217,500 counter.
-                                    # A CHANGED counter is a new round: clear the flag so it
-                                    # alerts again (and so the sheet-scan recovery path can
-                                    # pick it up too if this send fails).
-                                    prev_counter = clean_price(existing_counter)
-                                    counter_changed = abs((prev_counter or 0) - counter_price) >= 1
-                                    already_alerted = _alert_sent_now(row_num, record) == 'Yes'
-                                    if already_alerted and counter_changed:
-                                        _set_alert_sent(row_num, '')
-                                        already_alerted = False
-                                        print(f"  New counter round for row {row_num} "
-                                              f"(${prev_counter or 0:,.0f} -> ${counter_price:,.0f}) "
-                                              f"— Alert Sent cleared so it can alert again")
-
-                                    if already_alerted:
-                                        print(f"  Alert already sent for row {row_num} at "
-                                              f"${counter_price:,.0f} — not re-alerting "
-                                              f"(HUD re-sends the same notice daily)")
-                                    elif diff <= 0:
+                                    # ONE ALERT PER COUNTER EMAIL — not per counter price.
+                                    # Every counter notice HUD sends that lands within
+                                    # CLOSE_DEAL_THRESHOLD is worth knowing about, even when it
+                                    # repeats a price already alerted on, so there is
+                                    # deliberately no Alert Sent check here.
+                                    #
+                                    # What stops the 30-minute repeats is the dedup ledger: each
+                                    # Message-ID is recorded by _remember() once it reaches a
+                                    # terminal state, and a recorded message is dropped during
+                                    # triage on later runs. So a given email alerts exactly once,
+                                    # while tomorrow's re-forward of the same counter is a new
+                                    # email and alerts again — which is the intent.
+                                    #
+                                    # Alert Sent is still stamped by the caller after a
+                                    # successful send; it is what the sheet-scan recovery path
+                                    # (check_existing_counter_alerts) uses to retry a send that
+                                    # failed, and it must stay out of this decision.
+                                    if diff <= 0:
                                         alerts.append({'type': 'HOT', 'address': record.get('Address'), 'purchase_price': purchase_price, 'counter_price': counter_price, 'difference': diff, 'row': row_num, 'alert_col': alert_sent_col})
                                     elif diff <= CLOSE_DEAL_THRESHOLD:
                                         alerts.append({'type': 'CLOSE', 'address': record.get('Address'), 'purchase_price': purchase_price, 'counter_price': counter_price, 'difference': diff, 'row': row_num, 'alert_col': alert_sent_col})

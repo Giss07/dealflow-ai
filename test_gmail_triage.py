@@ -231,22 +231,29 @@ def _record(counter_price, alert_sent):
     }
 
 
-def _run_counter_case(label, email_amount, row_counter, alert_sent):
-    """Process one counter email against one row; return (alerts, sheet)."""
+def _run_counter_case(email_amount, row_counter, alert_sent, ledger=None, mid=None):
+    """Process one counter email against one row.
+
+    Returns (alerts, sheet, ledger_writes, imap). `ledger` seeds the dedup
+    ledger so a second run over the same message can be simulated.
+    """
     import dealflow_updater as du
     import database
 
-    msgs = {"1": _counter_email("<counter-notice-1@mail.gmail.com>", email_amount)}
+    mid = mid or "<counter-notice-1@mail.gmail.com>"
+    msgs = {"1": _counter_email(mid, email_amount)}
     fake = FakeIMAP(msgs)
     records = [_record(row_counter, alert_sent)]
     sheet = FakeSheet(records)
+    seeded = set(ledger or ())
+    written = []
 
     orig_imap = du.imaplib.IMAP4_SSL
     orig_load, orig_mark = database.load_processed_message_ids, database.mark_email_processed
     orig_creds = (du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD)
     du.imaplib.IMAP4_SSL = lambda host, **kw: fake
-    database.load_processed_message_ids = lambda since_days=7: set()
-    database.mark_email_processed = lambda mid, subject=None: None
+    database.load_processed_message_ids = lambda since_days=7: set(seeded)
+    database.mark_email_processed = lambda m, subject=None: written.append(m)
     du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD = "fake@example.com", "fake-pw"
     try:
         alerts = du.read_christian_emails(sheet, records)
@@ -254,42 +261,55 @@ def _run_counter_case(label, email_amount, row_counter, alert_sent):
         du.imaplib.IMAP4_SSL = orig_imap
         database.load_processed_message_ids, database.mark_email_processed = orig_load, orig_mark
         du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD = orig_creds
-    return alerts, sheet
+    return alerts, sheet, written, fake
 
 
-def test_alert_once_per_counter():
-    print("\n=== One alert per property per counter ===")
+def test_alert_once_per_email():
+    print("\n=== One alert per counter EMAIL ===")
 
-    # HUD re-forwards the SAME $217,500 counter that was already alerted.
-    alerts, sheet = _run_counter_case("repeat", 217500, 217500.0, "Yes")
-    check("re-forwarded identical counter does not re-alert", alerts == [],
-          [(a["type"], a["address"]) for a in alerts])
-    check("no 'previous counter' note written when nothing changed",
+    # The rule: every counter email within $30k alerts, even when it repeats a
+    # price already alerted on. $190k offer vs $217.5k counter = $27.5k gap.
+    alerts, sheet, written, _imap = _run_counter_case(217500, 217500.0, "Yes")
+    check("a re-forwarded identical counter DOES alert",
+          len(alerts) == 1 and alerts[0]["type"] == "CLOSE",
+          [(a["type"], a["difference"]) for a in alerts])
+    check("that email is recorded in the ledger", written == ["<counter-notice-1@mail.gmail.com>"],
+          written)
+    check("no 'previous counter' note when the amount did not change",
           sheet.writes_to("Notes") == [], sheet.writes_to("Notes"))
 
-    # Same counter, but never alerted yet -> must alert ($27,500 gap, inside $30k).
-    alerts, _sheet = _run_counter_case("first", 217500, 217500.0, "")
-    check("an un-alerted counter still alerts once",
-          len(alerts) == 1 and alerts[0]["type"] == "CLOSE",
-          [(a["type"], a["difference"]) for a in alerts])
+    # The SAME email on a later run must not alert again — the ledger is what
+    # stops the every-30-minutes repeats.
+    alerts2, _sheet2, written2, imap2 = _run_counter_case(
+        217500, 217500.0, "Yes", ledger={"<counter-notice-1@mail.gmail.com>"})
+    check("the same email never alerts twice", alerts2 == [],
+          [(a["type"], a["address"]) for a in alerts2])
+    check("an already-ledgered email is not even downloaded", imap2.full_fetches == [],
+          imap2.full_fetches)
+    check("and it is not re-written to the ledger", written2 == [], written2)
 
-    # A genuinely NEW counter round on an already-alerted row -> alert again,
-    # and the flag must be cleared so the recovery path can retry a failed send.
-    alerts, sheet = _run_counter_case("new round", 210000, 217500.0, "Yes")
-    check("a changed counter alerts again",
-          len(alerts) == 1 and alerts[0]["type"] == "CLOSE",
-          [(a["type"], a["counter_price"]) for a in alerts])
-    cleared = [(r, v) for (r, v) in sheet.writes_to("Alert Sent") if v == ""]
-    check("Alert Sent cleared for the new round", len(cleared) == 1, sheet.writes_to("Alert Sent"))
+    # A different email for the same property (tomorrow's re-forward) alerts again.
+    alerts3, _s3, _w3, _i3 = _run_counter_case(
+        217500, 217500.0, "Yes", ledger={"<counter-notice-1@mail.gmail.com>"},
+        mid="<counter-notice-2@mail.gmail.com>")
+    check("tomorrow's re-forward of the same price alerts again",
+          len(alerts3) == 1 and alerts3[0]["type"] == "CLOSE",
+          [(a["type"], a["counter_price"]) for a in alerts3])
 
-    # Counter far above the offer -> no alert, threshold unchanged at $30k.
-    alerts, _sheet = _run_counter_case("far", 260000, 217500.0, "")
-    check("counter beyond the $30k rule still does not alert", alerts == [],
-          [(a["type"], a["difference"]) for a in alerts])
+    # Threshold unchanged: a counter beyond $30k still stays silent.
+    alerts4, _s4, _w4, _i4 = _run_counter_case(260000, 217500.0, "")
+    check("counter beyond the $30k rule still does not alert", alerts4 == [],
+          [(a["type"], a["difference"]) for a in alerts4])
+
+    # An un-alerted row still behaves the same way.
+    alerts5, _s5, _w5, _i5 = _run_counter_case(217500, 217500.0, "")
+    check("an un-alerted row alerts as before",
+          len(alerts5) == 1 and alerts5[0]["type"] == "CLOSE",
+          [(a["type"], a["difference"]) for a in alerts5])
 
 
 if __name__ == "__main__":
     run()
-    test_alert_once_per_counter()
+    test_alert_once_per_email()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.exit(1 if FAILS else 0)
