@@ -360,9 +360,84 @@ def test_failed_send_recovers():
                                            list(FakeSheet.HEADERS)) == [])
 
 
+COUNCIL = "4271 Council Trl, Copperopolis, CA 95228"
+
+
+def _run_acceptance_case(status, ledger=None):
+    """Process one HIGH-confidence acceptance email against one row in `status`."""
+    import dealflow_updater as du
+    import database
+
+    mid = "<acceptance-1@mail.gmail.com>"
+    msgs = {"1": dict(
+        subject="Fwd: Bid Acceptance Notification: 049-211320; 4271 Council Trl,\r\n Copperopolis, CA 95228",
+        sender="Natalie Serna <natalie@example.com>",
+        date="Tue, 13 Oct 2026 12:41:32 -0700",
+        msg_id=mid,
+        body=(f"Property Address: {COUNCIL} Congratulations! Your bid has been "
+              f"provisionally accepted, subject to the completion and approval of the bid checklist."),
+    )}
+    fake = FakeIMAP(msgs)
+    records = [{
+        "Address": COUNCIL, "Purchase Contract Price": 285000,
+        "Counter Price": 285000.0, "Counter Date": "10/09/2026",
+        "Status (/Accepted/Rejected/Counter)": status,
+        "Notes": "[ACCEPTED: earlier acceptance — 09/17/2026] | [Previous counter: $284,800 on 09/29/2026]",
+        "Alert Sent": "Yes", "HUD Case #": "049-211320",
+    }]
+    sheet = FakeSheet(records)
+    written = []
+
+    orig_imap = du.imaplib.IMAP4_SSL
+    orig_load, orig_mark = database.load_processed_message_ids, database.mark_email_processed
+    orig_creds = (du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD)
+    du.imaplib.IMAP4_SSL = lambda host, **kw: fake
+    database.load_processed_message_ids = lambda since_days=7: set(ledger or ())
+    database.mark_email_processed = lambda m, subject=None: written.append(m)
+    du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD = "fake@example.com", "fake-pw"
+    try:
+        alerts = du.read_christian_emails(sheet, records)
+    finally:
+        du.imaplib.IMAP4_SSL = orig_imap
+        database.load_processed_message_ids, database.mark_email_processed = orig_load, orig_mark
+        du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD = orig_creds
+    return alerts, sheet, written
+
+
+def test_reacceptance_after_counter_alerts():
+    print("\n=== Re-acceptance on an already-Accepted row ===")
+
+    # 2026-10-13: 4271 Council Trl was accepted 09/17, countered 09/28-10/09
+    # (Status stays 'Accepted' since ea4239d), then re-accepted. The HIGH branch
+    # deduped on Status == 'Accepted' and dropped the new acceptance silently.
+    alerts, sheet, written = _run_acceptance_case("Accepted")
+    check("a new acceptance on an Accepted row alerts",
+          len(alerts) == 1 and alerts[0]["type"] == "ACCEPTED" and alerts[0]["confidence"] == "high",
+          [(a["type"], a.get("confidence")) for a in alerts])
+    check("it appends an [ACCEPTED ...] note",
+          len(sheet.writes_to("Notes")) == 1 and "[ACCEPTED:" in sheet.writes_to("Notes")[0][1].split(" | ")[-1],
+          sheet.writes_to("Notes"))
+    check("Status is not rewritten when already Accepted",
+          sheet.writes_to("Status (/Accepted/Rejected/Counter)") == [],
+          sheet.writes_to("Status (/Accepted/Rejected/Counter)"))
+    check("the acceptance email is ledgered", written == ["<acceptance-1@mail.gmail.com>"], written)
+
+    alerts2, _s2, _w2 = _run_acceptance_case("Accepted", ledger={"<acceptance-1@mail.gmail.com>"})
+    check("the same acceptance email never alerts twice", alerts2 == [], alerts2)
+
+    alerts3, sheet3, _w3 = _run_acceptance_case("Counter")
+    check("a Counter row is set to Accepted and alerts",
+          len(alerts3) == 1 and sheet3.writes_to("Status (/Accepted/Rejected/Counter)") == [(2, "Accepted")],
+          sheet3.writes_to("Status (/Accepted/Rejected/Counter)"))
+
+    alerts4, sheet4, _w4 = _run_acceptance_case("STP")
+    check("an STP row stays silent", alerts4 == [] and sheet4.updates == [], sheet4.updates)
+
+
 if __name__ == "__main__":
     run()
     test_alert_once_per_email()
     test_failed_send_recovers()
+    test_reacceptance_after_counter_alerts()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.exit(1 if FAILS else 0)

@@ -839,9 +839,19 @@ def read_christian_emails(sheet, records):
                                     alert_sent_col = None
 
                                 if accept_confidence == "high":
-                                    # HIGH: write Status to Accepted, note in Notes, alert
-                                    if current_status not in ['STP', 'Accepted']:
-                                        _set_status(row_num, 'Accepted')
+                                    # HIGH: write Status to Accepted, note in Notes, alert.
+                                    #
+                                    # Only STP suppresses. A row already 'Accepted' still alerts:
+                                    # HUD re-accepts after a later counter round (4271 Council Trl
+                                    # was accepted 09/17, countered 09/28-10/09, re-accepted 10/13),
+                                    # and since ea4239d counters no longer downgrade the Status,
+                                    # so a Status-based dedup silently swallowed the new acceptance.
+                                    # The Message-ID ledger already guarantees one alert per email.
+                                    if current_status == 'STP':
+                                        print(f"  Skipping ACCEPTED for row {row_num} — status is STP")
+                                    else:
+                                        if current_status != 'Accepted':
+                                            _set_status(row_num, 'Accepted')
                                         accept_note = f"[ACCEPTED: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
                                         new_notes = f"{existing_notes} | {accept_note}" if existing_notes else accept_note
                                         sheet.update_cell(row_num, notes_col, new_notes)
@@ -871,9 +881,11 @@ def read_christian_emails(sheet, records):
                                     promote = case_match and bid_match
 
                                     if promote:
-                                        # PROMOTED — treat as HIGH: write Status=Accepted, tag Notes, alert high
-                                        if current_status not in ['STP', 'Accepted']:
-                                            _set_status(row_num, 'Accepted')
+                                        # PROMOTED — treat as HIGH: write Status=Accepted, tag Notes, alert high.
+                                        # Same rule as HIGH above: only STP suppresses.
+                                        if current_status != 'STP':
+                                            if current_status != 'Accepted':
+                                                _set_status(row_num, 'Accepted')
                                             accept_note = (
                                                 f"[ACCEPTED (promoted from LIKELY — Case# {email_case_number} "
                                                 f"+ Bid ${email_bid_amount:,} matched): {accept_context} — "
@@ -893,7 +905,7 @@ def read_christian_emails(sheet, records):
                                                 'promoted_from': 'likely',
                                             })
                                         else:
-                                            print(f"  Skipping promoted ACCEPTED for row {row_num} — status already {current_status!r}")
+                                            print(f"  Skipping promoted ACCEPTED for row {row_num} — status is STP")
                                     else:
                                         # Standard LIKELY path: annotate Notes + send hedged amber alert.
                                         # Dedup: skip if already flagged or a definitive status is set.

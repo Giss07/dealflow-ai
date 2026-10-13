@@ -172,6 +172,16 @@ def _run_gmail_subprocess():
         # a 290s success, which would have been an obvious warning sign.
         level = logger.warning if elapsed > GMAIL_SUBPROCESS_TIMEOUT * 0.6 else logger.info
         level(f"Gmail check completed in {elapsed:.0f}s")
+        # Keep the scanner's own per-email lines (match / skip / acceptance /
+        # counter). Success used to discard them, so the 2026-10-13 missed
+        # acceptance for 4271 Council Trl left nothing in Railway but
+        # "completed in 4s" — no way to tell fetched from skipped.
+        out = (result.stdout or '').strip()
+        marker = out.find("--- Checking Christian's Gmail")
+        if marker >= 0:
+            out = out[marker:]
+        if out:
+            logger.info("Gmail check output:\n" + out[-4000:])
         return True, False
     _log_subprocess_failure("Gmail check", result)
     return False, True
