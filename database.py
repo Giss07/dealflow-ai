@@ -13,8 +13,35 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
+# One engine per process. get_engine() used to build a new engine (and a new
+# connection pool) on every call, and the worker calls it every 5 seconds, so
+# it leaked connections: on 2026-11-16 the worker held 23 idle Postgres
+# connections when its main loop froze.
+_ENGINE = None
+
+# libpq has no timeouts by default, so a connection that dies silently (no RST)
+# blocks the caller forever. On 2026-11-16 the worker's main loop sat in a
+# Postgres call from 13:21 to 22:38 UTC while Postgres showed every session
+# idle; the Gmail scanner runs on that loop, so no email was processed. These
+# turn a dead connection into an exception within about a minute.
+PG_CONNECT_ARGS = {
+    "connect_timeout": 10,          # whole connection setup, incl. startup handshake
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 3,          # idle connection declared dead after ~60s
+    "tcp_user_timeout": 60000,      # unacknowledged data (a sent query) after 60s
+}
+# Statement timeout in ms; 0 disables it (e.g. for a long one-off migration).
+DB_STATEMENT_TIMEOUT_MS = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "60000"))
+
+
 def get_engine():
-    """Create SQLAlchemy engine — Postgres on Railway, SQLite locally."""
+    """Return the process-wide SQLAlchemy engine — Postgres on Railway, SQLite locally."""
+    global _ENGINE
+    if _ENGINE is not None:
+        return _ENGINE
+
     from sqlalchemy import create_engine
 
     if DATABASE_URL:
@@ -22,12 +49,16 @@ def get_engine():
         url = DATABASE_URL
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
+        connect_args = dict(PG_CONNECT_ARGS)
+        if DB_STATEMENT_TIMEOUT_MS > 0:
+            connect_args["options"] = f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}"
         logger.info("Using PostgreSQL database")
-        return create_engine(url)
+        _ENGINE = create_engine(url, connect_args=connect_args, pool_pre_ping=True)
     else:
         db_path = os.path.join(os.path.dirname(__file__), "dealflow.db")
         logger.info(f"Using SQLite database: {db_path}")
-        return create_engine(f"sqlite:///{db_path}")
+        _ENGINE = create_engine(f"sqlite:///{db_path}")
+    return _ENGINE
 
 
 def get_session():
@@ -432,10 +463,17 @@ def builder_zone_match_to_dict(m):
     }
 
 
+_DB_INITIALIZED = False
+
+
 def init_db():
-    """Create all tables."""
+    """Create all tables (once per process — the worker calls this every 5s)."""
+    global _DB_INITIALIZED
+    if _DB_INITIALIZED:
+        return
     engine = get_engine()
     Base.metadata.create_all(engine)
+    _DB_INITIALIZED = True
     logger.info("Database initialized")
 
 

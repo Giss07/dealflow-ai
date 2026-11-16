@@ -434,10 +434,96 @@ def test_reacceptance_after_counter_alerts():
     check("an STP row stays silent", alerts4 == [] and sheet4.updates == [], sheet4.updates)
 
 
+def _run_one(msg, record):
+    """Process one email dict against one row. Returns (alerts, sheet, ledger_writes)."""
+    import dealflow_updater as du
+    import database
+
+    fake = FakeIMAP({"1": msg})
+    records = [record]
+    sheet = FakeSheet(records)
+    written = []
+    orig_imap = du.imaplib.IMAP4_SSL
+    orig_load, orig_mark = database.load_processed_message_ids, database.mark_email_processed
+    orig_creds = (du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD)
+    du.imaplib.IMAP4_SSL = lambda host, **kw: fake
+    database.load_processed_message_ids = lambda since_days=7: set()
+    database.mark_email_processed = lambda m, subject=None: written.append(m)
+    du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD = "fake@example.com", "fake-pw"
+    try:
+        alerts = du.read_christian_emails(sheet, records)
+    finally:
+        du.imaplib.IMAP4_SSL = orig_imap
+        database.load_processed_message_ids, database.mark_email_processed = orig_load, orig_mark
+        du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD = orig_creds
+    return alerts, sheet, written
+
+
+STATUS_COL = "Status (/Accepted/Rejected/Counter)"
+
+
+def test_counter_keeps_working_status():
+    print("\n=== Counter notices leave Resubmit / Sent / Pending alone ===")
+    # 2026-11-16: ten re-forwarded counters flipped Resubmit/Sent/Pending rows
+    # to Counter. Rule: those statuses stay; only price and date are updated.
+    for status in ["Resubmit", "Sent", "Pending", "Sent ", "Accepted "]:
+        rec = _record(217500.0, "Yes")
+        rec[STATUS_COL] = status
+        _a, sheet, _w = _run_one(_counter_email("<keep-%s@x>" % status.strip(), 217500), rec)
+        check(f"{status!r}: Status not written", sheet.writes_to(STATUS_COL) == [],
+              sheet.writes_to(STATUS_COL))
+        check(f"{status!r}: Counter Date still recorded", len(sheet.writes_to("Counter Date")) == 1,
+              sheet.writes_to("Counter Date"))
+    for status in ["Counter", ""]:
+        rec = _record(217500.0, "Yes")
+        rec[STATUS_COL] = status
+        _a, sheet, _w = _run_one(_counter_email("<set-%s@x>" % (status or "blank"), 217500), rec)
+        check(f"{status!r}: Status set to Counter", sheet.writes_to(STATUS_COL) == [(2, "Counter")],
+              sheet.writes_to(STATUS_COL))
+
+
+CHANDLER = "77883 Chandler Way, Palm Desert, CA 92211"
+
+
+def _chandler_row(status):
+    return {"Address": CHANDLER, "Purchase Contract Price": 260000, "Counter Price": 261000.0,
+            "Counter Date": "09/28/2026", STATUS_COL: status, "Notes": "[ACCEPTED: ... — 09/29/2026]",
+            "Alert Sent": "Yes", "HUD Case #": "048-433742"}
+
+
+def test_informational_notice_and_padded_status():
+    print("\n=== Extension reminders and padded statuses never flip a deal to Rejected ===")
+    # 2026-11-15: an Extension Status Reminder ("if your upload is rejected")
+    # flipped the accepted Chandler Way row — stored as 'Accepted ' — to Rejected.
+    reminder = dict(
+        subject="Fwd: Extension Status Reminder: 048-433742; 77883 Chandler Way,\r\n Palm Desert, CA 92211",
+        sender="Natalie Serna <natalie@example.com>", date="Sun, 15 Nov 2026 16:07:04 -0800",
+        msg_id="<extension-reminder@x>",
+        body=(f"Address: {CHANDLER} Documents with active content (such as clickable email "
+              f"addresses or websites) will be rejected by hudhomestore.gov. If your upload is "
+              f"rejected, print and scan the document."),
+    )
+    alerts, sheet, written = _run_one(reminder, _chandler_row("Accepted "))
+    check("extension reminder: no sheet writes", sheet.updates == [], sheet.updates)
+    check("extension reminder: no alert", alerts == [], alerts)
+    check("extension reminder: still ledgered", written == ["<extension-reminder@x>"], written)
+
+    # A genuine rejection still must not downgrade an accepted deal, even padded.
+    rejection = dict(reminder, subject="Fwd: Bid Result: 048-433742; 77883 Chandler Way",
+                     msg_id="<real-rejection@x>",
+                     body=f"Address: {CHANDLER} Unfortunately your offer was rejected.")
+    alerts2, sheet2, _w2 = _run_one(rejection, _chandler_row("Accepted "))
+    check("'Accepted ' row is not flipped to Rejected", sheet2.writes_to(STATUS_COL) == [],
+          sheet2.writes_to(STATUS_COL))
+    check("and no rejection alert is sent", alerts2 == [], alerts2)
+
+
 if __name__ == "__main__":
     run()
     test_alert_once_per_email()
     test_failed_send_recovers()
     test_reacceptance_after_counter_alerts()
+    test_counter_keeps_working_status()
+    test_informational_notice_and_padded_status()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.exit(1 if FAILS else 0)

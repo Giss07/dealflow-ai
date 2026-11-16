@@ -401,6 +401,19 @@ def detect_acceptance(email_text):
     return None, None, None
 
 
+# Statuses a counter notice must leave alone. Accepted/STP are settled deals
+# (inbox order is not outcome order); Resubmit/Sent/Pending are set by hand and
+# stay as they are — only Counter Price and Counter Date are updated.
+COUNTER_KEEPS_STATUS = ['Accepted', 'STP', 'Resubmit', 'Sent', 'Pending']
+
+# HUD notices that carry no bid decision. Their boilerplate trips the keyword
+# detectors: an "Extension Status Reminder" says "if your upload is rejected",
+# which on 2026-11-15 flipped the accepted 77883 Chandler Way to Rejected and
+# sent a false "Offer Rejected" alert. Matched against the subject, lowercased.
+HUD_INFORMATIONAL_SUBJECTS = [
+    'extension status reminder',
+]
+
 REJECTION_KEYWORDS = [
     "won't consider", "will not consider", "not considering",
     "rejected", "reject", "declined", "decline",
@@ -590,7 +603,11 @@ def read_christian_emails(sheet, records):
     live_status = {}
 
     def _status_now(row_num, record):
-        return live_status.get(row_num, record.get('Status (/Accepted/Rejected/Counter)', ''))
+        # Stripped: hand-typed statuses carry stray spaces. 77883 Chandler Way
+        # was 'Accepted ' on 2026-11-15, slipped past the rejection guard's
+        # `not in ['Rejected', 'STP', 'Accepted']`, and was flipped to Rejected.
+        raw = live_status.get(row_num, record.get('Status (/Accepted/Rejected/Counter)', ''))
+        return str(raw or '').strip()
 
     def _set_status(row_num, value):
         sheet.update_cell(row_num, status_col, value)
@@ -783,6 +800,14 @@ def read_christian_emails(sheet, records):
                 is_own_alert = any(sig in subject_lower for sig in own_alert_signatures)
                 if is_own_alert:
                     print(f"  Skipping forwarded alert email: {subject[:60]}")
+                    _remember(msg_id, subject)
+                    continue
+
+                # Informational HUD notices: no acceptance / rejection / counter
+                # detection, no sheet writes, no alert.
+                subject_flat = ' '.join(subject_lower.split())
+                if any(s in subject_flat for s in HUD_INFORMATIONAL_SUBJECTS):
+                    print(f"  Skipping informational HUD notice: {' '.join(subject.split())[:80]}")
                     _remember(msg_id, subject)
                     continue
 
@@ -990,9 +1015,13 @@ def read_christian_emails(sheet, records):
                                 # deal back into 'Counter'. This mirrors the guard the
                                 # rejection path below already has. Counter price/date are
                                 # still recorded; only Status is protected.
-                                if current_status in ['Accepted', 'STP']:
+                                #
+                                # Resubmit / Sent / Pending are working states the team sets
+                                # by hand; a counter notice records the price and date but
+                                # leaves them alone (rule set 2026-11-16).
+                                if current_status in COUNTER_KEEPS_STATUS:
                                     print(f"  Status left as {current_status!r} for row {row_num} — "
-                                          f"a counter notice must not downgrade a settled deal "
+                                          f"counter notices do not change this status "
                                           f"(counter price/date still recorded)")
                                 else:
                                     _set_status(row_num, 'Counter')
@@ -1528,7 +1557,9 @@ def run_full(sheet, records, headers, status_col):
         address = record.get('Address', '').strip()
         if not address or len(address) < 10:
             continue
-        current_status = record.get('Status (/Accepted/Rejected/Counter)', '')
+        # Stripped for the same reason as _status_now: 'Rejected ' / 'Accepted '
+        # would otherwise skip this guard and be overwritten to STP.
+        current_status = str(record.get('Status (/Accepted/Rejected/Counter)', '') or '').strip()
         if current_status in ['Accepted', 'Rejected', 'Closed', 'STP']:
             continue
 

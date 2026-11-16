@@ -19,9 +19,12 @@ load_dotenv()
 
 import json
 import time
+import signal
 import subprocess
 import threading
 import logging
+import functools
+import faulthandler
 import schedule
 import pytz
 from datetime import datetime
@@ -34,6 +37,63 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PST = pytz.timezone("America/Los_Angeles")
+
+# ── Main-loop watchdog ────────────────────────────────────────────────
+# Every scheduled job (Gmail scanner included) runs on the main loop, so one
+# call that never returns stops all of them while the container still reports
+# RUNNING. On 2026-11-16 the loop sat in a Postgres call from 13:21 to 22:38 UTC
+# and ten HUD counter notices went unprocessed. The loop now beats a heartbeat;
+# if it goes quiet for longer than the allowed budget, the watchdog logs every
+# thread's stack and exits the process so Railway restarts it.
+WATCHDOG_STALL_SECONDS = int(os.getenv("WATCHDOG_STALL_SECONDS", "2400"))  # > run_full's 1800s budget
+WATCHDOG_CHECK_SECONDS = 60
+_heartbeat = time.monotonic()
+_long_job_budgets = []          # extra allowance while a known-long job runs
+_long_job_lock = threading.Lock()
+
+
+def _beat():
+    global _heartbeat
+    _heartbeat = time.monotonic()
+
+
+def _long_job(budget_seconds):
+    """Mark a job that may legitimately hold the main loop longer than
+    WATCHDOG_STALL_SECONDS (a pre-foreclosure scan can run for up to 2 hours)."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def inner(*args, **kwargs):
+            with _long_job_lock:
+                _long_job_budgets.append(budget_seconds)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                with _long_job_lock:
+                    _long_job_budgets.remove(budget_seconds)
+        return inner
+    return wrap
+
+
+def _watchdog_overdue(now, heartbeat, budgets, base=WATCHDOG_STALL_SECONDS):
+    """Seconds past the allowed stall, or 0 if the loop is within budget."""
+    allowed = max([base] + list(budgets))
+    return max(0.0, (now - heartbeat) - allowed)
+
+
+def _watchdog():
+    while True:
+        time.sleep(WATCHDOG_CHECK_SECONDS)
+        with _long_job_lock:
+            budgets = list(_long_job_budgets)
+        if _watchdog_overdue(time.monotonic(), _heartbeat, budgets) > 0:
+            stalled = time.monotonic() - _heartbeat
+            logger.critical(f"[WATCHDOG] main loop has not cycled in {stalled:.0f}s "
+                            f"(allowed {max([WATCHDOG_STALL_SECONDS] + budgets)}s) — "
+                            f"dumping all thread stacks and exiting so Railway restarts the worker")
+            sys.stdout.flush()
+            faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+            sys.stderr.flush()
+            os._exit(1)
 
 # Add current dir to path so imports work
 sys.path.insert(0, os.path.dirname(__file__))
@@ -319,6 +379,7 @@ def check_pending_scan_jobs():
         db.close()
 
 
+@_long_job(3 * 3600)
 def run_preforeclosure_scan(property_ids=None, job_id=None):
     """Scan pre-foreclosure properties on Zillow for MLS status changes.
 
@@ -1404,10 +1465,17 @@ if __name__ == "__main__":
     threading.Thread(target=health_server.serve_forever, daemon=True).start()
     logger.info(f"Health server on port {health_port}")
 
+    # `kill -USR1 2` inside the container dumps every thread's stack to the logs,
+    # so a hang can be located without restarting the worker.
+    faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
+    threading.Thread(target=_watchdog, name="watchdog", daemon=True).start()
+    logger.info(f"Watchdog on: restart if the main loop stalls > {WATCHDOG_STALL_SECONDS}s")
+
     logger.info("Worker ready. Schedule loop starting...")
 
     # Loop
     while True:
+        _beat()
         try:
             schedule.run_pending()
         except Exception as e:
