@@ -401,10 +401,10 @@ def detect_acceptance(email_text):
     return None, None, None
 
 
-# Statuses a counter notice must leave alone. Accepted/STP are settled deals
-# (inbox order is not outcome order); Resubmit/Sent/Pending are set by hand and
-# stay as they are — only Counter Price and Counter Date are updated.
-COUNTER_KEEPS_STATUS = ['Accepted', 'STP', 'Resubmit', 'Sent', 'Pending']
+# Statuses a counter notice must leave alone: settled deals only (inbox order
+# is not outcome order). Every other status — Resubmit, Sent and Pending
+# included — becomes Counter when a counter notice arrives (rule set 2026-11-16).
+COUNTER_KEEPS_STATUS = ['Accepted', 'STP']
 
 # HUD notices that carry no bid decision. Their boilerplate trips the keyword
 # detectors: an "Extension Status Reminder" says "if your upload is rejected",
@@ -1015,13 +1015,9 @@ def read_christian_emails(sheet, records):
                                 # deal back into 'Counter'. This mirrors the guard the
                                 # rejection path below already has. Counter price/date are
                                 # still recorded; only Status is protected.
-                                #
-                                # Resubmit / Sent / Pending are working states the team sets
-                                # by hand; a counter notice records the price and date but
-                                # leaves them alone (rule set 2026-11-16).
                                 if current_status in COUNTER_KEEPS_STATUS:
                                     print(f"  Status left as {current_status!r} for row {row_num} — "
-                                          f"counter notices do not change this status "
+                                          f"a counter notice must not downgrade a settled deal "
                                           f"(counter price/date still recorded)")
                                 else:
                                     _set_status(row_num, 'Counter')

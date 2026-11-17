@@ -462,24 +462,27 @@ def _run_one(msg, record):
 STATUS_COL = "Status (/Accepted/Rejected/Counter)"
 
 
-def test_counter_keeps_working_status():
-    print("\n=== Counter notices leave Resubmit / Sent / Pending alone ===")
-    # 2026-11-16: ten re-forwarded counters flipped Resubmit/Sent/Pending rows
-    # to Counter. Rule: those statuses stay; only price and date are updated.
-    for status in ["Resubmit", "Sent", "Pending", "Sent ", "Accepted "]:
+def test_counter_status_rule():
+    print("\n=== Counter notices set Status to Counter, except on settled deals ===")
+    # Rule: every counter notice sets Status to Counter (Resubmit, Sent and
+    # Pending included) and records price and date. Accepted / STP stay put,
+    # even when the cell carries a stray space.
+    for status in ["Resubmit", "Sent", "Pending", "Sent ", "Counter", ""]:
+        rec = _record(217500.0, "Yes")
+        rec[STATUS_COL] = status
+        _a, sheet, _w = _run_one(_counter_email("<set-%s@x>" % (status.strip() or "blank"), 217500), rec)
+        check(f"{status!r}: Status set to Counter", sheet.writes_to(STATUS_COL) == [(2, "Counter")],
+              sheet.writes_to(STATUS_COL))
+        check(f"{status!r}: Counter Date recorded", len(sheet.writes_to("Counter Date")) == 1,
+              sheet.writes_to("Counter Date"))
+    for status in ["Accepted", "Accepted ", "STP"]:
         rec = _record(217500.0, "Yes")
         rec[STATUS_COL] = status
         _a, sheet, _w = _run_one(_counter_email("<keep-%s@x>" % status.strip(), 217500), rec)
-        check(f"{status!r}: Status not written", sheet.writes_to(STATUS_COL) == [],
+        check(f"{status!r}: settled deal not downgraded", sheet.writes_to(STATUS_COL) == [],
               sheet.writes_to(STATUS_COL))
         check(f"{status!r}: Counter Date still recorded", len(sheet.writes_to("Counter Date")) == 1,
               sheet.writes_to("Counter Date"))
-    for status in ["Counter", ""]:
-        rec = _record(217500.0, "Yes")
-        rec[STATUS_COL] = status
-        _a, sheet, _w = _run_one(_counter_email("<set-%s@x>" % (status or "blank"), 217500), rec)
-        check(f"{status!r}: Status set to Counter", sheet.writes_to(STATUS_COL) == [(2, "Counter")],
-              sheet.writes_to(STATUS_COL))
 
 
 CHANDLER = "77883 Chandler Way, Palm Desert, CA 92211"
@@ -523,7 +526,7 @@ if __name__ == "__main__":
     test_alert_once_per_email()
     test_failed_send_recovers()
     test_reacceptance_after_counter_alerts()
-    test_counter_keeps_working_status()
+    test_counter_status_rule()
     test_informational_notice_and_padded_status()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.exit(1 if FAILS else 0)
