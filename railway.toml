@@ -5,5 +5,6 @@ dockerfilePath = "Dockerfile"
 [deploy]
 startCommand = "sh -c 'if [ \"$SERVICE_TYPE\" = \"worker\" ]; then python worker.py; elif [ \"$SERVICE_TYPE\" = \"mcp\" ]; then python mcp_server.py; else gunicorn app:app --bind 0.0.0.0:${PORT:-8080} --workers 2; fi'"
 healthcheckPath = "/health"
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 3
+# Always restart: the worker's watchdog exits the process when its main loop
+# stalls, and with on_failure + 3 retries a fourth exit left it down for good.
+restartPolicyType = "always"
