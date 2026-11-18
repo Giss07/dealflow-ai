@@ -228,6 +228,22 @@ def compute_arv(subject_sqft, comps):
     return round(statistics.median(c["price_per_sqft"] for c in comps) * subject_sqft)
 
 
+def neighbor_zip_codes(detail, own_zip, limit=4):
+    """ZIP codes from a property-details `nearbyZipcodes` list, minus its own.
+
+    The API returns entries like {'name': '92701', 'regionUrl': {...}}; plain
+    strings and {'zipcode': ...} are accepted too.
+    """
+    out = []
+    for z in detail.get("nearbyZipcodes") or []:
+        if isinstance(z, dict):
+            z = z.get("zipcode") or z.get("name")
+        z = str(z or "").strip()
+        if re.fullmatch(r"\d{5}", z) and z != str(own_zip) and z not in out:
+            out.append(z)
+    return out[:limit]
+
+
 # ── One listing ───────────────────────────────────────────────────────
 
 def analyze_listing(subject, sold_items, fetch_detail, more_sold_items=None, now_ms=None):

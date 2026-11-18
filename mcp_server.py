@@ -196,7 +196,7 @@ def _sold_last_6_months(zip_code, max_pages=10):
 
 def _analyze_distressed(item, detail, zip_code):
     """Comps, ARV, rehab and MAO for one keyword-matched listing (flip_analysis)."""
-    from flip_analysis import analyze_listing, detect_pool, detect_senior
+    from flip_analysis import analyze_listing, detect_pool, detect_senior, neighbor_zip_codes
     hi = item.get("hdpData", {}).get("homeInfo", {})
     detail = detail or {}
 
@@ -226,13 +226,8 @@ def _analyze_distressed(item, detail, zip_code):
     }
 
     def neighbor_sold():
-        zips = []
-        for z in (detail.get("nearbyZipcodes") or [])[:3]:
-            z = z.get("zipcode") if isinstance(z, dict) else z
-            if z and str(z) != str(zip_code):
-                zips.append(str(z))
         items = []
-        for z in zips:
+        for z in neighbor_zip_codes(detail, zip_code):
             items.extend(_sold_last_6_months(z))
         return items
 

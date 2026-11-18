@@ -164,6 +164,11 @@ def test_comps_arv_mao():
                        now_ms=NOW)
     check("fewer than 3 in the ZIP → neighbouring ZIPs searched", asked == [1])
 
+    nz = {"nearbyZipcodes": [{"name": "92701", "regionUrl": {"path": "/santa-ana-ca-92701/"}},
+                             {"name": "92703"}, {"zipcode": "92704"}, "92706", {"name": "Santa Ana"}]}
+    check("neighbouring ZIPs read from the API's {'name': ...} entries, own ZIP dropped",
+          fa.neighbor_zip_codes(nz, "92703") == ["92701", "92704", "92706"], fa.neighbor_zip_codes(nz, "92703"))
+
 
 def test_pool_and_senior_matching():
     print("\n=== Pool / 55+ matching and MISMATCH flags ===")
