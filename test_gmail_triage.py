@@ -601,7 +601,9 @@ def test_final_verification_and_alert_priority():
     lk, hi, rj, cl = A("ACCEPTED", conf="likely"), A("ACCEPTED", conf="high"), A("REJECTED"), A("CLOSE")
     check("LIKELY then HIGH keeps only HIGH", du._pick_alerts([lk, hi]) == [hi])
     check("HIGH and REJECTED are both sent", du._pick_alerts([rj, hi]) == [rj, hi])
-    check("LIKELY beats REJECTED", du._pick_alerts([rj, lk]) == [lk])
+    check("LIKELY and REJECTED are both sent", du._pick_alerts([rj, lk]) == [rj, lk])
+    check("LIKELY + HIGH + REJECTED sends HIGH and REJECTED",
+          du._pick_alerts([lk, rj, hi]) == [rj, hi])
     check("ACCEPTED beats CLOSE", du._pick_alerts([cl, hi]) == [hi])
     check("REJECTED beats HOT/CLOSE", du._pick_alerts([cl, rj]) == [rj])
     other = A("CLOSE", addr="Y")

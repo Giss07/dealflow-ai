@@ -1399,8 +1399,9 @@ def _pick_alerts(alerts):
     The first-one-wins merge dropped both BID ACCEPTED alerts on 2026-11-17:
     each case's Final Verification email (read as LIKELY) was processed seconds
     before its Notification email (HIGH), so only the hedged LIKELY alert went
-    out. Exception: a firm ACCEPTED and a REJECTED for the same address are both
-    sent, so the conflict is visible. Input order is kept for the survivors.
+    out. Exception: an acceptance (firm or LIKELY) and a REJECTED for the same
+    address are both sent, so the conflict is visible. Input order is kept for
+    the survivors.
     """
     by_addr = {}
     for a in alerts:
@@ -1409,7 +1410,7 @@ def _pick_alerts(alerts):
     for group in by_addr.values():
         best = min(group, key=_alert_rank)
         keep.add(id(best))
-        if _alert_rank(best) == 0:
+        if best['type'] == 'ACCEPTED':
             rejected = [a for a in group if a['type'] == 'REJECTED']
             if rejected:
                 keep.add(id(rejected[0]))
