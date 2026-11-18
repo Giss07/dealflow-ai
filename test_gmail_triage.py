@@ -521,6 +521,109 @@ def test_informational_notice_and_padded_status():
     check("and no rejection alert is sent", alerts2 == [], alerts2)
 
 
+WOODMAN = "1217 Woodman Way, Modesto, CA 95350"
+
+
+def _woodman_row(status="Counter"):
+    return {"Address": WOODMAN, "Purchase Contract Price": 270000, "Counter Price": 284800.0,
+            "Counter Date": "11/17/2026", STATUS_COL: status, "Notes": "[Previous counter: older]",
+            "Alert Sent": "Yes", "HUD Case #": "045-633026"}
+
+
+FINAL_VERIFICATION = dict(
+    subject="Fwd: Bid Acceptance Final Verification - Case Number 045-633026",
+    sender="Natalie Serna <natalie@example.com>", date="Tue, 17 Nov 2026 12:31:01 -0800",
+    msg_id="<final-verification@x>",
+    body=(f"SELLING BROKER/AGENT BID ACCEPTANCE NOTIFICATION HUD Case #: 045-633026 Address: {WOODMAN} "
+          f"November 17, 2026 Congratulations! Your bid to purchase HUD property 045-633026 has been "
+          f"provisionally accepted. You are required to perform a final verification of the bid "
+          f"information within two (2) business days."),
+)
+
+
+def _run_many(msgs, record):
+    """Process several emails (in order) against one row."""
+    import dealflow_updater as du
+    import database
+
+    fake = FakeIMAP({str(i + 1): m for i, m in enumerate(msgs)})
+    records = [record]
+    sheet = FakeSheet(records)
+    orig_imap = du.imaplib.IMAP4_SSL
+    orig_load, orig_mark = database.load_processed_message_ids, database.mark_email_processed
+    orig_creds = (du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD)
+    du.imaplib.IMAP4_SSL = lambda host, **kw: fake
+    database.load_processed_message_ids = lambda since_days=7: set()
+    database.mark_email_processed = lambda m, subject=None: None
+    du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD = "fake@example.com", "fake-pw"
+    try:
+        alerts = du.read_christian_emails(sheet, records)
+    finally:
+        du.imaplib.IMAP4_SSL = orig_imap
+        database.load_processed_message_ids, database.mark_email_processed = orig_load, orig_mark
+        du.CHRISTIAN_GMAIL, du.CHRISTIAN_APP_PASSWORD = orig_creds
+    return alerts, sheet
+
+
+def test_final_verification_and_alert_priority():
+    print("\n=== Final Verification emails and alert priority ===")
+    import dealflow_updater as du
+
+    # 1. The Final Verification wording is a firm acceptance on its own.
+    alerts, sheet, _w = _run_one(FINAL_VERIFICATION, _woodman_row())
+    check("Final Verification alone reads as HIGH",
+          len(alerts) == 1 and alerts[0]["type"] == "ACCEPTED" and alerts[0]["confidence"] == "high",
+          [(a["type"], a.get("confidence")) for a in alerts])
+    check("and sets Status to Accepted", sheet.writes_to(STATUS_COL) == [(2, "Accepted")],
+          sheet.writes_to(STATUS_COL))
+
+    # 2. A LIKELY email then a HIGH email for the same row in one run: the LIKELY
+    #    note must survive the HIGH write (it used to be erased).
+    likely = dict(FINAL_VERIFICATION, msg_id="<likely@x>",
+                  subject="Fwd: Bid Acceptance Notification: 045-633026; 1217 Woodman Way, Modesto, CA 95350",
+                  body=f"Bid Acceptance Notification Case Number: 045-633026 Address: {WOODMAN}")
+    high = dict(likely, msg_id="<high@x>",
+                body=f"Address: {WOODMAN} Najely, Congratulations! Your bid has been provisionally accepted.")
+    alerts2, sheet2 = _run_many([likely, high], _woodman_row())
+    final_notes = sheet2.writes_to("Notes")[-1][1] if sheet2.writes_to("Notes") else ""
+    check("LIKELY then HIGH: both alerts produced by the scan",
+          sorted(a.get("confidence") for a in alerts2) == ["high", "likely"],
+          [(a["type"], a.get("confidence")) for a in alerts2])
+    check("LIKELY note is not erased by the later HIGH note",
+          "[LIKELY ACCEPTED — VERIFY" in final_notes and "[ACCEPTED:" in final_notes, final_notes[-160:])
+
+    # 3. _pick_alerts: most important alert per address, not the first.
+    def A(t, addr="X", conf=None):
+        a = {"type": t, "address": addr}
+        if conf:
+            a["confidence"] = conf
+        return a
+    lk, hi, rj, cl = A("ACCEPTED", conf="likely"), A("ACCEPTED", conf="high"), A("REJECTED"), A("CLOSE")
+    check("LIKELY then HIGH keeps only HIGH", du._pick_alerts([lk, hi]) == [hi])
+    check("HIGH and REJECTED are both sent", du._pick_alerts([rj, hi]) == [rj, hi])
+    check("LIKELY beats REJECTED", du._pick_alerts([rj, lk]) == [lk])
+    check("ACCEPTED beats CLOSE", du._pick_alerts([cl, hi]) == [hi])
+    check("REJECTED beats HOT/CLOSE", du._pick_alerts([cl, rj]) == [rj])
+    other = A("CLOSE", addr="Y")
+    check("other addresses untouched, order kept", du._pick_alerts([other, lk, hi]) == [other, hi])
+
+    # 4. End to end through run_gmail_only: only the BID ACCEPTED alert is sent.
+    sent = []
+    orig_read, orig_existing, orig_send = du.read_christian_emails, du.check_existing_counter_alerts, du.send_alerts
+    du.read_christian_emails = lambda s, r: [dict(lk, address=WOODMAN, row=2, alert_col=None),
+                                             dict(hi, address=WOODMAN, row=2, alert_col=None)]
+    du.check_existing_counter_alerts = lambda r, s, h: []
+    du.send_alerts = lambda alerts, back_on_market=[]: (sent.extend(alerts), {WOODMAN})[1]
+    try:
+        sheet3 = FakeSheet([_woodman_row()])
+        du.run_gmail_only(sheet3, sheet3.get_all_records(), list(FakeSheet.HEADERS))
+    finally:
+        du.read_christian_emails, du.check_existing_counter_alerts, du.send_alerts = orig_read, orig_existing, orig_send
+    check("run_gmail_only sends the BID ACCEPTED alert, not the hedged one",
+          [(a["type"], a.get("confidence")) for a in sent] == [("ACCEPTED", "high")],
+          [(a["type"], a.get("confidence")) for a in sent])
+
+
 if __name__ == "__main__":
     run()
     test_alert_once_per_email()
@@ -528,5 +631,6 @@ if __name__ == "__main__":
     test_reacceptance_after_counter_alerts()
     test_counter_status_rule()
     test_informational_notice_and_padded_status()
+    test_final_verification_and_alert_priority()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.exit(1 if FAILS else 0)

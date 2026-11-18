@@ -335,6 +335,15 @@ HIGH_CONFIDENCE_ACCEPTANCE_KEYWORDS = [
     "you have been selected",
 ]
 
+# HIGH-confidence wording with a variable middle, checked after the exact
+# phrases above. HUD's "Bid Acceptance Final Verification" email says "Your bid
+# to purchase HUD property 045-633026 has been provisionally accepted"; the case
+# number broke the exact match, so on 2026-11-17 it was only read as LIKELY.
+HIGH_CONFIDENCE_ACCEPTANCE_PATTERNS = [
+    r"your bid to purchase hud property [\d-]+ has been provisionally accepted",
+    r"your bid to purchase hud property [\d-]+ has been accepted",
+]
+
 # LIKELY confidence — positive language but doesn't explicitly name your bid.
 # HUD's template subject "Bid Acceptance Notification" appears on every HUD
 # email (wins, counters, AND rejections), so these keywords can fire on
@@ -384,6 +393,18 @@ def detect_acceptance(email_text):
                 if space > 0 and space < 15:
                     context = context[space + 1:]
             return kw, context, "high"
+
+    for pattern in HIGH_CONFIDENCE_ACCEPTANCE_PATTERNS:
+        m = _re.search(pattern, clean_text)
+        if m:
+            start = max(0, m.start() - 60)
+            end = min(len(clean_text), m.end() + 90)
+            context = clean_text[start:end].strip()
+            if start > 0:
+                space = context.find(' ')
+                if space > 0 and space < 15:
+                    context = context[space + 1:]
+            return m.group(0), context, "high"
 
     # LIKELY confidence — positive but ambiguous (alert will be hedged)
     for kw in LIKELY_ACCEPTANCE_KEYWORDS:
@@ -612,6 +633,19 @@ def read_christian_emails(sheet, records):
     def _set_status(row_num, value):
         sheet.update_cell(row_num, status_col, value)
         live_status[row_num] = value
+
+    # Notes needs the same treatment. On 2026-11-17 a Final Verification email
+    # wrote a [LIKELY ACCEPTED] note to Woodman Way, then the Notification email
+    # for the same case appended its [ACCEPTED] note to the stale snapshot and
+    # silently erased it. Read through _notes_now(), write through _set_notes().
+    live_notes = {}
+
+    def _notes_now(row_num, record):
+        return live_notes.get(row_num, record.get('Notes', '') or '')
+
+    def _set_notes(row_num, value):
+        sheet.update_cell(row_num, notes_col, value)
+        live_notes[row_num] = value
 
     try:
         mail = imaplib.IMAP4_SSL('imap.gmail.com', timeout=IMAP_TIMEOUT)
@@ -857,7 +891,7 @@ def read_christian_emails(sheet, records):
                             if record.get('Address', '').strip().lower() == matched_address:
                                 row_num = i + 2
                                 current_status = _status_now(row_num, record)
-                                existing_notes = record.get('Notes', '') or ''
+                                existing_notes = _notes_now(row_num, record)
                                 try:
                                     alert_sent_col = headers.index('Alert Sent') + 1
                                 except ValueError:
@@ -879,7 +913,7 @@ def read_christian_emails(sheet, records):
                                             _set_status(row_num, 'Accepted')
                                         accept_note = f"[ACCEPTED: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
                                         new_notes = f"{existing_notes} | {accept_note}" if existing_notes else accept_note
-                                        sheet.update_cell(row_num, notes_col, new_notes)
+                                        _set_notes(row_num, new_notes)
                                         print(f"  Sheet updated to Accepted for row {row_num} (HIGH confidence)")
                                         alerts.append({
                                             'type': 'ACCEPTED',
@@ -917,7 +951,7 @@ def read_christian_emails(sheet, records):
                                                 f"{datetime.now().strftime('%m/%d/%Y')}]"
                                             )
                                             new_notes = f"{existing_notes} | {accept_note}" if existing_notes else accept_note
-                                            sheet.update_cell(row_num, notes_col, new_notes)
+                                            _set_notes(row_num, new_notes)
                                             print(f"  🎉 PROMOTED LIKELY→HIGH for row {row_num} (Case# + Bid matched)")
                                             alerts.append({
                                                 'type': 'ACCEPTED',
@@ -954,7 +988,7 @@ def read_christian_emails(sheet, records):
                                         else:
                                             likely_note = f"[LIKELY ACCEPTED — VERIFY: {accept_context} — {datetime.now().strftime('%m/%d/%Y')}]"
                                             new_notes = f"{existing_notes} | {likely_note}" if existing_notes else likely_note
-                                            sheet.update_cell(row_num, notes_col, new_notes)
+                                            _set_notes(row_num, new_notes)
                                             print(f"  Notes flagged LIKELY ACCEPTED for row {row_num} (status unchanged: {current_status!r})")
                                             alerts.append({
                                                 'type': 'ACCEPTED',
@@ -983,7 +1017,7 @@ def read_christian_emails(sheet, records):
                                 # Check if there's already a counter price - save to notes
                                 existing_counter = record.get('Counter Price', '')
                                 existing_date = record.get('Counter Date', '')
-                                existing_notes = record.get('Notes', '')
+                                existing_notes = _notes_now(row_num, record)
                                 current_status = _status_now(row_num, record)
 
                                 # Only worth a history note when the number actually moved.
@@ -1001,7 +1035,7 @@ def read_christian_emails(sheet, records):
                                         new_notes = f"{existing_notes} | {history_note}"
                                     else:
                                         new_notes = history_note
-                                    sheet.update_cell(row_num, notes_col, new_notes)
+                                    _set_notes(row_num, new_notes)
                                     print(f"  Previous counter saved to Notes!")
 
                                 # Update with new counter price and date
@@ -1066,10 +1100,10 @@ def read_christian_emails(sheet, records):
                                         current_status = _status_now(row_num, record)
                                         if current_status not in ['Rejected', 'STP', 'Accepted']:
                                             _set_status(row_num, 'Rejected')
-                                            existing_notes = record.get('Notes', '')
+                                            existing_notes = _notes_now(row_num, record)
                                             rejection_note = f"[Rejected: {rejection_context} — {datetime.now().strftime('%m/%d/%Y')}]"
                                             new_notes = f"{existing_notes} | {rejection_note}" if existing_notes else rejection_note
-                                            sheet.update_cell(row_num, notes_col, new_notes)
+                                            _set_notes(row_num, new_notes)
                                             print(f"  Sheet updated to Rejected for row {row_num}!")
                                             try:
                                                 alert_sent_col = headers.index('Alert Sent') + 1
@@ -1348,6 +1382,40 @@ def _clear_alert_sent(sheet, alert):
         print(f"  Could not clear Alert Sent for {alert['address']}: {exc}")
 
 
+# Priority when one address has several alerts in a run (lower = more important).
+ALERT_PRIORITY = {('ACCEPTED', 'high'): 0, ('ACCEPTED', 'likely'): 1,
+                  'REJECTED': 2, 'HOT': 3, 'CLOSE': 4}
+
+
+def _alert_rank(a):
+    if a['type'] == 'ACCEPTED':
+        return ALERT_PRIORITY.get(('ACCEPTED', a.get('confidence', 'high')), 0)
+    return ALERT_PRIORITY.get(a['type'], 99)
+
+
+def _pick_alerts(alerts):
+    """One alert per address: the most important one, not the first one.
+
+    The first-one-wins merge dropped both BID ACCEPTED alerts on 2026-11-17:
+    each case's Final Verification email (read as LIKELY) was processed seconds
+    before its Notification email (HIGH), so only the hedged LIKELY alert went
+    out. Exception: a firm ACCEPTED and a REJECTED for the same address are both
+    sent, so the conflict is visible. Input order is kept for the survivors.
+    """
+    by_addr = {}
+    for a in alerts:
+        by_addr.setdefault(a['address'], []).append(a)
+    keep = set()
+    for group in by_addr.values():
+        best = min(group, key=_alert_rank)
+        keep.add(id(best))
+        if _alert_rank(best) == 0:
+            rejected = [a for a in group if a['type'] == 'REJECTED']
+            if rejected:
+                keep.add(id(rejected[0]))
+    return [a for a in alerts if id(a) in keep]
+
+
 def send_alerts(alerts, back_on_market=[]):
     """Send the alert digests. Returns the set of addresses actually delivered.
 
@@ -1486,14 +1554,8 @@ def run_gmail_only(sheet, records, headers):
     print("\n--- Checking Existing Counter Prices ---")
     existing_alerts = check_existing_counter_alerts(records, sheet, headers)
 
-    # Combine and deduplicate
-    all_alerts = email_alerts + existing_alerts
-    seen = set()
-    unique_alerts = []
-    for a in all_alerts:
-        if a['address'] not in seen:
-            seen.add(a['address'])
-            unique_alerts.append(a)
+    # Combine: the most important alert per address (see _pick_alerts)
+    unique_alerts = _pick_alerts(email_alerts + existing_alerts)
 
     # Send alerts
     if unique_alerts:
@@ -1532,14 +1594,8 @@ def run_full(sheet, records, headers, status_col):
     print("\n--- Checking Existing Counter Prices ---")
     existing_alerts = check_existing_counter_alerts(records, sheet, headers)
 
-    # Combine and deduplicate alerts
-    all_alerts = email_alerts + existing_alerts
-    seen = set()
-    unique_alerts = []
-    for a in all_alerts:
-        if a['address'] not in seen:
-            seen.add(a['address'])
-            unique_alerts.append(a)
+    # Combine: the most important alert per address (see _pick_alerts)
+    unique_alerts = _pick_alerts(email_alerts + existing_alerts)
 
     # Step 3: Check Zillow status
     print("\n--- Checking Zillow Status ---")
