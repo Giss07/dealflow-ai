@@ -73,6 +73,8 @@
   .stat b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap;
             overflow: hidden; text-overflow: ellipsis; }
   .note { color: var(--muted); font-size: 13px; }
+  .arvcalc { color: var(--muted); font-size: 12px; line-height: 1.35; }
+  .arvcalc b { color: var(--text); font-weight: 600; }
   .stat.edit { cursor: pointer; border: 1px dashed transparent; }
   .stat.edit:hover { border-color: var(--line); }
   .stat.edited { border: 1px solid #1d4ed8; }
@@ -106,7 +108,7 @@
   .sheet { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; width: 100%;
            max-width: 560px; max-height: 85vh; overflow: auto; padding: 18px; }
   .sheet h2 { font-size: 17px; margin-bottom: 2px; }
-  .sheet .sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+  .sheet .sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; white-space: pre-line; }
   .comp { display: flex; justify-content: space-between; gap: 10px; padding: 11px 0; border-top: 1px solid var(--line); }
   .comp .a { font-size: 14px; font-weight: 600; }
   .comp .m { color: var(--muted); font-size: 12px; margin-top: 2px; }
@@ -297,6 +299,7 @@ function cardHtml(c, i) {
         <div class="stat"><span class="lbl">Profit @ max</span><b>${short(v.profit)}</b></div>
         <div class="stat"><span class="lbl">On market</span><b>${c.days_on_market ?? '—'} d</b></div>
       </div>
+      ${c.arv_explain ? `<div class="arvcalc">ARV: ${esc(c.arv_explain)}${v.arvEdited ? ` · <b>you set ${money(v.arv)}</b>` : ''}</div>` : ''}
       <div class="buttons">
         ${c.zillow_url ? `<a href="${esc(c.zillow_url)}" target="_blank" rel="noopener">View on Zillow</a>` : ''}
         <button type="button" onclick="openComps(${i})" ${c.comps.length || (c.excluded_comps || []).length ? '' : 'disabled'}>See comps (${c.comps.length})</button>
@@ -390,7 +393,8 @@ function openComps(i) {
   $('sheet-title').textContent = c.street;
   const ex = c.excluded_comps || [];
   const left = ex.length ? ` · ${ex.length} not used` : '';
-  $('sheet-sub').textContent = `ARV ${money(c.arv)} from ${c.comps.length} sold comp${c.comps.length === 1 ? '' : 's'}${left}`;
+  $('sheet-sub').textContent = `ARV ${money(c.arv)} from ${c.comps.length} sold comp${c.comps.length === 1 ? '' : 's'}${left}`
+    + (c.arv_explain ? `\n${c.arv_explain}` : '');
   const exHtml = ex.length ? `<div class="excl-h">Not used in ARV</div>` + ex.map(x => `
     <div class="comp excluded">
       <div>

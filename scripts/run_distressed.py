@@ -78,6 +78,8 @@ def _print_zip_table(zip_code, rows, comps_by_subject):
         flags = [f for f in (r["confidence"] if r["confidence"] == "LOW CONFIDENCE" else "", r["comp_flags"], r["note"]) if f]
         print(f"      pool {r['pool']} · 55+ {r['55_plus']} · rehab: {r['rehab_reason']}"
               + (f" · ⚠ {' · '.join(flags)}" if flags else ""))
+        if r["arv_calc"]:
+            print(f"      ARV: {r['arv_calc']}")
         if r["arv_basis"]:
             print(f"      ARV basis: {r['arv_basis']}")
         print(f"      {r['zillow_url']}")

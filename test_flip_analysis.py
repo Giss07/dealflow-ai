@@ -303,8 +303,9 @@ def test_bad_comp_exclusions():
     ex = {c["zpid"]: c["excluded_reason"] for c in a["excluded_comps"]}
     check("the $1.5M land sale is excluded as public record only",
           ex.get("land", "").startswith("Sold by public record only"), ex)
-    check("ARV comes from the 3 houses only, not $1.32M", [c["zpid"] for c in a["comps"]] == ["h0", "h1", "h2"]
-          and a["arv"] == round(fa.statistics.median([375, 393.75, 412.5]) * 792), (a["arv"], [c["zpid"] for c in a["comps"]]))
+    check("ARV comes from the 3 houses only, not $1.32M: median $315,000 − size adj $800 = $314,200",
+          [c["zpid"] for c in a["comps"]] == ["h0", "h1", "h2"] and a["arv"] == 314_200,
+          (a["arv"], [c["zpid"] for c in a["comps"]]))
 
     big = dict(sold("big", 600_000), lotAreaValue=20_000, lotAreaUnit="sqft")
     a2 = fa.analyze_listing(dict(SUBJECT, lot_sqft=7_000), [big, sold("s1", 600_000), sold("s2", 610_000),
@@ -330,6 +331,31 @@ def test_bad_comp_exclusions():
                              no_pool_no_senior, now_ms=NOW)["excluded_comps"] == [])
     check("excluded comps never reach the ARV", all(c not in a3["comps"] for c in a3["excluded_comps"]))
     check("basis note counts each kind", "1 excluded (1 outlier)" in a3["arv_basis"], a3["arv_basis"])
+
+
+def test_arv_formula():
+    print("\n=== ARV = median sold price + $100/sqft size adjustment, capped ===")
+    comp = lambda price, sqft: {"sold_price": price, "sqft": sqft, "price_per_sqft": price / sqft}
+    # 1485 N Fillmore Ave, Rialto (1,800 sqft) and its three comps from the 92376 rerun.
+    fillmore = [comp(635_000, 1_566), comp(648_000, 1_748), comp(645_000, 1_630)]
+    c = fa.arv_calculation(1_800, fillmore)
+    check("1485 N Fillmore Ave: median $645,000 + $17,000 = $662,000 → capped at $648,000",
+          (c["median_price"], c["size_adj"], c["raw"], c["cap"], c["arv"]) == (645_000, 17_000, 662_000, "highest", 648_000), c)
+    check("explanation reads like the card",
+          c["explain"] == "Median $645,000 + size adj $17,000 = $662,000 → capped at highest comp $648,000", c["explain"])
+    small = fa.arv_calculation(1_200, fillmore)
+    check("smaller subject: $645,000 − $43,000 = $602,000 → floored at lowest comp $635,000",
+          (small["size_adj"], small["raw"], small["cap"], small["arv"]) == (-43_000, 602_000, "lowest", 635_000), small["explain"])
+    check("negative adjustment shown with a minus", small["explain"].startswith("Median $645,000 − size adj $43,000"))
+    mid = fa.arv_calculation(1_650, fillmore)
+    check("inside the comp range → no cap: $645,000 + $2,000 = $647,000",
+          (mid["arv"], mid["cap"]) == (647_000, None) and "capped" not in mid["explain"], mid["explain"])
+    even = fa.arv_calculation(1_500, [comp(500_000, 1_400), comp(520_000, 1_500), comp(560_000, 1_600), comp(600_000, 1_700)])
+    check("even count: median of the middle two ($540,000), sqft median 1,550 → −$5,000 = $535,000",
+          (even["median_price"], even["median_sqft"], even["arv"]) == (540_000, 1_550, 535_000), even)
+    one = fa.arv_calculation(2_000, [comp(400_000, 1_000)])
+    check("one comp: the cap pins ARV to that sale", one["arv"] == 400_000 and one["cap"] == "highest")
+    check("no comps / no sqft → None", fa.arv_calculation(1_500, []) is None and fa.arv_calculation(None, fillmore) is None)
 
 
 def test_csv_columns():
@@ -368,6 +394,7 @@ if __name__ == "__main__":
     test_remodeled()
     test_mobile_homes()
     test_bad_comp_exclusions()
+    test_arv_formula()
     test_csv_columns()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.exit(1 if FAILS else 0)

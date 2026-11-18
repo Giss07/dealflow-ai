@@ -10,7 +10,7 @@ import csv
 import io
 
 LISTING_COLUMNS = [
-    "zip", "address", "list_price", "arv", "arv_basis", "comps_used", "remodeled_comps",
+    "zip", "address", "list_price", "arv", "arv_calc", "arv_basis", "comps_used", "remodeled_comps",
     "unknown_comps", "fixers_excluded", "confidence", "comp_flags",
     "rehab_tier", "rehab_per_sqft", "rehab", "rehab_reason", "mao", "mao_vs_list",
     "mao_vs_list_pct", "profit_at_mao", "days_on_market", "beds", "baths", "sqft",
@@ -37,7 +37,8 @@ def rows_for(zip_code, listing):
     pct = a.get("mao_vs_list_pct")
     row = {
         "zip": zip_code, "address": listing.get("address"),
-        "list_price": listing.get("price"), "arv": a.get("arv"), "arv_basis": a.get("arv_basis") or "",
+        "list_price": listing.get("price"), "arv": a.get("arv"), "arv_calc": a.get("arv_explain") or "",
+        "arv_basis": a.get("arv_basis") or "",
         "comps_used": a.get("comps_used", 0), "remodeled_comps": a.get("remodeled_comps", 0),
         "unknown_comps": a.get("unknown_comps", 0),
         "fixers_excluded": "; ".join(f"{f['address']} ({f['evidence']})" for f in a.get("skipped_fixers") or []),
@@ -132,6 +133,7 @@ def card(zip_code, listing):
         "low_confidence": low_conf,
         "multi_family": multi, "mobile_home": mobile,
         "comp_flags": a.get("comp_flags") or [], "arv_basis": a.get("arv_basis") or "",
+        "arv_explain": a.get("arv_explain") or "",
         "note": a.get("note") or "", "zillow_url": a.get("zillow_url") or "",
         "comps": [{"address": c.get("address"), "sold_price": c.get("sold_price"),
                    "sold_date": c.get("sold_date"), "sqft": c.get("sqft"),

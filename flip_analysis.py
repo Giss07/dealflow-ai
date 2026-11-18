@@ -12,8 +12,10 @@ Per-listing flip analysis for search_distressed: sold comps, ARV, rehab, MAO.
             Also never used, and shown with the reason: sales by public record
             only (no MLS listing), lots over 2x the subject's, and $/sqft over
             1.5x the median of the other comps.
-    ARV     median $/sqft of those comps × subject sqft. Fewer than 3 is
-            "LOW CONFIDENCE"; none means no ARV and no MAO.
+    ARV     median sold price of those comps, plus $100 per sqft the subject
+            is larger (minus, if smaller) than the comps' median sqft, capped
+            between the lowest and highest comp sold price. Fewer than 3 comps
+            is "LOW CONFIDENCE"; none means no ARV and no MAO.
     rehab   Light $30 / Medium $55 / Heavy $90 per sqft from the description,
             one tier up when built before 1960.
     MAO     flip_calculator.max_allowable_offer at 10% of ARV profit.
@@ -402,10 +404,39 @@ def arv_basis(comps, excluded):
     return note
 
 
-def compute_arv(subject_sqft, comps):
+SIZE_ADJ_PER_SQFT = 100          # $ per sqft of size difference from the comps' median
+
+
+def arv_calculation(subject_sqft, comps):
+    """How the ARV is built, or None without comps or subject sqft.
+
+    median sold price + $100 × (subject sqft − comps' median sqft), then held
+    between the lowest and highest comp sold price. (Replaced median $/sqft ×
+    sqft on 2026-11-18: 1485 N Fillmore Ave went from $712,270 — above every
+    comp it was built from — to $648,000, its highest comp.)
+    """
     if not comps or not subject_sqft:
         return None
-    return round(statistics.median(c["price_per_sqft"] for c in comps) * subject_sqft)
+    prices = [c["sold_price"] for c in comps]
+    median_price = statistics.median(prices)
+    median_sqft = statistics.median(c["sqft"] for c in comps)
+    size_adj = SIZE_ADJ_PER_SQFT * (subject_sqft - median_sqft)
+    raw = median_price + size_adj
+    low, high = min(prices), max(prices)
+    cap = "highest" if raw > high else "lowest" if raw < low else None
+    arv = high if cap == "highest" else low if cap == "lowest" else raw
+    sign = "+" if size_adj >= 0 else "−"
+    explain = f"Median ${median_price:,.0f} {sign} size adj ${abs(size_adj):,.0f} = ${raw:,.0f}"
+    if cap:
+        explain += f" → capped at {cap} comp ${arv:,.0f}"
+    return {"arv": round(arv), "median_price": round(median_price), "median_sqft": round(median_sqft),
+            "subject_sqft": round(subject_sqft), "size_adj": round(size_adj), "raw": round(raw),
+            "cap": cap, "low": round(low), "high": round(high), "explain": explain}
+
+
+def compute_arv(subject_sqft, comps):
+    calc = arv_calculation(subject_sqft, comps)
+    return calc["arv"] if calc else None
 
 
 def neighbor_zip_codes(detail, own_zip, limit=4):
@@ -437,7 +468,7 @@ def analyze_listing(subject, sold_items, fetch_detail, more_sold_items=None, now
     """
     out = {"comps": [], "comp_flags": [], "arv": None, "comps_used": 0,
            "remodeled_comps": 0, "unknown_comps": 0, "skipped_fixers": [], "excluded_comps": [], "arv_basis": "",
-           "mobile_home": False,
+           "mobile_home": False, "arv_calc": None, "arv_explain": "",
            "confidence": None, "rehab": None, "mao": None, "profit_at_mao": None,
            "mao_vs_list": None, "mao_vs_list_pct": None, "note": None,
            "neighbor_zips_searched": False}
@@ -464,7 +495,10 @@ def analyze_listing(subject, sold_items, fetch_detail, more_sold_items=None, now
     out["skipped_fixers"] = [{"address": c["address"], "evidence": c["remodeled_evidence"]}
                              for c in excluded if c["excluded_reason"].startswith("Fixer")]
     out["confidence"] = "LOW CONFIDENCE" if len(comps) < COMPS_MIN else "OK"
-    out["arv"] = compute_arv(subject["sqft"], comps)
+    calc = arv_calculation(subject["sqft"], comps)
+    out["arv"] = calc["arv"] if calc else None
+    out["arv_calc"] = calc
+    out["arv_explain"] = calc["explain"] if calc else ""
     if out["arv"] is None:
         out["note"] = "no usable sold comps (6 mo, 0.5 mi, ±20% sqft, ±1 bed, same type, not a fixer)"
         return out

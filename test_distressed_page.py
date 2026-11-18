@@ -66,6 +66,8 @@ FIXTURE = {
     ],
     "92704": [listing("5 Over Rd, Santa Ana, CA 92704", 500_000, mao=510_000, arv=750_000)],  # MAO above list
 }
+next(l for l in FIXTURE["92703"] if l["address"].startswith("2 Near St"))["analysis"]["arv_explain"] = (
+    "Median $645,000 + size adj $17,000 = $662,000 → capped at highest comp $648,000")
 next(l for l in FIXTURE["92703"] if l["address"].startswith("2 Near St"))["analysis"]["excluded_comps"] = [{
     "address": "530 W Rialto Ave, Rialto, CA 92376", "sold_price": 1_500_000, "sold_date": "2026-08-17",
     "sqft": 900, "price_per_sqft": 1666.7, "distance_mi": 0.41, "pool": False, "senior": False,
@@ -157,6 +159,7 @@ def test_search_flow():
     check("card carries comps with price, $/sqft, distance, remodeled",
           {"sold_price", "price_per_sqft", "distance_mi", "remodeled"} <= set(by["2 Near St"]["comps"][0]))
     check("city split from address", by["2 Near St"]["city"] == "Santa Ana", by["2 Near St"]["city"])
+    check("the ARV calculation reaches the card", by["2 Near St"]["arv_explain"].startswith("Median $645,000 + size adj"))
     check("excluded comps reach the card with their reason",
           by["2 Near St"]["excluded_comps"][0]["reason"].startswith("Sold by public record"))
 
@@ -166,6 +169,7 @@ def test_search_flow():
           r.status_code == 200 and "attachment" in r.headers["Content-Disposition"] and "2_Near_St.csv" in r.headers["Content-Disposition"])
     check("it has the summary and the comps table",
           body.startswith("zip,92703") and "mao,630000" in body and "comp_address" in body and "0 Comp St" in body)
+    check("the property CSV carries the ARV calculation", 'arv_calc,"Median $645,000 + size adj $17,000' in body)
     check("the CSV lists the excluded comp as not used, with the reason",
           "used_in_arv" in body and ",no,Sold by public record only (not on the MLS)," in body)
     r = client.get(f"/api/distressed/search/{sid}/csv")

@@ -298,7 +298,8 @@ def search_distressed(zip_code: str):
     ±20% sqft, ±1 bed, pool and 55+ matched, with POOL / 55+ MISMATCH flags
     when non-matching comps fill in; each REMODELED / NOT (clear fixer) /
     UNKNOWN, REMODELED preferred, then UNKNOWN, NOT never used), ARV =
-    median comp $/sqft × sqft ("LOW CONFIDENCE" under 3 comps; public-record-only
+    median comp sold price + $100/sqft size adjustment, capped between the
+    lowest and highest comp ("LOW CONFIDENCE" under 3 comps; public-record-only
     sales, lots over 2x the subject's and $/sqft outliers over 1.5x the other
     comps' median are excluded and listed with the reason), a
     Light/Medium/Heavy rehab estimate
