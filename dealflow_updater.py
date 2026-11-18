@@ -269,6 +269,47 @@ def normalize_address(addr):
     return a
 
 
+def _contains_street(text, street):
+    """`street` appears in `text` as whole words: "123 main street" must not
+    match inside "1123 main street" (or "123 main streets")."""
+    return bool(re.search(r"(?<![0-9a-z])" + re.escape(street) + r"(?![0-9a-z])", text))
+
+
+def _address_place(address):
+    """(zip, city) of a sheet address, lowercased; either may be ''."""
+    a = address.lower().replace("\n", ", ")
+    z = re.findall(r"\b(\d{5})(?:-\d{4})?\b", a)
+    parts = [p.strip() for p in a.split(",")]
+    city = parts[1] if len(parts) > 2 and not re.fullmatch(r"[a-z]{2}( \d{5})?", parts[1]) else ""
+    return (z[-1] if z else ""), city
+
+
+def _pick_one(matches, email_lower):
+    """One sheet address from several street matches, or None when it is
+    ambiguous. Rows for the same property (same street, same ZIP) count as
+    one. Otherwise the row whose ZIP, then city, appears in the email wins.
+
+    Before 2026-11-18 the first match won, so a HUD counter for "1206 S Palm
+    St, Hemet" could update an "1206 S Palm St, Anaheim" row added from the
+    Distressed Deals page."""
+    if not matches:
+        return None
+    distinct = {}
+    for m in matches:
+        distinct.setdefault((normalize_address(m.split(",")[0].strip()), _address_place(m)[0]), m)
+    if len(distinct) == 1:
+        return matches[0]
+    def score(m):
+        z, city = _address_place(m)
+        return (2 if z and re.search(rf"\b{z}\b", email_lower) else 0) + (1 if city and city in email_lower else 0)
+    ranked = sorted(distinct.values(), key=score, reverse=True)
+    if score(ranked[0]) > score(ranked[1]):
+        return ranked[0]
+    print(f"  AMBIGUOUS ADDRESS — {len(distinct)} rows match and the email does not say which: "
+          + " | ".join(distinct.values()))
+    return None
+
+
 def find_matching_address(email_text, sheet_addresses):
     email_lower = email_text.lower()
     email_normalized = normalize_address(email_text)
@@ -277,26 +318,43 @@ def find_matching_address(email_text, sheet_addresses):
     hud_match = re.search(r'address:\s*([^\n\r]+)', email_lower)
     if hud_match:
         hud_addr = normalize_address(hud_match.group(1).strip())
-        for address in sheet_addresses:
-            parts = normalize_address(address.split(',')[0].strip())
-            if parts and len(parts) > 5 and parts in hud_addr:
-                return address
+        found = [a for a in sheet_addresses
+                 if (lambda parts: parts and len(parts) > 5 and _contains_street(hud_addr, parts))(
+                     normalize_address(a.split(',')[0].strip()))]
+        if found:
+            return _pick_one(found, email_lower)
 
     # Second try: exact match with normalization
-    for address in sheet_addresses:
-        parts = normalize_address(address.split(',')[0].strip())
-        if parts and len(parts) > 5 and parts in email_normalized:
-            return address
+    found = [a for a in sheet_addresses
+             if (lambda parts: parts and len(parts) > 5 and _contains_street(email_normalized, parts))(
+                 normalize_address(a.split(',')[0].strip()))]
+    if found:
+        return _pick_one(found, email_lower)
 
     # Third try: match on street number + street name only (ignore unit)
+    found = []
     for address in sheet_addresses:
         street = address.split(',')[0].strip().lower()
         # Get just the street number and name, drop unit
         street_core = re.sub(r'\s*(apt|unit|ste|suite|#)\s*\S*$', '', street, flags=re.IGNORECASE).strip()
-        if street_core and len(street_core) > 5 and street_core in email_lower:
-            return address
+        if street_core and len(street_core) > 5 and _contains_street(email_lower, street_core):
+            found.append(address)
+    return _pick_one(found, email_lower)
 
-    return None
+
+def match_hud_street(hud_address, sheet_addresses, email_text):
+    """Fallback for HUD emails: the street extracted from the email against
+    each row's street, as whole words in either direction, then _pick_one.
+    (It used to be a bare `in` both ways on the full strings.)"""
+    hud_street = normalize_address(hud_address.split(',')[0].strip())
+    if len(hud_street) <= 5:
+        return None
+    found = []
+    for sheet_addr in sheet_addresses:
+        sheet_street = normalize_address(sheet_addr.split(',')[0].strip())
+        if _contains_street(sheet_street, hud_street) or (len(sheet_street) > 5 and _contains_street(hud_street, sheet_street)):
+            found.append(sheet_addr)
+    return _pick_one(found, email_text.lower())
 
 # Phrases that signal the email is describing SOMEONE ELSE's bid being accepted
 # (not yours). Anything in this list short-circuits detect_acceptance — the
@@ -869,13 +927,9 @@ def read_christian_emails(sheet, records):
 
                 # If normal matching failed but HUD address was extracted, try fuzzy match
                 if not matched_address and hud_address_match:
-                    for sheet_addr in sheet_addresses:
-                        # Match on street number + street name
-                        hud_street = hud_address_match.split(',')[0].strip()
-                        if hud_street in sheet_addr or sheet_addr in hud_street:
-                            matched_address = sheet_addr
-                            print(f"  HUD fuzzy match: {matched_address}")
-                            break
+                    matched_address = match_hud_street(hud_address_match, sheet_addresses, full_text)
+                    if matched_address:
+                        print(f"  HUD fuzzy match: {matched_address}")
 
                 if matched_address:
                     print(f"  Match found: {matched_address}")

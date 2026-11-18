@@ -6,7 +6,9 @@ longer than gunicorn's 30s request timeout, so POST starts a background thread
 and the page polls the DistressedSearch row. Results are saved after each ZIP,
 so cards appear as ZIPs finish, from whichever gunicorn worker answers.
 
-Read-only: nothing here submits offers or writes to the DealFlow sheet.
+Nothing here submits an offer. "Add to Tracker" appends one row to the offer
+tracker sheet (tracker_sheet.py) for the agent to submit; that is the page's
+only write outside its own search table.
 """
 
 import json
@@ -19,6 +21,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, Response, jsonify, render_template, request
 
 import distressed_report as report
+import tracker_sheet
 from database import DistressedSearch, get_session
 
 logger = logging.getLogger(__name__)
@@ -94,6 +97,22 @@ def _cards(row):
     return report.sort_cards(cards), errors
 
 
+def _mark_tracker(cards):
+    """card["tracker"] = 'tracker' / 'archive' / None from the sheet (cached ~1 min).
+    Returns an error message when the sheet can't be read (cards stay None)."""
+    try:
+        for c in cards:
+            hit = tracker_sheet.find_property(c["address"])
+            c["tracker"] = hit["where"] if hit else None
+            c["tracker_row"] = hit["row"] if hit else None
+        return None
+    except Exception as e:
+        logger.warning(f"[distressed] tracker lookup failed: {e}")
+        for c in cards:
+            c.setdefault("tracker", None)
+        return f"Couldn't check the tracker sheet: {type(e).__name__}"
+
+
 def _find_listing(row, zip_code, address):
     data = json.loads(row.result or "{}").get(zip_code) or {}
     for lst in data.get("listings", []):
@@ -152,14 +171,80 @@ def search_status(search_id):
         if not row:
             return jsonify({"error": "Not found"}), 404
         cards, errors = _cards(row)
+        tracker_error = _mark_tracker(cards) if row.status != "running" else None
         return jsonify({
             "id": row.id, "status": row.status, "zips": row.zips.split(","),
             "zips_done": row.zips_done or 0, "error": row.error_message,
-            "zip_errors": errors, "cards": cards,
+            "zip_errors": errors, "cards": cards, "tracker_error": tracker_error,
             "started": row.created_at.isoformat() + "Z" if row.created_at else None,
         })
     finally:
         db.close()
+
+
+def _money_or_none(v, name, upper=50_000_000):
+    if v in (None, ""):
+        return None
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number")
+    if not (0 <= n <= upper):
+        raise ValueError(f"{name} must be between $0 and ${upper:,}")
+    return round(n)
+
+
+def tracker_notes(card, arv, rehab, mao):
+    """'From Distressed Deals – 3 comps, light rehab, max offer $528,100' plus
+    what the owner edited on the page."""
+    notes = (f"From Distressed Deals – {len(card['comps'])} comps, "
+             f"{card['rehab_tier'] or 'unknown'} rehab, max offer ${mao:,.0f}")
+    if card["rehab"] is not None and rehab != round(card["rehab"]):
+        notes += f"; Rehab edited from ${card['rehab']:,.0f} to ${rehab:,.0f}"
+    if card["arv"] is not None and arv != round(card["arv"]):
+        notes += f"; ARV edited from ${card['arv']:,.0f} to ${arv:,.0f}"
+    return notes
+
+
+@bp.route("/api/distressed/tracker", methods=["POST"])
+def add_to_tracker():
+    """Append a property from a saved search to the offer tracker sheet.
+
+    The row is rebuilt from the saved search; only the offer and any ARV /
+    rehab the owner edited come from the page."""
+    from flip_calculator import max_allowable_offer
+    body = request.get_json(silent=True) or {}
+    try:
+        offer = _money_or_none(body.get("offer"), "Offer")
+        arv_in = _money_or_none(body.get("arv"), "ARV")
+        rehab_in = _money_or_none(body.get("rehab"), "Rehab", upper=5_000_000)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if not offer:
+        return jsonify({"error": "Enter an offer price"}), 400
+    db = get_session()
+    try:
+        row = db.get(DistressedSearch, int(body.get("search_id") or 0))
+        lst = _find_listing(row, str(body.get("zip") or ""), body.get("address") or "") if row else None
+    finally:
+        db.close()
+    if not lst:
+        return jsonify({"error": "Property not in this search"}), 404
+    card = report.card(str(body.get("zip")), lst)
+    if card["mao"] is None:
+        return jsonify({"error": "This property has no max offer, so it can't go to the tracker from here"}), 400
+    arv = arv_in if arv_in is not None else round(card["arv"])
+    rehab = rehab_in if rehab_in is not None else round(card["rehab"] or 0)
+    mao, _ = max_allowable_offer(arv, rehab)
+    if mao is None:
+        return jsonify({"error": "No offer reaches a 10% profit at that ARV and rehab"}), 400
+    try:
+        result = tracker_sheet.add_property(card["address"], card["zillow_url"], arv, offer, rehab,
+                                            tracker_notes(card, arv, rehab, mao))
+    except Exception as e:
+        logger.error(f"[distressed] add to tracker failed for {card['address']}: {e}", exc_info=True)
+        return jsonify({"error": f"Couldn't write to the tracker sheet: {type(e).__name__}"}), 502
+    return jsonify(result)
 
 
 @bp.route("/api/distressed/search/<int:search_id>/csv")

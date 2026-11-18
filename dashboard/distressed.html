@@ -73,6 +73,26 @@
   .stat b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap;
             overflow: hidden; text-overflow: ellipsis; }
   .note { color: var(--muted); font-size: 13px; }
+  .stat.edit { cursor: pointer; border: 1px dashed transparent; }
+  .stat.edit:hover { border-color: var(--line); }
+  .stat.edited { border: 1px solid #1d4ed8; }
+  .stat input { width: 100%; font-size: 15px; font-weight: 700; padding: 2px 4px; border-radius: 6px;
+                border: 1px solid var(--blue); background: var(--panel); color: var(--text); }
+  .pill.edited { background: #1e3a8a; color: #bfdbfe; margin-left: 0; }
+  .reset { color: #93c5fd; font-size: 11px; margin-left: 4px; cursor: pointer; text-decoration: underline; background: none; border: 0; padding: 0; }
+  .buttons .tracker { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .buttons .tracker.done { background: var(--green-bg); border-color: #166534; color: #86efac; cursor: default; }
+  .buttons .tracker.exists { background: var(--gray-bg); border-color: var(--line); color: #cbd5e1; cursor: default; }
+  .confirm label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  .confirm input { width: 100%; font-size: 22px; font-weight: 700; padding: 10px 12px; border-radius: 10px;
+                   border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .confirm .rows { font-size: 14px; margin-top: 10px; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+  .confirm .rows span:nth-child(odd) { color: var(--muted); }
+  .confirm .acts { display: flex; gap: 10px; margin-top: 16px; }
+  .confirm .acts button { flex: 1; padding: 12px; border-radius: 10px; border: 0; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .confirm .ok { background: var(--blue); color: #fff; }
+  .confirm .no { background: var(--gray-bg); color: var(--text); }
+  .confirm .err { color: #fca5a5; font-size: 13px; margin-top: 10px; }
   .buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
   .buttons a, .buttons button { flex: 1 1 0; min-width: 96px; text-align: center; font-size: 14px; font-weight: 600;
             padding: 11px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg);
@@ -137,6 +157,21 @@
   <div id="unpriced"></div>
 </div>
 
+<div class="sheet-bg" id="confirm-bg" onclick="if (event.target === this) closeConfirm()">
+  <div class="sheet confirm" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h2 id="confirm-title">Add to Tracker</h2>
+    <div class="sub" id="confirm-sub"></div>
+    <label for="offer">Offer price</label>
+    <input id="offer" type="number" inputmode="numeric" min="0" step="1000">
+    <div class="rows" id="confirm-rows"></div>
+    <div class="err" id="confirm-err"></div>
+    <div class="acts">
+      <button class="no" type="button" onclick="closeConfirm()">Cancel</button>
+      <button class="ok" type="button" id="confirm-ok" onclick="confirmAdd()">Add to tracker</button>
+    </div>
+  </div>
+</div>
+
 <div class="sheet-bg" id="sheet-bg" onclick="if (event.target === this) closeComps()">
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
     <h2 id="sheet-title"></h2>
@@ -146,6 +181,7 @@
   </div>
 </div>
 
+<script src="/static/flip_calculator.js"></script>
 <script>
 let searchId = null, cards = [], pollTimer = null, deepLinkDone = false;
 
@@ -155,26 +191,93 @@ const money = v => (typeof v === 'number' && isFinite(v)) ? '$' + Math.round(v).
 const short = v => (typeof v === 'number' && isFinite(v))
   ? (Math.abs(v) >= 1e6 ? '$' + (v / 1e6).toFixed(2) + 'M' : '$' + Math.round(v / 1000) + 'k') : '—';
 
-function belowText(c) {
-  if (c.pct_below_list == null) return '';
-  const p = Math.abs(c.pct_below_list * 100).toFixed(1);
-  return c.pct_below_list > 0 ? `${p}% below list` : `${p}% above list`;
+// ── ARV / rehab edits: saved per search in this browser until a new search ──
+let edits = {}, added = {};
+const editsKey = () => `dd-edits-${searchId}`;
+function loadEdits() {
+  try { edits = JSON.parse(localStorage.getItem(editsKey()) || '{}') || {}; } catch (e) { edits = {}; }
+}
+function saveEdits() {
+  try { localStorage.setItem(editsKey(), JSON.stringify(edits)); } catch (e) { /* private mode: edits last this visit */ }
+}
+function clearAllEdits() {
+  try { Object.keys(localStorage).filter(k => k.startsWith('dd-edits-')).forEach(k => localStorage.removeItem(k)); } catch (e) {}
+  edits = {};
+}
+
+// Effective numbers for a card: the owner's edits, re-run through the flip calculator.
+function view(c) {
+  const e = edits[c.address] || {};
+  const arv = e.arv ?? c.arv, rehab = e.rehab ?? c.rehab;
+  const edited = e.arv != null || e.rehab != null;
+  let mao = c.mao, profit = c.profit_at_mao;
+  if (edited && c.mao != null && arv != null && rehab != null) {
+    const r = FlipCalc.maxAllowableOffer(arv, rehab); mao = r.mao; profit = r.profit;
+  }
+  const pct = (mao != null && c.list_price) ? (c.list_price - mao) / c.list_price : null;
+  const check = (mao != null && arv && c.list_price && arv > 1.5 * c.list_price) ? 'ARV LOOKS TOO HIGH – CHECK COMPS'
+              : (c.low_confidence && mao != null) ? 'CHECK COMPS' : null;
+  const deal = check || pct == null ? null : pct <= 0.15 ? 'good' : pct <= 0.30 ? 'offer' : 'long';
+  return { arv, rehab, mao, profit, pct, check, deal, arvEdited: e.arv != null, rehabEdited: e.rehab != null };
+}
+
+function startEdit(i, field, el) {
+  const c = cards[i], v = view(c);
+  if (el.querySelector('input')) return;
+  const b = el.querySelector('b');
+  b.innerHTML = `<input type="number" inputmode="numeric" min="0" step="1000" value="${Math.round(v[field] || 0)}" aria-label="${field}">`;
+  const input = b.querySelector('input');
+  input.focus(); input.select();
+  let done = false;
+  const commit = keep => {
+    if (done) return; done = true;
+    const n = Math.round(Number(input.value));
+    if (keep && isFinite(n) && n >= 0 && n !== Math.round(c[field] ?? -1)) {
+      edits[c.address] = { ...(edits[c.address] || {}), [field]: n };
+    } else if (keep && n === Math.round(c[field] ?? -1) && edits[c.address]) {
+      delete edits[c.address][field];
+    }
+    saveEdits(); rerenderCard(i);
+  };
+  input.addEventListener('keydown', ev => { if (ev.key === 'Enter') commit(true); if (ev.key === 'Escape') commit(false); });
+  input.addEventListener('blur', () => commit(true));
+}
+function resetEdit(ev, i, field) {
+  ev.stopPropagation();
+  const c = cards[i];
+  if (edits[c.address]) { delete edits[c.address][field]; if (!Object.keys(edits[c.address]).length) delete edits[c.address]; }
+  saveEdits(); rerenderCard(i);
+}
+function rerenderCard(i) {
+  const el = document.querySelector(`article[data-i="${i}"]`);
+  if (el) el.outerHTML = cardHtml(cards[i], i);
+}
+
+function trackerButton(c, i) {
+  if (added[c.address]) return `<button type="button" class="tracker done" disabled>✓ In tracker</button>`;
+  if (c.tracker === 'tracker') return `<button type="button" class="tracker exists" disabled title="Row ${c.tracker_row}">Already in tracker</button>`;
+  if (c.tracker === 'archive') return `<button type="button" class="tracker exists" disabled title="Archive row ${c.tracker_row}">Already in tracker (archive)</button>`;
+  return `<button type="button" class="tracker" onclick="openConfirm(${i})">Add to Tracker</button>`;
 }
 
 function cardHtml(c, i) {
+  const v = view(c);
   const tags = [];
   const DEAL = {good: ['good', 'GOOD DEAL'], offer: ['offer', 'MAKE AN OFFER'], long: ['gray', 'LONG SHOT']};
-  if (c.check) tags.push(`<span class="tag check">${esc(c.check)}</span>`);
-  else if (c.deal_tag) tags.push(`<span class="tag ${DEAL[c.deal_tag][0]}">${DEAL[c.deal_tag][1]}</span>`);
+  if (v.check) tags.push(`<span class="tag check">${esc(v.check)}</span>`);
+  else if (v.deal) tags.push(`<span class="tag ${DEAL[v.deal][0]}">${DEAL[v.deal][1]}</span>`);
   if (c.multi_family) tags.push('<span class="tag gray">MULTI-FAMILY – NOT COMPED</span>');
   if (c.low_confidence) tags.push('<span class="tag low">LOW CONFIDENCE</span>');
   c.comp_flags.forEach(f => tags.push(`<span class="tag low">${esc(f)}</span>`));
-  const csv = `/api/distressed/search/${searchId}/csv?zip=${encodeURIComponent(c.zip)}&address=${encodeURIComponent(c.address)}`;
-  const note = c.mao == null ? (c.multi_family
-      ? 'Multi-family: house sales can’t price it, so no ARV or max offer.'
-      : (c.note || 'No max offer.')) : '';
+  const tone = v.deal === 'good' ? ' good' : v.deal === 'offer' ? ' offer' : '';
+  const editable = (field, label, value, isEdited) => `
+        <div class="stat edit${isEdited ? ' edited' : ''}" onclick="startEdit(${i}, '${field}', this)" title="Click to change">
+          <span class="lbl">${label}${isEdited ? ` <span class="pill edited">edited</span><button class="reset" onclick="resetEdit(event, ${i}, '${field}')">reset</button>` : ''}</span>
+          <b>${short(value)}</b>
+        </div>`;
+  const below = v.pct == null ? '' : v.pct >= 0 ? `${(v.pct * 100).toFixed(1)}% below list` : `${(-v.pct * 100).toFixed(1)}% above list`;
   return `
-    <article class="card${c.deal_tag === 'good' ? ' good' : c.deal_tag === 'offer' ? ' offer' : ''}">
+    <article class="card${tone}" data-i="${i}">
       <div>
         <div class="addr">${esc(c.street)}</div>
         <div class="city">${esc(c.city)}</div>
@@ -184,21 +287,20 @@ function cardHtml(c, i) {
         <div class="prices">
           <div><span class="lbl">List</span><span class="price list">${money(c.list_price)}</span></div>
           <span class="arrow">→</span>
-          <div><span class="lbl">Max offer</span><span class="price">${money(c.mao)}</span></div>
+          <div><span class="lbl">Max offer${v.arvEdited || v.rehabEdited ? ' (updated)' : ''}</span><span class="price">${money(v.mao)}</span></div>
         </div>
-        ${c.mao != null ? `<div class="below${c.deal_tag === 'good' ? ' good' : c.deal_tag === 'offer' ? ' offer' : ''}">${belowText(c)}</div>` : ''}
+        ${v.mao != null ? `<div class="below${tone}">${below}</div>` : '<div class="below">No offer reaches 10% profit at these numbers</div>'}
       </div>
       <div class="stats">
-        <div class="stat"><span class="lbl">ARV</span><b>${short(c.arv)}</b></div>
-        <div class="stat"><span class="lbl">Rehab${c.rehab_tier ? ' · ' + esc(c.rehab_tier) : ''}</span><b>${short(c.rehab)}</b></div>
-        <div class="stat"><span class="lbl">Profit @ max</span><b>${short(c.profit_at_mao)}</b></div>
+        ${editable('arv', 'ARV', v.arv, v.arvEdited)}
+        ${editable('rehab', 'Rehab' + (c.rehab_tier ? ' · ' + esc(c.rehab_tier) : ''), v.rehab, v.rehabEdited)}
+        <div class="stat"><span class="lbl">Profit @ max</span><b>${short(v.profit)}</b></div>
         <div class="stat"><span class="lbl">On market</span><b>${c.days_on_market ?? '—'} d</b></div>
       </div>
-      ${note ? `<div class="note">${esc(note)}</div>` : ''}
       <div class="buttons">
         ${c.zillow_url ? `<a href="${esc(c.zillow_url)}" target="_blank" rel="noopener">View on Zillow</a>` : ''}
         <button type="button" onclick="openComps(${i})" ${c.comps.length || (c.excluded_comps || []).length ? '' : 'disabled'}>See comps (${c.comps.length})</button>
-        <a href="${csv}">Download for agent</a>
+        ${v.mao != null ? trackerButton(c, i) : ''}
       </div>
     </article>`;
 }
@@ -216,6 +318,7 @@ function unpricedRow(c) {
 
 function render(data) {
   cards = data.cards || [];
+  loadEdits();
   const running = data.status === 'running';
   const done = data.zips_done, total = data.zips.length;
   let status = running
@@ -224,6 +327,7 @@ function render(data) {
       ? `<span class="error">Search stopped: ${esc(data.error || 'unknown error')}</span>`
       : `${cards.length} distressed propert${cards.length === 1 ? 'y' : 'ies'} in ${data.zips.join(', ')}.`;
   Object.entries(data.zip_errors || {}).forEach(([z, e]) => status += ` <span class="error">${z}: ${esc(e)}</span>`);
+  if (data.tracker_error) status += ` <span class="error">${esc(data.tracker_error)}</span>`;
   if (!running && cards.length) status += ` <a href="/api/distressed/search/${data.id}/csv">Download all (CSV)</a>`;
   $('status').innerHTML = status;
   $('go').disabled = running;
@@ -271,7 +375,8 @@ $('search-form').addEventListener('submit', async ev => {
     const data = await r.json();
     if (!r.ok && !data.id) throw new Error(data.error || 'Search failed');
     if (r.status === 409) $('status').textContent = 'A search is already running — showing it.';
-    searchId = data.id;
+    if (data.id !== searchId) clearAllEdits();          // a new search starts with no edits
+    searchId = data.id; added = {};
     $('cards').innerHTML = '';
     poll();
   } catch (e) {
@@ -307,7 +412,47 @@ function openComps(i) {
   $('sheet-bg').classList.add('open');
 }
 function closeComps() { $('sheet-bg').classList.remove('open'); }
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeComps(); });
+
+let confirmIdx = null;
+function openConfirm(i) {
+  confirmIdx = i;
+  const c = cards[i], v = view(c);
+  $('confirm-sub').textContent = c.address;
+  $('offer').value = v.mao != null ? Math.round(v.mao) : '';
+  $('confirm-rows').innerHTML = `
+    <span>Max offer</span><span>${money(v.mao)}${v.arvEdited || v.rehabEdited ? ' (updated)' : ''}</span>
+    <span>ARV</span><span>${money(v.arv)}${v.arvEdited ? ` (edited from ${money(c.arv)})` : ''}</span>
+    <span>Rehab</span><span>${money(v.rehab)}${v.rehabEdited ? ` (edited from ${money(c.rehab)})` : ''}</span>`;
+  $('confirm-err').textContent = '';
+  $('confirm-ok').disabled = false;
+  $('confirm-bg').classList.add('open');
+  setTimeout(() => $('offer').select(), 50);
+}
+function closeConfirm() { $('confirm-bg').classList.remove('open'); confirmIdx = null; }
+
+async function confirmAdd() {
+  const i = confirmIdx, c = cards[i], v = view(c);
+  const offer = Math.round(Number($('offer').value));
+  if (!isFinite(offer) || offer <= 0) { $('confirm-err').textContent = 'Enter an offer price.'; return; }
+  $('confirm-ok').disabled = true;
+  try {
+    const r = await fetch('/api/distressed/tracker', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({search_id: searchId, zip: c.zip, address: c.address, offer,
+                            arv: v.arvEdited ? v.arv : null, rehab: v.rehabEdited ? v.rehab : null})
+    });
+    if (r.status === 401) { location.href = '/login'; return; }
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not add');
+    if (d.status === 'added') added[c.address] = d.row;
+    else { c.tracker = d.where; c.tracker_row = d.row; }
+    closeConfirm(); rerenderCard(i);
+  } catch (e) {
+    $('confirm-err').textContent = e.message;
+    $('confirm-ok').disabled = false;
+  }
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeComps(); closeConfirm(); } });
 
 (async () => {                                   // reopen the latest search on load
   try {
