@@ -238,7 +238,8 @@ def _analyze_distressed(item, detail, zip_code):
     if url.startswith("/"):
         url = "https://www.zillow.com" + url
     keep = ("address", "sold_price", "sold_date", "sqft", "price_per_sqft", "distance_mi",
-            "pool", "senior", "pool_match", "senior_match", "url")
+            "pool", "senior", "pool_match", "senior_match", "remodeled", "remodeled_evidence",
+            "in_arv", "url")
     result["comps"] = [{k: c.get(k) for k in keep} for c in result["comps"]]
     result.update({"zillow_url": url, "pool": pool, "pool_source": pool_src,
                    "senior": senior, "senior_source": senior_src,
@@ -282,8 +283,10 @@ def search_distressed(zip_code: str):
     Each listing also carries an "analysis" object (read-only; nothing is
     submitted): up to 5 SOLD comps (last 6 months, within 0.5 mi, same type,
     ±20% sqft, ±1 bed, pool and 55+ matched, with POOL / 55+ MISMATCH flags
-    when non-matching comps fill in), ARV = median comp $/sqft × sqft
-    ("LOW CONFIDENCE" under 3 comps), a Light/Medium/Heavy rehab estimate
+    when non-matching comps fill in; each flagged REMODELED or not), ARV =
+    median comp $/sqft × sqft over the remodeled comps when at least 2 are
+    remodeled, otherwise all comps ("LOW CONFIDENCE" under 3 comps behind the
+    ARV), a Light/Medium/Heavy rehab estimate
     ($30/$55/$90 per sqft, one tier up if built before 1960), and the maximum
     allowable offer (MAO) for a 10%-of-ARV profit on a 3-month hold.
     """

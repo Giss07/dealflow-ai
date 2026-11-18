@@ -6,8 +6,10 @@ Per-listing flip analysis for search_distressed: sold comps, ARV, rehab, MAO.
             subject; with fewer than 3 matching comps, the closest
             non-matching ones fill in to 3 and the row is flagged
             "POOL MISMATCH" / "55+ MISMATCH". Up to 5 comps, nearest first.
-    ARV     median $/sqft of the comps × subject sqft; fewer than 3 comps is
-            "LOW CONFIDENCE"; no comps means no ARV and no MAO.
+    ARV     median $/sqft × subject sqft, over the REMODELED comps when at
+            least 2 are remodeled, otherwise over all comps (noted). Fewer
+            than 3 comps behind the ARV is "LOW CONFIDENCE"; none means no ARV
+            and no MAO.
     rehab   Light $30 / Medium $55 / Heavy $90 per sqft from the description,
             one tier up when built before 1960.
     MAO     flip_calculator.max_allowable_offer at 10% of ARV profit.
@@ -98,6 +100,51 @@ def detect_senior(detail):
     if any(re.search(p, desc) for p in SENIOR_PATTERNS):
         return True, "description"
     return False, "description"
+
+
+REMODEL_WORDS = [
+    "remodeled", "remodelled", "newly remodeled", "remodel", "renovated", "renovation",
+    "updated", "upgraded", "rehabbed", "new kitchen", "new bathroom", "new bathrooms",
+    "new baths", "new flooring", "new floors", "turnkey", "turn-key",
+]
+NOT_REMODELED_WORDS = [
+    "needs updating", "needs updates", "need updating", "needs to be updated",
+    "could use updating", "could use some updating", "in need of updating",
+    "not updated", "original condition", "original kitchen", "original bathroom",
+    "fixer", "needs work", "tlc", "bring your contractor", "needs remodel",
+    "needs renovation", "ready for your remodel", "ready for your renovation",
+]
+
+
+def _words_in(text, words):
+    return [w for w in words if re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", text)]
+
+
+def detect_remodeled(detail):
+    """(is_remodeled, source, evidence).
+
+    The listing's condition field decides when it says something conclusive;
+    otherwise the description and photo captions are searched. Not-remodeled
+    wording ("needs updating", "fixer", "TLC") wins over remodel wording, so
+    "remodeled in 1998, needs TLC" is NOT remodeled. Photo images themselves
+    are not analysed — only their captions.
+    """
+    cond = str((detail.get("resoFacts") or {}).get("propertyCondition") or "").lower()
+    if cond:
+        if _words_in(cond, ["fixer", "needs work", "teardown", "tear down"]):
+            return False, "data", f"condition: {cond}"
+        if re.search(r"updated|remodel|renovat|turnkey|turn key|new construction", cond):
+            return True, "data", f"condition: {cond}"
+    captions = " ".join(str(p.get("caption") or "") for p in (detail.get("responsivePhotos") or [])
+                        if isinstance(p, dict))
+    text = f"{detail.get('description') or ''} {captions}".lower()
+    against = _words_in(text, NOT_REMODELED_WORDS)
+    if against:
+        return False, "description", "not remodeled: " + ", ".join(against)
+    found = _words_in(text, REMODEL_WORDS)
+    if found:
+        return True, "description", ", ".join(found)
+    return False, "description", "no remodel wording"
 
 
 # ── Rehab ─────────────────────────────────────────────────────────────
@@ -205,6 +252,7 @@ def pick_comps(subject, candidates, fetch_detail):
         detail = fetch_detail(c) or {}
         c["pool"], c["pool_source"] = detect_pool(detail)
         c["senior"], c["senior_source"] = detect_senior(detail)
+        c["remodeled"], c["remodeled_source"], c["remodeled_evidence"] = detect_remodeled(detail)
         c["pool_match"] = c["pool"] == subject["pool"]
         c["senior_match"] = c["senior"] == subject["senior"]
         (matching if c["pool_match"] and c["senior_match"] else others).append(c)
@@ -220,6 +268,19 @@ def pick_comps(subject, candidates, fetch_detail):
         if any(not c["senior_match"] for c in fill):
             flags.append("55+ MISMATCH")
     return comps, flags
+
+
+REMODELED_MIN_FOR_ARV = 2
+
+
+def arv_basis(comps):
+    """(comps_behind_the_arv, label). Remodeled comps only when at least 2 are
+    remodeled — that is what a flip resells against — otherwise all comps."""
+    remodeled = [c for c in comps if c.get("remodeled")]
+    if len(remodeled) >= REMODELED_MIN_FOR_ARV:
+        return remodeled, f"remodeled comps only ({len(remodeled)} of {len(comps)})"
+    return comps, (f"all {len(comps)} comps — only {len(remodeled)} remodeled, "
+                   f"need {REMODELED_MIN_FOR_ARV} to use remodeled only") if comps else ""
 
 
 def compute_arv(subject_sqft, comps):
@@ -256,6 +317,7 @@ def analyze_listing(subject, sold_items, fetch_detail, more_sold_items=None, now
               called only when the subject's ZIP yields fewer than 3 candidates.
     """
     out = {"comps": [], "comp_flags": [], "arv": None, "comps_used": 0,
+           "arv_comps_used": 0, "remodeled_comps": 0, "arv_basis": "",
            "confidence": None, "rehab": None, "mao": None, "profit_at_mao": None,
            "mao_vs_list": None, "mao_vs_list_pct": None, "note": None,
            "neighbor_zips_searched": False}
@@ -270,9 +332,14 @@ def analyze_listing(subject, sold_items, fetch_detail, more_sold_items=None, now
         candidates = comp_candidates(subject, list(sold_items) + list(more_sold_items()), now_ms)
 
     comps, flags = pick_comps(subject, candidates, fetch_detail)
+    basis, out["arv_basis"] = arv_basis(comps)
     out["comps"], out["comp_flags"], out["comps_used"] = comps, flags, len(comps)
-    out["confidence"] = "LOW CONFIDENCE" if len(comps) < COMPS_MIN else "OK"
-    out["arv"] = compute_arv(subject["sqft"], comps)
+    out["arv_comps_used"] = len(basis)
+    for c in comps:
+        c["in_arv"] = any(c is b for b in basis)
+    out["remodeled_comps"] = sum(1 for c in comps if c.get("remodeled"))
+    out["confidence"] = "LOW CONFIDENCE" if len(basis) < COMPS_MIN else "OK"
+    out["arv"] = compute_arv(subject["sqft"], basis)
     if out["arv"] is None:
         out["note"] = "no sold comps matched (6 mo, 0.5 mi, ±20% sqft, ±1 bed, same type)"
         return out

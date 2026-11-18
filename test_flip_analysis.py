@@ -201,6 +201,46 @@ def test_pool_and_senior_matching():
           not any(x["senior"] for x in d["comps"]), [x["zpid"] for x in d["comps"]])
 
 
+def test_remodeled():
+    print("\n=== REMODELED comps and the ARV basis ===")
+    for text in ("Fully remodeled 3 bed", "Beautifully renovated", "Updated throughout",
+                 "Brand new kitchen and baths", "Turnkey home"):
+        check(f"{text!r} → REMODELED", fa.detect_remodeled({"description": text})[0] is True)
+    for text in ("Needs updating", "Original condition, great bones", "Fixer! Remodeled in 1998",
+                 "Ready for your remodel", "Lovely home near schools"):
+        check(f"{text!r} → NOT", fa.detect_remodeled({"description": text})[0] is False)
+    check("condition field 'Updated/Remodeled' decides (data)",
+          fa.detect_remodeled({"resoFacts": {"propertyCondition": "Updated/Remodeled"}})[:2] == (True, "data"))
+    check("condition field 'Fixer' decides even if the description says renovated",
+          fa.detect_remodeled({"resoFacts": {"propertyCondition": "Fixer"},
+                               "description": "renovated"})[:2] == (False, "data"))
+    check("photo captions count",
+          fa.detect_remodeled({"responsivePhotos": [{"caption": "New kitchen with quartz"}]})[0] is True)
+
+    # Five comps at $400..$480/sqft; c3 and c4 (the dearest) are remodeled.
+    items = [sold(f"c{i}", 600_000 + 30_000 * i, miles=0.05 * (i + 1)) for i in range(5)]
+    remodeled = {"c3", "c4"}
+
+    def detail(c):
+        return {"resoFacts": {"hasPrivatePool": False, "isSeniorCommunity": False},
+                "description": "Fully remodeled" if c["zpid"] in remodeled else "Clean home"}
+
+    a = fa.analyze_listing(SUBJECT, items, detail, now_ms=NOW)
+    check("2 remodeled → ARV from those 2 only: median $470/sqft × 1,500 = $705,000",
+          a["arv"] == 705_000 and a["arv_comps_used"] == 2 and a["remodeled_comps"] == 2, a["arv"])
+    check("basis says remodeled only (2 of 5)", a["arv_basis"] == "remodeled comps only (2 of 5)", a["arv_basis"])
+    check("all 5 comps still listed, 2 marked in the ARV",
+          a["comps_used"] == 5 and [c["in_arv"] for c in a["comps"]] == [False, False, False, True, True])
+    check("2 comps behind the ARV → LOW CONFIDENCE", a["confidence"] == "LOW CONFIDENCE")
+
+    remodeled.clear(); remodeled.add("c4")
+    b = fa.analyze_listing(SUBJECT, items, detail, now_ms=NOW)
+    check("1 remodeled → ARV from all 5 (median $440/sqft = $660,000), noted",
+          b["arv"] == 660_000 and b["arv_comps_used"] == 5 and "only 1 remodeled" in b["arv_basis"],
+          (b["arv"], b["arv_basis"]))
+    check("all 5 in the ARV, confidence OK", all(c["in_arv"] for c in b["comps"]) and b["confidence"] == "OK")
+
+
 def test_csv_columns():
     print("\n=== Runner table / CSV rows ===")
     import types
@@ -220,8 +260,11 @@ def test_csv_columns():
             "days_on_market", "zillow_url", "pool", "55_plus"]
     check("listing row has every requested column", all(k in row for k in need) and set(row) == set(rd.LISTING_COLUMNS),
           sorted(set(need) - set(row)))
-    check("comps rows carry sold price/date, sqft, $/sqft, distance, pool, 55+",
-          len(comps) == 3 and set(comps[0]) == set(rd.COMP_COLUMNS), comps[0] if comps else None)
+    check("comps rows carry sold price/date, sqft, $/sqft, distance, pool, 55+, remodeled",
+          len(comps) == 3 and set(comps[0]) == set(rd.COMP_COLUMNS)
+          and comps[0]["remodeled"] in ("REMODELED", "NOT") and "used_in_arv" in comps[0],
+          comps[0] if comps else None)
+    check("listing row carries the ARV basis", "arv_basis" in row and row["arv_basis"], row.get("arv_basis"))
 
 
 if __name__ == "__main__":
@@ -231,6 +274,7 @@ if __name__ == "__main__":
     test_comp_filters()
     test_comps_arv_mao()
     test_pool_and_senior_matching()
+    test_remodeled()
     test_csv_columns()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.exit(1 if FAILS else 0)
