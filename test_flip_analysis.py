@@ -187,9 +187,10 @@ def test_pool_and_senior_matching():
     pool_subject = dict(SUBJECT, pool=True)
     b = fa.analyze_listing(pool_subject, items, detail, now_ms=NOW)
     check("pool subject with 2 pool comps fills to 3 and flags POOL MISMATCH",
-          [c["zpid"] for c in b["comps"]] == ["c0", "c1", "c2"] and b["comp_flags"] == ["POOL MISMATCH"],
+          [c["zpid"] for c in b["comps"]] == ["c0", "c2", "c1"] and b["comp_flags"] == ["POOL MISMATCH"],
           ([c["zpid"] for c in b["comps"]], b["comp_flags"]))
-    check("the fill-in comp is marked as not matching", [c["pool_match"] for c in b["comps"]] == [True, False, True])
+    check("matching comps first, the fill-in comp last and marked",
+          [c["pool_match"] for c in b["comps"]] == [True, True, False])
 
     seniors.update({"c0": True, "c1": True})
     senior_subject = dict(SUBJECT, senior=True, pool=False)
@@ -202,43 +203,54 @@ def test_pool_and_senior_matching():
 
 
 def test_remodeled():
-    print("\n=== REMODELED comps and the ARV basis ===")
+    print("\n=== REMODELED / NOT / UNKNOWN and comp preference ===")
+    R, N, U = fa.REMODELED, fa.NOT_REMODELED, fa.UNKNOWN
     for text in ("Fully remodeled 3 bed", "Beautifully renovated", "Updated throughout",
                  "Brand new kitchen and baths", "Turnkey home"):
-        check(f"{text!r} → REMODELED", fa.detect_remodeled({"description": text})[0] is True)
+        check(f"{text!r} → REMODELED", fa.detect_remodeled({"description": text})[0] == R)
     for text in ("Needs updating", "Original condition, great bones", "Fixer! Remodeled in 1998",
-                 "Ready for your remodel", "Lovely home near schools"):
-        check(f"{text!r} → NOT", fa.detect_remodeled({"description": text})[0] is False)
-    check("condition field 'Updated/Remodeled' decides (data)",
-          fa.detect_remodeled({"resoFacts": {"propertyCondition": "Updated/Remodeled"}})[:2] == (True, "data"))
-    check("condition field 'Fixer' decides even if the description says renovated",
+                 "Ready for your remodel", "Needs TLC"):
+        check(f"{text!r} → NOT", fa.detect_remodeled({"description": text})[0] == N)
+    for text in ("Lovely home near schools", ""):
+        check(f"{text!r} → UNKNOWN", fa.detect_remodeled({"description": text})[0] == U)
+    check("condition field 'Updated/Remodeled' → REMODELED (data)",
+          fa.detect_remodeled({"resoFacts": {"propertyCondition": "Updated/Remodeled"}})[:2] == (R, "data"))
+    check("condition field 'Fixer' → NOT even if the description says renovated",
           fa.detect_remodeled({"resoFacts": {"propertyCondition": "Fixer"},
-                               "description": "renovated"})[:2] == (False, "data"))
+                               "description": "renovated"})[:2] == (N, "data"))
     check("photo captions count",
-          fa.detect_remodeled({"responsivePhotos": [{"caption": "New kitchen with quartz"}]})[0] is True)
+          fa.detect_remodeled({"responsivePhotos": [{"caption": "New kitchen with quartz"}]})[0] == R)
 
-    # Five comps at $400..$480/sqft; c3 and c4 (the dearest) are remodeled.
-    items = [sold(f"c{i}", 600_000 + 30_000 * i, miles=0.05 * (i + 1)) for i in range(5)]
-    remodeled = {"c3", "c4"}
+    # Eight candidates, nearest first: c0 fixer, c1-c2 unknown, c3 remodeled,
+    # c4 unknown, c5 fixer, c6-c7 remodeled (beyond the nearest five).
+    state = {"c0": "Fixer", "c1": "", "c2": "", "c3": "Remodeled", "c4": "",
+             "c5": "needs updating", "c6": "Renovated", "c7": "Updated"}
+    items = [sold(z, 600_000 + 20_000 * i, miles=0.05 * (i + 1)) for i, z in enumerate(state)]
 
     def detail(c):
         return {"resoFacts": {"hasPrivatePool": False, "isSeniorCommunity": False},
-                "description": "Fully remodeled" if c["zpid"] in remodeled else "Clean home"}
+                "description": state[c["zpid"]]}
 
     a = fa.analyze_listing(SUBJECT, items, detail, now_ms=NOW)
-    check("2 remodeled → ARV from those 2 only: median $470/sqft × 1,500 = $705,000",
-          a["arv"] == 705_000 and a["arv_comps_used"] == 2 and a["remodeled_comps"] == 2, a["arv"])
-    check("basis says remodeled only (2 of 5)", a["arv_basis"] == "remodeled comps only (2 of 5)", a["arv_basis"])
-    check("all 5 comps still listed, 2 marked in the ARV",
-          a["comps_used"] == 5 and [c["in_arv"] for c in a["comps"]] == [False, False, False, True, True])
-    check("2 comps behind the ARV → LOW CONFIDENCE", a["confidence"] == "LOW CONFIDENCE")
+    got = [(c["zpid"], c["remodeled"]) for c in a["comps"]]
+    check("REMODELED first (incl. beyond the nearest 5), then UNKNOWN, nearest first; NOT skipped",
+          got == [("c3", R), ("c6", R), ("c7", R), ("c1", U), ("c2", U)], got)
+    check("fixers excluded and reported", [f["address"].split(" ")[0] for f in a["skipped_fixers"]] == ["c0", "c5"],
+          a["skipped_fixers"])
+    # $/sqft: c3 440, c6 480, c7 493.3, c1 413.3, c2 426.7 → median 440 × 1,500
+    check("ARV = median of those 5 = $660,000", a["arv"] == 660_000 and a["confidence"] == "OK", a["arv"])
+    check("basis note counts remodeled / unknown / fixers",
+          a["arv_basis"] == "5 comps: 3 remodeled, 2 unknown; 2 fixer(s) excluded (c0 Comp St, c5 Comp St)",
+          a["arv_basis"])
 
-    remodeled.clear(); remodeled.add("c4")
-    b = fa.analyze_listing(SUBJECT, items, detail, now_ms=NOW)
-    check("1 remodeled → ARV from all 5 (median $440/sqft = $660,000), noted",
-          b["arv"] == 660_000 and b["arv_comps_used"] == 5 and "only 1 remodeled" in b["arv_basis"],
-          (b["arv"], b["arv_basis"]))
-    check("all 5 in the ARV, confidence OK", all(c["in_arv"] for c in b["comps"]) and b["confidence"] == "OK")
+    only_two = {"c0": "Fixer", "c1": "Remodeled", "c2": "TLC", "c3": ""}
+    items2 = [sold(z, 600_000, miles=0.05 * (i + 1)) for i, z in enumerate(only_two)]
+    b = fa.analyze_listing(SUBJECT, items2, lambda c: {"resoFacts": {"hasPrivatePool": False,
+                                                                       "isSeniorCommunity": False},
+                                                       "description": only_two[c["zpid"]]}, now_ms=NOW)
+    check("only 2 non-fixer comps left → LOW CONFIDENCE, ARV from those 2",
+          b["comps_used"] == 2 and b["confidence"] == "LOW CONFIDENCE" and b["arv"] == 600_000,
+          (b["comps_used"], b["confidence"], b["arv"]))
 
 
 def test_csv_columns():
@@ -262,7 +274,7 @@ def test_csv_columns():
           sorted(set(need) - set(row)))
     check("comps rows carry sold price/date, sqft, $/sqft, distance, pool, 55+, remodeled",
           len(comps) == 3 and set(comps[0]) == set(rd.COMP_COLUMNS)
-          and comps[0]["remodeled"] in ("REMODELED", "NOT") and "used_in_arv" in comps[0],
+          and comps[0]["remodeled"] in ("REMODELED", "UNKNOWN"),
           comps[0] if comps else None)
     check("listing row carries the ARV basis", "arv_basis" in row and row["arv_basis"], row.get("arv_basis"))
 

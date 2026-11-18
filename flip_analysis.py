@@ -5,11 +5,12 @@ Per-listing flip analysis for search_distressed: sold comps, ARV, rehab, MAO.
             sqft within ±20%, beds within ±1. Pool and 55+ must match the
             subject; with fewer than 3 matching comps, the closest
             non-matching ones fill in to 3 and the row is flagged
-            "POOL MISMATCH" / "55+ MISMATCH". Up to 5 comps, nearest first.
-    ARV     median $/sqft × subject sqft, over the REMODELED comps when at
-            least 2 are remodeled, otherwise over all comps (noted). Fewer
-            than 3 comps behind the ARV is "LOW CONFIDENCE"; none means no ARV
-            and no MAO.
+            "POOL MISMATCH" / "55+ MISMATCH". Each comp is REMODELED, NOT
+            (clear fixer wording) or UNKNOWN (no wording either way). Among
+            every comp that passes the filters, REMODELED come first, then
+            UNKNOWN, nearest first within each; NOT is never used. Up to 5.
+    ARV     median $/sqft of those comps × subject sqft. Fewer than 3 is
+            "LOW CONFIDENCE"; none means no ARV and no MAO.
     rehab   Light $30 / Medium $55 / Heavy $90 per sqft from the description,
             one tier up when built before 1960.
     MAO     flip_calculator.max_allowable_offer at 10% of ARV profit.
@@ -31,7 +32,7 @@ COMP_SQFT_TOLERANCE = 0.20
 COMP_BEDS_TOLERANCE = 1
 COMPS_MIN = 3
 COMPS_MAX = 5
-MAX_COMP_DETAIL_LOOKUPS = 12      # per subject: candidates checked for pool / 55+
+MAX_COMP_DETAIL_LOOKUPS = 30      # per subject: candidates checked for pool / 55+ / remodel
 
 REHAB_TIERS = {"light": 30, "medium": 55, "heavy": 90}   # $ per sqft
 REHAB_OLD_HOME_YEAR = 1960        # built before this → one tier up
@@ -120,31 +121,36 @@ def _words_in(text, words):
     return [w for w in words if re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", text)]
 
 
-def detect_remodeled(detail):
-    """(is_remodeled, source, evidence).
+REMODELED, NOT_REMODELED, UNKNOWN = "REMODELED", "NOT", "UNKNOWN"
 
-    The listing's condition field decides when it says something conclusive;
-    otherwise the description and photo captions are searched. Not-remodeled
-    wording ("needs updating", "fixer", "TLC") wins over remodel wording, so
-    "remodeled in 1998, needs TLC" is NOT remodeled. Photo images themselves
-    are not analysed — only their captions.
+
+def detect_remodeled(detail):
+    """(state, source, evidence) with state REMODELED, NOT or UNKNOWN.
+
+    NOT means clear fixer wording ("fixer", "needs updating", "TLC"); UNKNOWN
+    means no wording either way — a finished house whose listing simply does
+    not say "remodeled" is UNKNOWN, not NOT. The listing's condition field
+    decides when it is conclusive; otherwise the description and photo
+    captions are searched, and fixer wording wins over remodel wording, so
+    "Fixer! Remodeled in 1998" is NOT. Photo images themselves are not
+    analysed — only their captions.
     """
     cond = str((detail.get("resoFacts") or {}).get("propertyCondition") or "").lower()
     if cond:
         if _words_in(cond, ["fixer", "needs work", "teardown", "tear down"]):
-            return False, "data", f"condition: {cond}"
+            return NOT_REMODELED, "data", f"condition: {cond}"
         if re.search(r"updated|remodel|renovat|turnkey|turn key|new construction", cond):
-            return True, "data", f"condition: {cond}"
+            return REMODELED, "data", f"condition: {cond}"
     captions = " ".join(str(p.get("caption") or "") for p in (detail.get("responsivePhotos") or [])
                         if isinstance(p, dict))
     text = f"{detail.get('description') or ''} {captions}".lower()
     against = _words_in(text, NOT_REMODELED_WORDS)
     if against:
-        return False, "description", "not remodeled: " + ", ".join(against)
+        return NOT_REMODELED, "description", "fixer wording: " + ", ".join(against)
     found = _words_in(text, REMODEL_WORDS)
     if found:
-        return True, "description", ", ".join(found)
-    return False, "description", "no remodel wording"
+        return REMODELED, "description", ", ".join(found)
+    return UNKNOWN, "description", "no wording either way"
 
 
 # ── Rehab ─────────────────────────────────────────────────────────────
@@ -241,46 +247,56 @@ def comp_candidates(subject, sold_items, now_ms=None):
 
 
 def pick_comps(subject, candidates, fetch_detail):
-    """Choose comps, matching pool and 55+ to the subject.
+    """Choose up to 5 comps from every candidate that passed comp_candidates.
+
+    Each candidate's details give pool, 55+ and remodel state. NOT (clear
+    fixer) comps are never used. Among the rest, comps matching the subject's
+    pool and 55+ come first: REMODELED, then UNKNOWN, nearest first within
+    each. With fewer than 3 matching comps, the closest non-matching ones
+    (REMODELED, then UNKNOWN) fill in to 3 and the result is flagged
+    "POOL MISMATCH" / "55+ MISMATCH".
 
     fetch_detail(comp) returns the comp's property-details dict (or None).
-    Returns (comps, flags) where flags lists "POOL MISMATCH" / "55+ MISMATCH"
-    when non-matching comps had to fill in.
+    Returns (comps, flags, skipped_fixers).
     """
-    matching, others = [], []
-    for c in candidates[:MAX_COMP_DETAIL_LOOKUPS]:
+    checked = candidates[:MAX_COMP_DETAIL_LOOKUPS]
+    for c in checked:
         detail = fetch_detail(c) or {}
         c["pool"], c["pool_source"] = detect_pool(detail)
         c["senior"], c["senior_source"] = detect_senior(detail)
         c["remodeled"], c["remodeled_source"], c["remodeled_evidence"] = detect_remodeled(detail)
         c["pool_match"] = c["pool"] == subject["pool"]
         c["senior_match"] = c["senior"] == subject["senior"]
-        (matching if c["pool_match"] and c["senior_match"] else others).append(c)
-        if len(matching) >= COMPS_MAX:
-            break
+    skipped = [c for c in checked if c["remodeled"] == NOT_REMODELED]
+    usable = [c for c in checked if c["remodeled"] != NOT_REMODELED]
+
+    def ranked(cs):            # REMODELED before UNKNOWN, then nearest
+        return sorted(cs, key=lambda c: (c["remodeled"] != REMODELED, c["distance_mi"]))
+
+    matching = ranked([c for c in usable if c["pool_match"] and c["senior_match"]])
+    others = ranked([c for c in usable if not (c["pool_match"] and c["senior_match"])])
     comps = matching[:COMPS_MAX]
     flags = []
     if len(comps) < COMPS_MIN:
         fill = others[:COMPS_MIN - len(comps)]
-        comps = sorted(comps + fill, key=lambda c: c["distance_mi"])
+        comps = comps + fill
         if any(not c["pool_match"] for c in fill):
             flags.append("POOL MISMATCH")
         if any(not c["senior_match"] for c in fill):
             flags.append("55+ MISMATCH")
-    return comps, flags
+    return comps, flags, skipped
 
 
-REMODELED_MIN_FOR_ARV = 2
-
-
-def arv_basis(comps):
-    """(comps_behind_the_arv, label). Remodeled comps only when at least 2 are
-    remodeled — that is what a flip resells against — otherwise all comps."""
-    remodeled = [c for c in comps if c.get("remodeled")]
-    if len(remodeled) >= REMODELED_MIN_FOR_ARV:
-        return remodeled, f"remodeled comps only ({len(remodeled)} of {len(comps)})"
-    return comps, (f"all {len(comps)} comps — only {len(remodeled)} remodeled, "
-                   f"need {REMODELED_MIN_FOR_ARV} to use remodeled only") if comps else ""
+def arv_basis(comps, skipped):
+    """Plain-language note on what the ARV rests on."""
+    if not comps:
+        return ""
+    r = sum(1 for c in comps if c["remodeled"] == REMODELED)
+    note = f"{len(comps)} comps: {r} remodeled, {len(comps) - r} unknown"
+    if skipped:
+        note += (f"; {len(skipped)} fixer(s) excluded ("
+                 + ", ".join(c["address"].split(",")[0] for c in skipped) + ")")
+    return note
 
 
 def compute_arv(subject_sqft, comps):
@@ -317,7 +333,7 @@ def analyze_listing(subject, sold_items, fetch_detail, more_sold_items=None, now
               called only when the subject's ZIP yields fewer than 3 candidates.
     """
     out = {"comps": [], "comp_flags": [], "arv": None, "comps_used": 0,
-           "arv_comps_used": 0, "remodeled_comps": 0, "arv_basis": "",
+           "remodeled_comps": 0, "unknown_comps": 0, "skipped_fixers": [], "arv_basis": "",
            "confidence": None, "rehab": None, "mao": None, "profit_at_mao": None,
            "mao_vs_list": None, "mao_vs_list_pct": None, "note": None,
            "neighbor_zips_searched": False}
@@ -331,17 +347,16 @@ def analyze_listing(subject, sold_items, fetch_detail, more_sold_items=None, now
         out["neighbor_zips_searched"] = True
         candidates = comp_candidates(subject, list(sold_items) + list(more_sold_items()), now_ms)
 
-    comps, flags = pick_comps(subject, candidates, fetch_detail)
-    basis, out["arv_basis"] = arv_basis(comps)
+    comps, flags, skipped = pick_comps(subject, candidates, fetch_detail)
     out["comps"], out["comp_flags"], out["comps_used"] = comps, flags, len(comps)
-    out["arv_comps_used"] = len(basis)
-    for c in comps:
-        c["in_arv"] = any(c is b for b in basis)
-    out["remodeled_comps"] = sum(1 for c in comps if c.get("remodeled"))
-    out["confidence"] = "LOW CONFIDENCE" if len(basis) < COMPS_MIN else "OK"
-    out["arv"] = compute_arv(subject["sqft"], basis)
+    out["arv_basis"] = arv_basis(comps, skipped)
+    out["remodeled_comps"] = sum(1 for c in comps if c["remodeled"] == REMODELED)
+    out["unknown_comps"] = sum(1 for c in comps if c["remodeled"] == UNKNOWN)
+    out["skipped_fixers"] = [{"address": c["address"], "evidence": c["remodeled_evidence"]} for c in skipped]
+    out["confidence"] = "LOW CONFIDENCE" if len(comps) < COMPS_MIN else "OK"
+    out["arv"] = compute_arv(subject["sqft"], comps)
     if out["arv"] is None:
-        out["note"] = "no sold comps matched (6 mo, 0.5 mi, ±20% sqft, ±1 bed, same type)"
+        out["note"] = "no usable sold comps (6 mo, 0.5 mi, ±20% sqft, ±1 bed, same type, not a fixer)"
         return out
     if out["rehab"]["amount"] is None:
         return out

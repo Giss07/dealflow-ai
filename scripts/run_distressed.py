@@ -61,7 +61,7 @@ BACKOFF = [5, 8, 12]  # seconds between attempts
 
 LISTING_COLUMNS = [
     "zip", "address", "list_price", "arv", "arv_basis", "comps_used", "remodeled_comps",
-    "arv_comps_used", "confidence", "comp_flags",
+    "unknown_comps", "fixers_excluded", "confidence", "comp_flags",
     "rehab_tier", "rehab_per_sqft", "rehab", "rehab_reason", "mao", "mao_vs_list",
     "mao_vs_list_pct", "profit_at_mao", "days_on_market", "beds", "baths", "sqft",
     "year_built", "pool", "55_plus", "distress_signals", "note", "zillow_url",
@@ -69,7 +69,7 @@ LISTING_COLUMNS = [
 COMP_COLUMNS = [
     "subject_address", "comp_address", "sold_price", "sold_date", "sqft",
     "price_per_sqft", "distance_mi", "pool", "55_plus", "remodeled", "remodeled_evidence",
-    "used_in_arv", "matches_subject", "zillow_url",
+    "matches_subject", "zillow_url",
 ]
 
 
@@ -89,7 +89,9 @@ def _rows(zip_code, listing):
         "zip": zip_code, "address": listing.get("address"),
         "list_price": listing.get("price"), "arv": a.get("arv"), "arv_basis": a.get("arv_basis") or "",
         "comps_used": a.get("comps_used", 0), "remodeled_comps": a.get("remodeled_comps", 0),
-        "arv_comps_used": a.get("arv_comps_used", 0), "confidence": a.get("confidence") or "",
+        "unknown_comps": a.get("unknown_comps", 0),
+        "fixers_excluded": "; ".join(f"{f['address']} ({f['evidence']})" for f in a.get("skipped_fixers") or []),
+        "confidence": a.get("confidence") or "",
         "comp_flags": " / ".join(a.get("comp_flags") or []),
         "rehab_tier": r.get("tier"), "rehab_per_sqft": r.get("per_sqft"), "rehab": r.get("amount"),
         "rehab_reason": r.get("reason"), "mao": a.get("mao"), "mao_vs_list": a.get("mao_vs_list"),
@@ -108,9 +110,8 @@ def _rows(zip_code, listing):
             "sold_price": c.get("sold_price"), "sold_date": c.get("sold_date"), "sqft": c.get("sqft"),
             "price_per_sqft": round(c.get("price_per_sqft") or 0), "distance_mi": round(c.get("distance_mi") or 0, 2),
             "pool": _yn(c.get("pool")), "55_plus": _yn(c.get("senior")),
-            "remodeled": "REMODELED" if c.get("remodeled") else "NOT",
+            "remodeled": c.get("remodeled") or "UNKNOWN",
             "remodeled_evidence": c.get("remodeled_evidence") or "",
-            "used_in_arv": _yn(c.get("in_arv")),
             "matches_subject": "yes" if not mism else "MISMATCH: " + ", ".join(mism),
             "zillow_url": c.get("url") or "",
         })
@@ -122,7 +123,7 @@ def _print_zip_table(zip_code, rows, comps_by_subject):
     hdr = f"  {'Address':34} {'List':>10} {'ARV':>10} {'Comps':>14} {'Rehab':>14} {'MAO':>10} {'MAO vs list':>16} {'Profit@MAO':>11} {'DOM':>4}"
     print(hdr); print("  " + "-" * (len(hdr) - 2))
     for r in rows:
-        comps = (f"{r['comps_used']} ({r['remodeled_comps']}R)"
+        comps = (f"{r['comps_used']} ({r['remodeled_comps']}R/{r['unknown_comps']}U)"
                  f"{' LOW' if r['confidence'] == 'LOW CONFIDENCE' else ''}")
         rehab = f"{(r['rehab_tier'] or '-')[:1].upper()} {_money(r['rehab'])}"
         vs = (f"{_money(r['mao_vs_list'])} ({r['mao_vs_list_pct']})" if r["mao_vs_list"] is not None else "—")
@@ -137,8 +138,7 @@ def _print_zip_table(zip_code, rows, comps_by_subject):
         for c in comps_by_subject.get(r["address"], []):
             print(f"        comp {c['comp_address'][:38]:38} {_money(c['sold_price']):>10} {c['sold_date']} "
                   f"{int(c['sqft'] or 0):>5}sf {_money(c['price_per_sqft']):>6}/sf {c['distance_mi']:.2f}mi "
-                  f"pool {c['pool']} 55+ {c['55_plus']} {c['remodeled']:10}"
-                  f"{'' if c['used_in_arv'] == 'yes' else ' (not in ARV)'}"
+                  f"pool {c['pool']} 55+ {c['55_plus']} {c['remodeled']:9} ({c['remodeled_evidence'][:40]})"
                   f"{'' if c['matches_subject'] == 'yes' else ' ' + c['matches_subject']}")
 
 
