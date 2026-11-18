@@ -405,11 +405,12 @@ function openComps(i) {
       <div class="r"><b>${money(x.sold_price)}</b><div class="m">${money(x.price_per_sqft)}/sqft</div></div>
     </div>`).join('') : '';
   $('sheet-list').innerHTML = c.comps.map(x => `
-    <div class="comp">
+    <div class="comp${x.in_arv === false ? ' excluded' : ''}">
       <div>
         <div class="a">${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(String(x.address).split(',')[0])}</a>` : esc(x.address)}
           <span class="pill ${esc(x.remodeled)}">${x.remodeled === 'REMODELED' ? 'REMODELED' : 'UNKNOWN'}</span></div>
         <div class="m">Sold ${esc(x.sold_date)} · ${Math.round(x.sqft).toLocaleString('en-US')} sqft · ${(+x.distance_mi).toFixed(2)} mi</div>
+        ${x.in_arv === false ? '<div class="why">Not in ARV — only the best 3 comps are averaged</div>' : ''}
       </div>
       <div class="r"><b>${money(x.sold_price)}</b><div class="m">${money(x.price_per_sqft)}/sqft</div></div>
     </div>`).join('') + exHtml;

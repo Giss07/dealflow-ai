@@ -249,7 +249,7 @@ def _analyze_distressed(item, detail, zip_code):
     if url.startswith("/"):
         url = "https://www.zillow.com" + url
     keep = ("address", "sold_price", "sold_date", "sqft", "price_per_sqft", "distance_mi",
-            "pool", "senior", "pool_match", "senior_match", "remodeled", "remodeled_evidence", "url")
+            "pool", "senior", "pool_match", "senior_match", "remodeled", "remodeled_evidence", "in_arv", "url")
     result["comps"] = [{k: c.get(k) for k in keep} for c in result["comps"]]
     result["excluded_comps"] = [{**{k: c.get(k) for k in keep}, "lot_sqft": c.get("lot_sqft"),
                                  "reason": c.get("excluded_reason")} for c in result.get("excluded_comps") or []]
@@ -298,8 +298,7 @@ def search_distressed(zip_code: str):
     ±20% sqft, ±1 bed, pool and 55+ matched, with POOL / 55+ MISMATCH flags
     when non-matching comps fill in; each REMODELED / NOT (clear fixer) /
     UNKNOWN, REMODELED preferred, then UNKNOWN, NOT never used), ARV =
-    median comp sold price + $100/sqft size adjustment, capped between the
-    lowest and highest comp ("LOW CONFIDENCE" under 3 comps; public-record-only
+    the average sold price of the best 3 comps ("LOW CONFIDENCE" under 3; public-record-only
     sales, lots over 2x the subject's and $/sqft outliers over 1.5x the other
     comps' median are excluded and listed with the reason), a
     Light/Medium/Heavy rehab estimate

@@ -145,10 +145,11 @@ def test_comps_arv_mao():
     a = fa.analyze_listing(SUBJECT, items, no_pool_no_senior, now_ms=NOW)
     check("5 comps used, nearest first", [c["zpid"] for c in a["comps"]] == ["c0", "c1", "c2", "c3", "c4"],
           [c["zpid"] for c in a["comps"]])
-    check("ARV = median $/sqft × sqft = $660,000", a["arv"] == 660_000, a["arv"])
+    check("ARV = average of the best 3 (nearest: $600k, $630k, $660k) = $630,000", a["arv"] == 630_000, a["arv"])
+    check("comps 4 and 5 are shown but not in the ARV", [c["in_arv"] for c in a["comps"]] == [True, True, True, False, False])
     check("confidence OK with 5 comps", a["confidence"] == "OK" and a["comp_flags"] == [])
     check("rehab medium (fixer) $82,500", a["rehab"]["amount"] == 82_500, a["rehab"])
-    exp_mao, exp_at = max_allowable_offer(660_000, 82_500)
+    exp_mao, exp_at = max_allowable_offer(630_000, 82_500)
     check("MAO from the calculator", a["mao"] == exp_mao and a["profit_at_mao"] == round(exp_at["profit"]),
           (a["mao"], a["profit_at_mao"]))
     check("MAO vs list = MAO − $500,000", a["mao_vs_list"] == exp_mao - 500_000, a["mao_vs_list"])
@@ -238,7 +239,8 @@ def test_remodeled():
     check("fixers excluded and reported", [f["address"].split(" ")[0] for f in a["skipped_fixers"]] == ["c0", "c5"],
           a["skipped_fixers"])
     # $/sqft: c3 440, c6 480, c7 493.3, c1 413.3, c2 426.7 → median 440 × 1,500
-    check("ARV = median of those 5 = $660,000", a["arv"] == 660_000 and a["confidence"] == "OK", a["arv"])
+    check("ARV = average of the best 3 — the remodeled c3, c6, c7: ($660k + $720k + $740k) ÷ 3 = $706,667",
+          a["arv"] == 706_667 and a["confidence"] == "OK", a["arv"])
     check("basis note counts remodeled / unknown / exclusions",
           a["arv_basis"] == "5 comps: 3 remodeled, 2 unknown; 2 excluded (2 fixer)", a["arv_basis"])
 
@@ -303,8 +305,8 @@ def test_bad_comp_exclusions():
     ex = {c["zpid"]: c["excluded_reason"] for c in a["excluded_comps"]}
     check("the $1.5M land sale is excluded as public record only",
           ex.get("land", "").startswith("Sold by public record only"), ex)
-    check("ARV comes from the 3 houses only, not $1.32M: median $315,000 − size adj $800 = $314,200",
-          [c["zpid"] for c in a["comps"]] == ["h0", "h1", "h2"] and a["arv"] == 314_200,
+    check("ARV comes from the 3 houses only, not $1.32M: ($300k + $315k + $330k) ÷ 3 = $315,000",
+          [c["zpid"] for c in a["comps"]] == ["h0", "h1", "h2"] and a["arv"] == 315_000,
           (a["arv"], [c["zpid"] for c in a["comps"]]))
 
     big = dict(sold("big", 600_000), lotAreaValue=20_000, lotAreaUnit="sqft")
@@ -334,28 +336,31 @@ def test_bad_comp_exclusions():
 
 
 def test_arv_formula():
-    print("\n=== ARV = median sold price + $100/sqft size adjustment, capped ===")
-    comp = lambda price, sqft: {"sold_price": price, "sqft": sqft, "price_per_sqft": price / sqft}
-    # 1485 N Fillmore Ave, Rialto (1,800 sqft) and its three comps from the 92376 rerun.
+    print("\n=== ARV = average sold price of the best 3 comps ===")
+    comp = lambda price, sqft=1_500: {"sold_price": price, "sqft": sqft, "price_per_sqft": price / sqft}
+    # 1485 N Fillmore Ave, Rialto: its three comps from the 92376 rerun, in pick order
+    # (19449 Lurelane St and 1730 N Vista Ave remodeled, 1648 N Althea Ave unknown).
     fillmore = [comp(635_000, 1_566), comp(648_000, 1_748), comp(645_000, 1_630)]
-    c = fa.arv_calculation(1_800, fillmore)
-    check("1485 N Fillmore Ave: median $645,000 + $17,000 = $662,000 → capped at $648,000",
-          (c["median_price"], c["size_adj"], c["raw"], c["cap"], c["arv"]) == (645_000, 17_000, 662_000, "highest", 648_000), c)
-    check("explanation reads like the card",
-          c["explain"] == "Median $645,000 + size adj $17,000 = $662,000 → capped at highest comp $648,000", c["explain"])
-    small = fa.arv_calculation(1_200, fillmore)
-    check("smaller subject: $645,000 − $43,000 = $602,000 → floored at lowest comp $635,000",
-          (small["size_adj"], small["raw"], small["cap"], small["arv"]) == (-43_000, 602_000, "lowest", 635_000), small["explain"])
-    check("negative adjustment shown with a minus", small["explain"].startswith("Median $645,000 − size adj $43,000"))
-    mid = fa.arv_calculation(1_650, fillmore)
-    check("inside the comp range → no cap: $645,000 + $2,000 = $647,000",
-          (mid["arv"], mid["cap"]) == (647_000, None) and "capped" not in mid["explain"], mid["explain"])
-    even = fa.arv_calculation(1_500, [comp(500_000, 1_400), comp(520_000, 1_500), comp(560_000, 1_600), comp(600_000, 1_700)])
-    check("even count: median of the middle two ($540,000), sqft median 1,550 → −$5,000 = $535,000",
-          (even["median_price"], even["median_sqft"], even["arv"]) == (540_000, 1_550, 535_000), even)
-    one = fa.arv_calculation(2_000, [comp(400_000, 1_000)])
-    check("one comp: the cap pins ARV to that sale", one["arv"] == 400_000 and one["cap"] == "highest")
-    check("no comps / no sqft → None", fa.arv_calculation(1_500, []) is None and fa.arv_calculation(None, fillmore) is None)
+    c = fa.arv_calculation(fillmore)
+    check("1485 N Fillmore Ave: ARV $642,667", c["arv"] == 642_667, c)
+    check("the math, as See comps shows it", c["explain"] == "($635,000 + $648,000 + $645,000) ÷ 3 = $642,667", c["explain"])
+    mao, at = max_allowable_offer(c["arv"], 54_000)
+    check("…and its max offer (auto rehab $54,000) = $471,300", mao == 471_300, (mao, round(at["profit"])))
+    five = fa.arv_calculation([comp(p) for p in (500_000, 510_000, 520_000, 900_000, 950_000)])
+    check("only the best 3 count — comps 4 and 5 are ignored", five["arv"] == 510_000 and five["count"] == 3, five)
+    two = fa.arv_calculation([comp(400_000), comp(410_000)])
+    check("2 comps: ($400,000 + $410,000) ÷ 2 = $405,000", two["arv"] == 405_000
+          and two["explain"] == "($400,000 + $410,000) ÷ 2 = $405,000", two["explain"])
+    one = fa.arv_calculation([comp(400_000)])
+    check("1 comp: shown as its price", one["arv"] == 400_000 and one["explain"] == "$400,000 (1 comp)", one["explain"])
+    check("size does not matter any more", fa.arv_calculation([comp(500_000, 900), comp(500_000, 3_000)])["arv"] == 500_000)
+    check("no comps → None", fa.arv_calculation([]) is None)
+    low2 = fa.analyze_listing(SUBJECT, [sold("a", 600_000), sold("b", 620_000)], no_pool_no_senior, now_ms=NOW)
+    check("2 comps on a listing → their average and LOW CONFIDENCE",
+          low2["arv"] == 610_000 and low2["confidence"] == "LOW CONFIDENCE", (low2["arv"], low2["confidence"]))
+    low1 = fa.analyze_listing(SUBJECT, [sold("a", 600_000)], no_pool_no_senior, now_ms=NOW)
+    check("1 comp on a listing → shown, LOW CONFIDENCE", low1["arv"] == 600_000 and low1["confidence"] == "LOW CONFIDENCE"
+          and low1["arv_explain"] == "$600,000 (1 comp)", low1["arv_explain"])
 
 
 def test_csv_columns():

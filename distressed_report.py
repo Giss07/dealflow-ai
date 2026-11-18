@@ -64,7 +64,8 @@ def rows_for(zip_code, listing):
             "remodeled": c.get("remodeled") or "UNKNOWN",
             "remodeled_evidence": c.get("remodeled_evidence") or "",
             "matches_subject": "yes" if not mism else "MISMATCH: " + ", ".join(mism),
-            "used_in_arv": "yes", "excluded_reason": "",
+            "used_in_arv": "yes" if c.get("in_arv", True) else "no",
+            "excluded_reason": "" if c.get("in_arv", True) else "Not one of the best 3",
             "zillow_url": c.get("url") or "",
         })
     for c in a.get("excluded_comps") or []:            # shown to the agent, never in the ARV
@@ -138,7 +139,8 @@ def card(zip_code, listing):
         "comps": [{"address": c.get("address"), "sold_price": c.get("sold_price"),
                    "sold_date": c.get("sold_date"), "sqft": c.get("sqft"),
                    "price_per_sqft": c.get("price_per_sqft"), "distance_mi": c.get("distance_mi"),
-                   "remodeled": c.get("remodeled") or "UNKNOWN", "url": c.get("url")}
+                   "remodeled": c.get("remodeled") or "UNKNOWN", "url": c.get("url"),
+                   "in_arv": c.get("in_arv", True)}
                   for c in a.get("comps") or []],
         "skipped_fixers": a.get("skipped_fixers") or [],
         "excluded_comps": [{"address": c.get("address"), "sold_price": c.get("sold_price"),
