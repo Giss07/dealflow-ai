@@ -173,6 +173,19 @@ def estimate_rehab(description, year_built, sqft):
             "reason": "; ".join(reasons)}
 
 
+# ── Mobile / manufactured homes ───────────────────────────────────────
+
+MOBILE_HOME_TYPES = {"MANUFACTURED", "MOBILE", "MOBILE_HOME"}
+# "Space 61", "Spc 157", "Sp 4", "Lot #12", "Lot 11" — park spaces, not land.
+MOBILE_ADDRESS = re.compile(r"\b(?:space|spc|sp)\s*#?\s*\d|\blot\s*#\s*\w|\blot\s+\d", re.I)
+
+
+def is_mobile_home(address, home_type):
+    """Mobile / manufactured homes are not flipped or comped like houses."""
+    return (str(home_type or "").upper() in MOBILE_HOME_TYPES
+            or bool(MOBILE_ADDRESS.search(str(address or ""))))
+
+
 # ── Comps ─────────────────────────────────────────────────────────────
 
 def miles_between(lat1, lon1, lat2, lon2):
@@ -232,6 +245,8 @@ def comp_candidates(subject, sold_items, now_ms=None):
         if c["sold_ms"] < min_ms:
             continue
         if subject.get("home_type") and c["home_type"] != subject["home_type"]:
+            continue
+        if is_mobile_home(c["address"], c["home_type"]):     # a "Space 12" typed SINGLE_FAMILY
             continue
         if not (lo <= c["sqft"] <= hi):
             continue
@@ -334,9 +349,14 @@ def analyze_listing(subject, sold_items, fetch_detail, more_sold_items=None, now
     """
     out = {"comps": [], "comp_flags": [], "arv": None, "comps_used": 0,
            "remodeled_comps": 0, "unknown_comps": 0, "skipped_fixers": [], "arv_basis": "",
+           "mobile_home": False,
            "confidence": None, "rehab": None, "mao": None, "profit_at_mao": None,
            "mao_vs_list": None, "mao_vs_list_pct": None, "note": None,
            "neighbor_zips_searched": False}
+    if is_mobile_home(subject.get("address"), subject.get("home_type")):
+        out["mobile_home"] = True                  # no comp lookups, no rehab, no MAO
+        out["note"] = "Mobile home"
+        return out
     out["rehab"] = estimate_rehab(subject.get("description"), subject.get("year_built"), subject.get("sqft"))
     if not subject.get("sqft") or subject.get("lat") is None:
         out["note"] = "no sqft or location on the listing — cannot pull comps"

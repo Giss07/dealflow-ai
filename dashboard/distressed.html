@@ -44,6 +44,7 @@
   .tag.good { background: var(--green-bg); color: #86efac; }
   .tag.gray { background: var(--gray-bg); color: #cbd5e1; }
   .tag.low, .tag.offer { background: var(--yellow-bg); color: var(--yellow); }
+  .tag.check { background: #7c2d12; color: #fdba74; }
   .card.offer { border-color: #854d0e; }
   .below.offer { color: var(--yellow); }
 
@@ -159,7 +160,8 @@ function belowText(c) {
 function cardHtml(c, i) {
   const tags = [];
   const DEAL = {good: ['good', 'GOOD DEAL'], offer: ['offer', 'MAKE AN OFFER'], long: ['gray', 'LONG SHOT']};
-  if (c.deal_tag) tags.push(`<span class="tag ${DEAL[c.deal_tag][0]}">${DEAL[c.deal_tag][1]}</span>`);
+  if (c.check) tags.push(`<span class="tag check">${esc(c.check)}</span>`);
+  else if (c.deal_tag) tags.push(`<span class="tag ${DEAL[c.deal_tag][0]}">${DEAL[c.deal_tag][1]}</span>`);
   if (c.multi_family) tags.push('<span class="tag gray">MULTI-FAMILY – NOT COMPED</span>');
   if (c.low_confidence) tags.push('<span class="tag low">LOW CONFIDENCE</span>');
   c.comp_flags.forEach(f => tags.push(`<span class="tag low">${esc(f)}</span>`));

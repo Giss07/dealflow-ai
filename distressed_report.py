@@ -69,6 +69,9 @@ def rows_for(zip_code, listing):
 
 
 MULTI_FAMILY_TYPES = {"MULTI_FAMILY", "DUPLEX", "TRIPLEX", "QUADRUPLEX"}
+ARV_TOO_HIGH_RATIO = 1.5         # ARV above 1.5x list: almost always a bad comp
+# (350 N Park Ave, Rialto: $360k list, $1.32M ARV from one comp — a 1927 house
+# on 0.87 acre that sold for $1.5M as land, Zestimate $581k.)
 # Deal tag by how far the max offer is below list price.
 GOOD_DEAL_MAX_BELOW = 0.15       # 0-15% below (or above list) → GOOD DEAL
 MAKE_OFFER_MAX_BELOW = 0.30      # over 15% up to 30% below → MAKE AN OFFER; beyond → LONG SHOT
@@ -89,23 +92,34 @@ def card(zip_code, listing):
     """The few fields one Distressed Deals card shows, plus its comps."""
     a = listing.get("analysis") or {}
     r = a.get("rehab") or {}
-    pct = a.get("mao_vs_list_pct")
+    from flip_analysis import is_mobile_home
+    address = listing.get("address") or ""
+    mobile = bool(a.get("mobile_home")) or is_mobile_home(address, a.get("home_type") or listing.get("type"))
+    mao = None if mobile else a.get("mao")
+    pct = a.get("mao_vs_list_pct") if mao is not None else None
     pct_below = -pct if pct is not None else None
     multi = (a.get("home_type") or "").upper() in MULTI_FAMILY_TYPES
-    address = listing.get("address") or ""
+    low_conf = a.get("confidence") == "LOW CONFIDENCE" and not multi and not mobile
+    arv, list_price = a.get("arv"), listing.get("price")
+    arv_too_high = bool(mao is not None and arv and list_price and arv > ARV_TOO_HIGH_RATIO * list_price)
+    # A deal tag only when the numbers can be trusted; otherwise say what to check.
+    check = ("ARV LOOKS TOO HIGH – CHECK COMPS" if arv_too_high
+             else "CHECK COMPS" if (low_conf and mao is not None) else None)
     street, _, rest = address.partition(", ")
     return {
         "zip": zip_code, "address": address, "street": street, "city": rest.rsplit(",", 1)[0] if rest else "",
-        "list_price": listing.get("price"), "mao": a.get("mao"), "pct_below_list": pct_below,
+        "list_price": list_price, "mao": mao, "pct_below_list": pct_below,
         "arv": a.get("arv"), "rehab": r.get("amount"), "rehab_tier": r.get("tier"),
         "profit_at_mao": a.get("profit_at_mao"), "days_on_market": listing.get("days"),
-        "deal_tag": deal_tag(pct_below),
-        "unpriced_reason": None if a.get("mao") is not None else (
-            "Multi-family — house sales can't price it" if multi
+        "deal_tag": None if check else deal_tag(pct_below),
+        "check": check,
+        "unpriced_reason": None if mao is not None else (
+            "Mobile home" if mobile
+            else "Multi-family — house sales can't price it" if multi
             else "No usable sold comps nearby" if (a.get("note") or "").startswith("no usable sold comps")
             else (a.get("note") or "No max offer")),
-        "low_confidence": a.get("confidence") == "LOW CONFIDENCE" and not multi,
-        "multi_family": multi,
+        "low_confidence": low_conf,
+        "multi_family": multi, "mobile_home": mobile,
         "comp_flags": a.get("comp_flags") or [], "arv_basis": a.get("arv_basis") or "",
         "note": a.get("note") or "", "zillow_url": a.get("zillow_url") or "",
         "comps": [{"address": c.get("address"), "sold_price": c.get("sold_price"),
@@ -118,8 +132,12 @@ def card(zip_code, listing):
 
 
 def sort_cards(cards):
-    """Best deals first: highest MAO-vs-list; cards without an MAO last."""
-    return sorted(cards, key=lambda c: (c["pct_below_list"] is None, c["pct_below_list"] or 0))
+    """Trusted deals first (closest MAO to list), then the ones to check, then unpriced.
+
+    A bad comp inflates the ARV and so the MAO, which would otherwise put the
+    least trustworthy card at the very top."""
+    return sorted(cards, key=lambda c: (c["pct_below_list"] is None, c.get("check") is not None,
+                                        c["pct_below_list"] or 0))
 
 
 def write_csv(columns, rows):

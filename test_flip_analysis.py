@@ -253,6 +253,24 @@ def test_remodeled():
           (b["comps_used"], b["confidence"], b["arv"]))
 
 
+def test_mobile_homes():
+    print("\n=== Mobile / manufactured homes ===")
+    for addr, t in (("2930 W Rialto Ave Space 63, Rialto, CA", "SINGLE_FAMILY"),
+                    ("45465 25th St E Spc 157, Lancaster, CA", ""), ("350 S Mayfield Ave Lot 11, X, CA", ""),
+                    ("1 Park Rd Lot #4, X, CA", ""), ("9 Any St, X, CA", "MANUFACTURED"), ("9 Any St", "mobile")):
+        check(f"{addr!r} / {t!r} → mobile home", fa.is_mobile_home(addr, t))
+    for addr in ("350 N Park Ave, Rialto, CA", "12 Lotus Ave, X, CA", "88 Spaceport Dr, X, CA", "5 Lot Line Rd, X, CA"):
+        check(f"{addr!r} → not a mobile home", not fa.is_mobile_home(addr, "SINGLE_FAMILY"))
+    looked_up = []
+    sub = dict(SUBJECT, address="2930 W Rialto Ave Space 63, Rialto, CA 92376", home_type="MANUFACTURED")
+    a = fa.analyze_listing(sub, [sold("c0", 600_000)], lambda c: looked_up.append(c) or {}, now_ms=NOW)
+    check("mobile subject: no ARV, no MAO, note 'Mobile home', no comp lookups",
+          a["mobile_home"] and a["arv"] is None and a["mao"] is None and a["note"] == "Mobile home" and looked_up == [])
+    park = dict(sold("p1", 400_000), streetAddress="77 Main St Space 9")
+    got = [c["zpid"] for c in fa.comp_candidates(SUBJECT, [park, sold("h1", 600_000)], NOW)]
+    check("a 'Space 9' sale typed SINGLE_FAMILY is never a comp", got == ["h1"], got)
+
+
 def test_csv_columns():
     print("\n=== Runner table / CSV rows ===")
     import types
@@ -287,6 +305,7 @@ if __name__ == "__main__":
     test_comps_arv_mao()
     test_pool_and_senior_matching()
     test_remodeled()
+    test_mobile_homes()
     test_csv_columns()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.exit(1 if FAILS else 0)

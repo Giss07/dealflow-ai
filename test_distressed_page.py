@@ -56,6 +56,10 @@ FIXTURE = {
         listing("1 Far St, Santa Ana, CA 92703", 800_000, mao=560_000, arv=850_000),         # exactly 30% below
         listing("6 Long Way, Santa Ana, CA 92703", 1_000_000, mao=600_000, arv=900_000),     # 40% below
         listing("7 Edge Ln, Santa Ana, CA 92703", 1_000_000, mao=850_000, arv=1_100_000),    # exactly 15% below
+        listing("8 Bogus Ave, Rialto, CA 92376", 360_000, mao=1_034_600, arv=1_320_000,       # ARV 3.7x list
+                confidence="LOW CONFIDENCE", comps=1),
+        listing("9 Park Rd Space 63, Rialto, CA 92376", 110_000, mao=20_800, arv=55_000,     # mobile home
+                home_type="MANUFACTURED", confidence="LOW CONFIDENCE", comps=1),
         listing("2 Near St, Santa Ana, CA 92703", 700_000, mao=630_000, arv=900_000),        # 10% below → GOOD DEAL
         listing("3 Units Ave, Santa Ana, CA 92703", 900_000, home_type="MULTI_FAMILY", confidence="LOW CONFIDENCE", comps=0),
         listing("4 Thin Ct, Santa Ana, CA 92703", 600_000, mao=520_000, arv=700_000, confidence="LOW CONFIDENCE", comps=2),
@@ -119,8 +123,10 @@ def test_search_flow():
     d = wait_done(sid)
     check("completes", d["status"] == "completed" and d["zips_done"] == 2, d["status"])
     order = [c["street"] for c in d["cards"]]
-    check("best deals first, no-MAO last",
-          order == ["5 Over Rd", "2 Near St", "4 Thin Ct", "7 Edge Ln", "1 Far St", "6 Long Way", "3 Units Ave"], order)
+    check("trusted deals first, then CHECK COMPS ones, then the unpriced",
+          order[:4] == ["5 Over Rd", "2 Near St", "7 Edge Ln", "1 Far St"] and order[4] == "6 Long Way"
+          and order[5:7] == ["8 Bogus Ave", "4 Thin Ct"] and set(order[7:]) == {"3 Units Ave", "9 Park Rd Space 63"},
+          order)
     by = {c["street"]: c for c in d["cards"]}
     tag = lambda st: by[st]["deal_tag"]
     check("10% below list → GOOD DEAL", tag("2 Near St") == "good")
@@ -132,6 +138,14 @@ def test_search_flow():
           tag("3 Units Ave") is None and "Multi-family" in by["3 Units Ave"]["unpriced_reason"])
     check("priced cards have no unpriced reason", by["2 Near St"]["unpriced_reason"] is None)
     check("LOW CONFIDENCE tag on a thin-comp house", by["4 Thin Ct"]["low_confidence"] is True)
+    check("LOW CONFIDENCE at 13% below → CHECK COMPS, never GOOD DEAL",
+          by["4 Thin Ct"]["check"] == "CHECK COMPS" and by["4 Thin Ct"]["deal_tag"] is None)
+    check("ARV over 1.5x list → ARV LOOKS TOO HIGH – CHECK COMPS, no deal tag",
+          by["8 Bogus Ave"]["check"] == "ARV LOOKS TOO HIGH – CHECK COMPS" and by["8 Bogus Ave"]["deal_tag"] is None)
+    check("a trusted card has no check tag", by["2 Near St"]["check"] is None)
+    check("mobile home → Couldn't price, reason 'Mobile home', no MAO shown",
+          by["9 Park Rd Space 63"]["mao"] is None and by["9 Park Rd Space 63"]["unpriced_reason"] == "Mobile home"
+          and by["9 Park Rd Space 63"]["deal_tag"] is None)
     check("multi-family: MULTI-FAMILY tag, not LOW CONFIDENCE",
           by["3 Units Ave"]["multi_family"] is True and by["3 Units Ave"]["low_confidence"] is False)
     check("card carries comps with price, $/sqft, distance, remodeled",
@@ -145,7 +159,7 @@ def test_search_flow():
     check("it has the summary and the comps table",
           body.startswith("zip,92703") and "mao,630000" in body and "comp_address" in body and "0 Comp St" in body)
     r = client.get(f"/api/distressed/search/{sid}/csv")
-    check("download-all CSV has one row per listing", r.status_code == 200 and r.get_data(as_text=True).count("\n") == 8)
+    check("download-all CSV has one row per listing", r.status_code == 200 and r.get_data(as_text=True).count("\n") == 10)
     check("unknown property → 404", client.get(f"/api/distressed/search/{sid}/csv",
                                                  query_string={"zip": "92703", "address": "nope"}).status_code == 404)
     check("latest points at this search", client.get("/api/distressed/search/latest").get_json()["id"] == sid)
