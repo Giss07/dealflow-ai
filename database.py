@@ -49,6 +49,12 @@ def get_engine():
         url = DATABASE_URL
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
+        if not url.startswith("postgresql"):
+            # e.g. a test pointing DATABASE_URL at a SQLite file; the libpq
+            # options below would make sqlite3.connect() raise TypeError.
+            logger.info(f"Using database: {url.split(':', 1)[0]}")
+            _ENGINE = create_engine(url)
+            return _ENGINE
         connect_args = dict(PG_CONNECT_ARGS)
         if DB_STATEMENT_TIMEOUT_MS > 0:
             connect_args["options"] = f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}"
