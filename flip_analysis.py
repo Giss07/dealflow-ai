@@ -12,9 +12,10 @@ Per-listing flip analysis for search_distressed: sold comps, ARV, rehab, MAO.
             Also never used, and shown with the reason: sales by public record
             only (no MLS listing), lots over 2x the subject's, and $/sqft over
             1.5x the median of the other comps.
-    ARV     the average sold price of the best 3 comps (the first 3 of that
-            order). With 2 or 1 comps, their average and "LOW CONFIDENCE";
-            none means no ARV and no MAO.
+    ARV     the median comp's sold price (the comp with the middle sold price)
+            + (subject sqft − its sqft) × its $/sqft as Zillow shows it,
+            held between the lowest and highest comp sold price. Fewer than
+            3 comps is "LOW CONFIDENCE"; none means no ARV and no MAO.
     rehab   Light $30 / Medium $55 / Heavy $90 per sqft from the description,
             one tier up when built before 1960.
     MAO     flip_calculator.max_allowable_offer at 10% of ARV profit.
@@ -211,6 +212,16 @@ def detail_lot_sqft(detail):
     return lot_sqft(m.group(1), "acres" if m and m.group(2).lower().startswith("acre") else "sqft") if m else None
 
 
+def sale_price_per_sqft(detail, sold_ms):
+    """Zillow's own $/sqft for this sale (priceHistory pricePerSquareFoot), or None."""
+    sold = [e for e in (detail.get("priceHistory") or []) if isinstance(e, dict)
+            and str(e.get("event") or "").lower() == "sold" and e.get("time") and e.get("pricePerSquareFoot")]
+    if not sold or not sold_ms:
+        return None
+    sale = min(sold, key=lambda e: abs(e["time"] - sold_ms))
+    return round(_num(sale["pricePerSquareFoot"]) or 0) or None if abs(sale["time"] - sold_ms) <= 45 * 86400 * 1000 else None
+
+
 MLS_EVENTS = ("listed for sale", "pending sale", "contingent", "price change", "listing removed")
 
 
@@ -339,6 +350,7 @@ def pick_comps(subject, candidates, fetch_detail):
         c["pool_match"] = c["pool"] == subject["pool"]
         c["senior_match"] = c["senior"] == subject["senior"]
         c["lot_sqft"] = c.get("lot_sqft") or detail_lot_sqft(detail)
+        c["listed_ppsf"] = sale_price_per_sqft(detail, c.get("sold_ms"))
         reason = None
         if c["remodeled"] == NOT_REMODELED:
             reason = f"Fixer ({c['remodeled_evidence']})"
@@ -403,35 +415,44 @@ def arv_basis(comps, excluded):
     return note
 
 
-ARV_COMPS = 3                    # ARV = average sold price of the best 3 comps
+def arv_calculation(subject_sqft, comps):
+    """The owner's rule (2026-11-18, third revision that day):
 
+      median comp   = the comp with the middle sold price (with an even count,
+                      the one just below the middle — the conservative pick)
+      size adj      = (subject sqft − median comp sqft) × the median comp's
+                      $/sqft as Zillow shows it, rounded to the nearest $100
+      ARV           = median comp sold price + size adj, held between the
+                      lowest and highest comp sold price
 
-def arv_calculation(comps):
-    """The owner's rule: ARV = the average sold price of the best 3 comps.
-
-    `comps` arrives in pick_comps order (REMODELED, then UNKNOWN, nearest first
-    within each; fixers and other exclusions already removed), so the best 3
-    are the first 3. With fewer, the average of what there is (the caller
-    flags LOW CONFIDENCE). Rounded to the dollar.
-
-    Replaced, on 2026-11-18, median $/sqft x sqft (1485 N Fillmore Ave:
-    $712,270 from sales of $635,000-$648,000) and then, the same day, median
-    sold price + $100/sqft size adjustment capped at the comps.
+    1485 N Fillmore Ave: Median $645,000 + size adj $67,300 (170 sqft × $396)
+    = $712,300 → capped at highest comp $648,000.
     """
-    used = comps[:ARV_COMPS]
-    if not used:
+    if not comps or not subject_sqft:
         return None
-    prices = [c["sold_price"] for c in used]
-    arv = round(sum(prices) / len(prices))
-    if len(prices) == 1:
-        explain = f"${prices[0]:,.0f} (1 comp)"
-    else:
-        explain = "(" + " + ".join(f"${p:,.0f}" for p in prices) + f") ÷ {len(prices)} = ${arv:,.0f}"
-    return {"arv": arv, "prices": [round(p) for p in prices], "count": len(prices), "explain": explain}
+    ranked = sorted(comps, key=lambda c: c["sold_price"])
+    mid = ranked[(len(ranked) - 1) // 2]
+    ppsf = mid.get("listed_ppsf") or round(mid["sold_price"] / mid["sqft"])
+    diff = round(subject_sqft - mid["sqft"])
+    # Half-up to the nearest $100 ($16,250 → $16,300); Python's round() would go to even ($16,200).
+    size_adj = int(math.copysign(math.floor(abs(diff * ppsf) / 100 + 0.5) * 100, diff * ppsf))
+    raw = mid["sold_price"] + size_adj
+    low, high = ranked[0]["sold_price"], ranked[-1]["sold_price"]
+    cap = "highest" if raw > high else "lowest" if raw < low else None
+    arv = high if cap == "highest" else low if cap == "lowest" else raw
+    sign = "+" if size_adj >= 0 else "−"
+    explain = (f"Median ${mid['sold_price']:,.0f} {sign} size adj ${abs(size_adj):,.0f} "
+               f"({abs(diff):,} sqft × ${ppsf:,.0f}) = ${raw:,.0f}")
+    if cap:
+        explain += f" → capped at {cap} comp ${arv:,.0f}"
+    return {"arv": round(arv), "median_comp": mid.get("address"), "median_price": round(mid["sold_price"]),
+            "median_sqft": round(mid["sqft"]), "median_ppsf": round(ppsf), "sqft_diff": diff,
+            "size_adj": size_adj, "raw": round(raw), "cap": cap, "low": round(low), "high": round(high),
+            "explain": explain}
 
 
-def compute_arv(comps):
-    calc = arv_calculation(comps)
+def compute_arv(subject_sqft, comps):
+    calc = arv_calculation(subject_sqft, comps)
     return calc["arv"] if calc else None
 
 
@@ -491,9 +512,9 @@ def analyze_listing(subject, sold_items, fetch_detail, more_sold_items=None, now
     out["skipped_fixers"] = [{"address": c["address"], "evidence": c["remodeled_evidence"]}
                              for c in excluded if c["excluded_reason"].startswith("Fixer")]
     out["confidence"] = "LOW CONFIDENCE" if len(comps) < COMPS_MIN else "OK"
-    calc = arv_calculation(comps)
-    for n, c in enumerate(comps):
-        c["in_arv"] = n < ARV_COMPS
+    calc = arv_calculation(subject["sqft"], comps)
+    for c in comps:
+        c["in_arv"] = True
     out["arv"] = calc["arv"] if calc else None
     out["arv_calc"] = calc
     out["arv_explain"] = calc["explain"] if calc else ""
