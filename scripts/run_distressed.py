@@ -4,8 +4,10 @@ run_distressed.py — CLI runner for the MCP search_distressed tool.
 
 Calls mcp_server.search_distressed() directly (no MCP transport) for one or
 more ZIP codes, with retry-on-500 since the upstream OpenWeb Ninja Zillow API
-intermittently returns HTTP 500 on specific ZIPs. Prints kept (keyword-matched)
-listings with their distress signals, and a per-ZIP summary.
+intermittently returns HTTP 500 on specific ZIPs. Prints one table per ZIP of
+the keyword-matched listings with comps, ARV, rehab and MAO (see flip_analysis),
+and writes two CSVs to exports/: one row per listing, and one row per comp.
+Read-only: nothing is submitted.
 
 Usage:
     python3 scripts/run_distressed.py 93701 93702 93706
@@ -57,11 +59,96 @@ MAX_ATTEMPTS = 4
 BACKOFF = [5, 8, 12]  # seconds between attempts
 
 
+LISTING_COLUMNS = [
+    "zip", "address", "list_price", "arv", "comps_used", "confidence", "comp_flags",
+    "rehab_tier", "rehab_per_sqft", "rehab", "rehab_reason", "mao", "mao_vs_list",
+    "mao_vs_list_pct", "profit_at_mao", "days_on_market", "beds", "baths", "sqft",
+    "year_built", "pool", "55_plus", "distress_signals", "note", "zillow_url",
+]
+COMP_COLUMNS = [
+    "subject_address", "comp_address", "sold_price", "sold_date", "sqft",
+    "price_per_sqft", "distance_mi", "pool", "55_plus", "matches_subject", "zillow_url",
+]
+
+
+def _money(v):
+    return f"${v:,.0f}" if isinstance(v, (int, float)) else "—"
+
+
+def _yn(v):
+    return "yes" if v else "no"
+
+
+def _rows(zip_code, listing):
+    a = listing.get("analysis") or {}
+    r = a.get("rehab") or {}
+    pct = a.get("mao_vs_list_pct")
+    row = {
+        "zip": zip_code, "address": listing.get("address"),
+        "list_price": listing.get("price"), "arv": a.get("arv"),
+        "comps_used": a.get("comps_used", 0), "confidence": a.get("confidence") or "",
+        "comp_flags": " / ".join(a.get("comp_flags") or []),
+        "rehab_tier": r.get("tier"), "rehab_per_sqft": r.get("per_sqft"), "rehab": r.get("amount"),
+        "rehab_reason": r.get("reason"), "mao": a.get("mao"), "mao_vs_list": a.get("mao_vs_list"),
+        "mao_vs_list_pct": f"{pct:.1%}" if pct is not None else "",
+        "profit_at_mao": a.get("profit_at_mao"), "days_on_market": listing.get("days"),
+        "beds": listing.get("beds"), "baths": listing.get("baths"), "sqft": listing.get("sqft"),
+        "year_built": a.get("year_built"), "pool": _yn(a.get("pool")), "55_plus": _yn(a.get("senior")),
+        "distress_signals": "; ".join(listing.get("distress_signals") or []),
+        "note": a.get("note") or "", "zillow_url": a.get("zillow_url") or "",
+    }
+    comps = []
+    for c in a.get("comps") or []:
+        mism = [m for m, ok in (("pool", c.get("pool_match")), ("55+", c.get("senior_match"))) if not ok]
+        comps.append({
+            "subject_address": listing.get("address"), "comp_address": c.get("address"),
+            "sold_price": c.get("sold_price"), "sold_date": c.get("sold_date"), "sqft": c.get("sqft"),
+            "price_per_sqft": round(c.get("price_per_sqft") or 0), "distance_mi": round(c.get("distance_mi") or 0, 2),
+            "pool": _yn(c.get("pool")), "55_plus": _yn(c.get("senior")),
+            "matches_subject": "yes" if not mism else "MISMATCH: " + ", ".join(mism),
+            "zillow_url": c.get("url") or "",
+        })
+    return row, comps
+
+
+def _print_zip_table(zip_code, rows, comps_by_subject):
+    print(f"\nZIP {zip_code} — {len(rows)} distressed listing(s)")
+    hdr = f"  {'Address':34} {'List':>10} {'ARV':>10} {'Comps':>12} {'Rehab':>14} {'MAO':>10} {'MAO vs list':>16} {'Profit@MAO':>11} {'DOM':>4}"
+    print(hdr); print("  " + "-" * (len(hdr) - 2))
+    for r in rows:
+        comps = f"{r['comps_used']}{' LOW' if r['confidence'] == 'LOW CONFIDENCE' else ''}"
+        rehab = f"{(r['rehab_tier'] or '-')[:1].upper()} {_money(r['rehab'])}"
+        vs = (f"{_money(r['mao_vs_list'])} ({r['mao_vs_list_pct']})" if r["mao_vs_list"] is not None else "—")
+        print(f"  {str(r['address'])[:34]:34} {_money(r['list_price']):>10} {_money(r['arv']):>10} {comps:>12} "
+              f"{rehab:>14} {_money(r['mao']):>10} {vs:>16} {_money(r['profit_at_mao']):>11} {str(r['days_on_market'] or ''):>4}")
+        flags = [f for f in (r["confidence"] if r["confidence"] == "LOW CONFIDENCE" else "", r["comp_flags"], r["note"]) if f]
+        print(f"      pool {r['pool']} · 55+ {r['55_plus']} · rehab: {r['rehab_reason']}"
+              + (f" · ⚠ {' · '.join(flags)}" if flags else ""))
+        print(f"      {r['zillow_url']}")
+        for c in comps_by_subject.get(r["address"], []):
+            print(f"        comp {c['comp_address'][:38]:38} {_money(c['sold_price']):>10} {c['sold_date']} "
+                  f"{int(c['sqft'] or 0):>5}sf {_money(c['price_per_sqft']):>6}/sf {c['distance_mi']:.2f}mi "
+                  f"pool {c['pool']} 55+ {c['55_plus']} {'' if c['matches_subject'] == 'yes' else c['matches_subject']}")
+
+
+def _write_csvs(zips, all_rows, all_comps):
+    import csv
+    from datetime import date
+    out_dir = os.path.join(REPO_ROOT, "exports")
+    os.makedirs(out_dir, exist_ok=True)
+    stem = os.path.join(out_dir, f"distressed_{'-'.join(zips)}_{date.today().isoformat()}")
+    for path, cols, rows in ((stem + ".csv", LISTING_COLUMNS, all_rows),
+                             (stem + "_comps.csv", COMP_COLUMNS, all_comps)):
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=cols)
+            w.writeheader()
+            w.writerows(rows)
+    return stem + ".csv", stem + "_comps.csv"
+
+
 def run(zips):
-    summary = {}
+    summary, all_rows, all_comps = {}, [], []
     for z in zips:
-        print("=" * 64)
-        print(f"ZIP {z}")
         final = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             # Bust the 1h zip-search cache so each attempt is a fresh vendor call.
@@ -69,27 +156,33 @@ def run(zips):
             data = json.loads(mcp_server.search_distressed(z))
             if data.get("status") == "ok":
                 final = data
-                print(f"  attempt {attempt}: OK  count={data.get('count')}")
                 break
-            print(f"  attempt {attempt}: {data.get('error', '?')}")
+            print(f"  ZIP {z} attempt {attempt}: {data.get('error', '?')}")
             if attempt < MAX_ATTEMPTS:
                 time.sleep(BACKOFF[attempt - 1])
         if final is None:
             summary[z] = "FAILED (all attempts)"
             continue
-        summary[z] = f"ok, {final.get('count', 0)} distressed"
+        rows, comps_by_subject = [], {}
         for lst in final.get("listings", []):
-            price = lst.get("price") or 0
-            print(f"    - {lst.get('address')} | ${price:,} | "
-                  f"{lst.get('beds')}bd/{lst.get('baths')}ba | "
-                  f"{lst.get('sqft')}sqft | {lst.get('days')} DOM")
-            for s in lst.get("distress_signals", []):
-                print(f"        - {s}")
+            row, comps = _rows(z, lst)
+            rows.append(row)
+            comps_by_subject[row["address"]] = comps
+            all_comps.extend(comps)
+        # Best MAO-vs-list first; rows without an MAO last.
+        rows.sort(key=lambda r: (r["mao_vs_list"] is None,
+                                 -(r["mao_vs_list"] if r["mao_vs_list"] is not None else 0)))
+        all_rows.extend(rows)
+        _print_zip_table(z, rows, comps_by_subject)
+        summary[z] = f"ok, {final.get('count', 0)} distressed"
 
-    print("=" * 64)
+    print("\n" + "=" * 64)
     print("SUMMARY")
     for z in zips:
         print(f"  {z}: {summary.get(z)}")
+    if all_rows:
+        listing_csv, comps_csv = _write_csvs(zips, all_rows, all_comps)
+        print(f"\nCSV: {listing_csv}\n     {comps_csv}")
 
 
 if __name__ == "__main__":

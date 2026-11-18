@@ -1,0 +1,231 @@
+"""
+Tests for the distressed-search flip analysis: calculator, comps, ARV, rehab, MAO.
+
+The calculator tests are the owner's own numbers (ARV $665,000, repairs
+$45,000, purchase $490,000). Property tax is 1.2% of purchase per year (Prop 13
+reset); the original $904-tax version is kept to show the calculator matches
+the spreadsheet line for line when a fixed tax is given.
+
+No network, no API key.
+
+    python test_flip_analysis.py
+"""
+
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from flip_calculator import flip_costs, max_allowable_offer
+import flip_analysis as fa
+
+FAILS = []
+
+
+def check(label, cond, detail=""):
+    print(f"  {'PASS' if cond else 'FAIL'}  {label}{(' — ' + str(detail)) if detail else ''}")
+    if not cond:
+        FAILS.append(label)
+
+
+def test_calculator():
+    print("\n=== Calculator: the owner's tests ===")
+    ARV, REPAIRS, PURCHASE = 665_000, 45_000, 490_000
+
+    b = flip_costs(PURCHASE, ARV, REPAIRS)            # property tax 1.2% of purchase
+    print("  -- property tax 1.2% of purchase (the rule the search uses)")
+    check("acquisition $494,900", round(b["acquisition"]) == 494_900, round(b["acquisition"]))
+    check("holding $18,147", round(b["holding"]) == 18_147, round(b["holding"]))
+    check("  of which property tax $1,470 (490,000 × 1.2% × 3/12)", round(b["taxes"]) == 1_470, round(b["taxes"]))
+    check("selling $31,600", round(b["selling"]) == 31_600, round(b["selling"]))
+    check("total costs $589,647", round(b["total_costs"]) == 589_647, round(b["total_costs"]))
+    check("profit $75,353", round(b["profit"]) == 75_353, round(b["profit"]))
+    mao, at = max_allowable_offer(ARV, REPAIRS)
+    check("MAO at 10% of ARV = $498,400", mao == 498_400, mao)
+    check("profit at MAO $66,505 (≥ $66,500)", round(at["profit"]) == 66_505 and at["profit"] >= 66_500,
+          round(at["profit"]))
+    check("$100 more would miss the 10% target",
+          flip_costs(mao + 100, ARV, REPAIRS)["profit"] < 66_500)
+
+    o = flip_costs(PURCHASE, ARV, REPAIRS, annual_property_tax=904)
+    print("  -- original spreadsheet test, fixed annual tax $904")
+    check("acquisition $494,900", round(o["acquisition"]) == 494_900, round(o["acquisition"]))
+    check("holding $16,903", round(o["holding"]) == 16_903, round(o["holding"]))
+    check("selling $31,600", round(o["selling"]) == 31_600, round(o["selling"]))
+    check("total costs $588,403", round(o["total_costs"]) == 588_403, round(o["total_costs"]))
+    check("profit $76,597", round(o["profit"]) == 76_597, round(o["profit"]))
+    mao904, at904 = max_allowable_offer(ARV, REPAIRS, annual_property_tax=904)
+    check("MAO about $499,600 (profit ≥ $66,500)", mao904 == 499_600 and at904["profit"] >= 66_500,
+          f"{mao904}, profit {round(at904['profit'])}")
+
+    check("no MAO when even $0 cannot reach the target",
+          max_allowable_offer(100_000, 200_000) == (None, None))
+
+
+def test_rehab():
+    print("\n=== Rehab tiers ===")
+    r = fa.estimate_rehab("Fixer! Needs work throughout.", 1985, 1_500)
+    check("fixer → medium $55/sqft", r["tier"] == "medium" and r["amount"] == 82_500, r)
+    check("bring your contractor → heavy",
+          fa.estimate_rehab("as-is, bring your contractor", 1990, 1_000)["tier"] == "heavy")
+    check("sale terms only (motivated, probate) → light",
+          fa.estimate_rehab("Motivated seller, probate sale", 1995, 1_000)["tier"] == "light")
+    check("pre-1960 moves light → medium", fa.estimate_rehab("TLC", 1954, 1_000)["tier"] == "medium")
+    check("pre-1960 moves medium → heavy", fa.estimate_rehab("fixer", 1950, 1_000)["tier"] == "heavy")
+    check("heavy stays heavy", fa.estimate_rehab("tear-down", 1940, 1_000)["tier"] == "heavy")
+    check("1960 itself is not pre-1960", fa.estimate_rehab("TLC", 1960, 1_000)["tier"] == "light")
+    check("'gutters' does not read as 'gut'",
+          fa.estimate_rehab("new gutters, TLC", 1990, 1_000)["tier"] == "light")
+    check("no sqft → no amount", fa.estimate_rehab("fixer", 1990, None)["amount"] is None)
+
+
+def test_detection():
+    print("\n=== Pool / 55+ detection ===")
+    check("hasPrivatePool True → pool (data)",
+          fa.detect_pool({"resoFacts": {"hasPrivatePool": True}}) == (True, "data"))
+    check("poolFeatures ['In Ground'] → pool (data)",
+          fa.detect_pool({"resoFacts": {"poolFeatures": ["In Ground"]}}) == (True, "data"))
+    check("poolFeatures ['None'] → no pool (data), description ignored",
+          fa.detect_pool({"resoFacts": {"poolFeatures": ["None"]}, "description": "sparkling pool"}) == (False, "data"))
+    check("community pool only → not a private pool",
+          fa.detect_pool({"resoFacts": {"poolFeatures": ["Community"]}}) == (False, "data"))
+    check("no data fields, description 'swimming pool' → pool",
+          fa.detect_pool({"description": "Backyard with swimming pool"}) == (True, "description"))
+    check("no data fields, 'community pool' → no pool",
+          fa.detect_pool({"description": "HOA with community pool"})[0] is False)
+    check("isSeniorCommunity True → 55+ (data)",
+          fa.detect_senior({"resoFacts": {"isSeniorCommunity": True}}) == (True, "data"))
+    check("communityFeatures '55 and Over' → 55+",
+          fa.detect_senior({"resoFacts": {"communityFeatures": ["55 and Over"]}})[0] is True)
+    for text in ("Welcome to this 55+ community", "senior community", "Age-restricted park", "55 and older"):
+        check(f"description {text!r} → 55+", fa.detect_senior({"description": text})[0] is True)
+    check("no signal → not 55+", fa.detect_senior({"description": "family home near schools"})[0] is False)
+
+
+NOW = time.time() * 1000
+DAY = 86400 * 1000
+SUBJECT = {"zpid": "1", "address": "1 Subject St", "list_price": 500_000, "sqft": 1_500, "beds": 3,
+           "home_type": "SINGLE_FAMILY", "lat": 34.0, "lon": -117.0, "year_built": 1985,
+           "description": "fixer", "pool": False, "senior": False}
+DEG_PER_MILE = 1 / 69.0
+
+
+def sold(zpid, price, sqft=1_500, beds=3, miles=0.1, days_ago=30, home_type="SINGLE_FAMILY"):
+    return {"zpid": zpid, "soldPrice": price, "livingArea": sqft, "bedrooms": beds, "homeType": home_type,
+            "latitude": 34.0 + miles * DEG_PER_MILE, "longitude": -117.0, "dateSold": NOW - days_ago * DAY,
+            "streetAddress": f"{zpid} Comp St", "city": "Town", "zipcode": "90000",
+            "detailUrl": f"/homedetails/{zpid}_zpid/"}
+
+
+def no_pool_no_senior(_c):
+    return {"resoFacts": {"hasPrivatePool": False, "isSeniorCommunity": False}}
+
+
+def test_comp_filters():
+    print("\n=== Comp filters ===")
+    items = [
+        sold("ok", 600_000),
+        sold("old", 600_000, days_ago=200),                 # > 6 months
+        sold("far", 600_000, miles=0.6),                    # > 0.5 mi
+        sold("big", 600_000, sqft=1_900),                   # > +20%
+        sold("small", 600_000, sqft=1_150),                 # < -20%
+        sold("beds", 600_000, beds=5),                      # > ±1 bed
+        sold("condo", 600_000, home_type="CONDO"),          # other type
+        sold("edge", 600_000, sqft=1_800, beds=4, miles=0.49, days_ago=180),  # all at the limit
+        sold("1", 600_000),                                 # the subject itself
+    ]
+    got = [c["zpid"] for c in fa.comp_candidates(SUBJECT, items, NOW)]
+    check("only in-window, in-radius, similar, same-type sales survive", got == ["ok", "edge"], got)
+
+
+def test_comps_arv_mao():
+    print("\n=== Comps, ARV and MAO ===")
+    items = [sold(f"c{i}", p, miles=0.05 * (i + 1)) for i, p in enumerate([600_000, 630_000, 660_000, 690_000, 720_000, 750_000])]
+    a = fa.analyze_listing(SUBJECT, items, no_pool_no_senior, now_ms=NOW)
+    check("5 comps used, nearest first", [c["zpid"] for c in a["comps"]] == ["c0", "c1", "c2", "c3", "c4"],
+          [c["zpid"] for c in a["comps"]])
+    check("ARV = median $/sqft × sqft = $660,000", a["arv"] == 660_000, a["arv"])
+    check("confidence OK with 5 comps", a["confidence"] == "OK" and a["comp_flags"] == [])
+    check("rehab medium (fixer) $82,500", a["rehab"]["amount"] == 82_500, a["rehab"])
+    exp_mao, exp_at = max_allowable_offer(660_000, 82_500)
+    check("MAO from the calculator", a["mao"] == exp_mao and a["profit_at_mao"] == round(exp_at["profit"]),
+          (a["mao"], a["profit_at_mao"]))
+    check("MAO vs list = MAO − $500,000", a["mao_vs_list"] == exp_mao - 500_000, a["mao_vs_list"])
+
+    two = fa.analyze_listing(SUBJECT, items[:2], no_pool_no_senior, now_ms=NOW)
+    check("2 comps → LOW CONFIDENCE, ARV still given", two["confidence"] == "LOW CONFIDENCE" and two["arv"], two["arv"])
+    none = fa.analyze_listing(SUBJECT, [], no_pool_no_senior, now_ms=NOW)
+    check("0 comps → no ARV, no MAO, reason given", none["arv"] is None and none["mao"] is None and none["note"],
+          none["note"])
+
+    asked = []
+    fa.analyze_listing(SUBJECT, items[:1], no_pool_no_senior, more_sold_items=lambda: asked.append(1) or items[1:4],
+                       now_ms=NOW)
+    check("fewer than 3 in the ZIP → neighbouring ZIPs searched", asked == [1])
+
+
+def test_pool_and_senior_matching():
+    print("\n=== Pool / 55+ matching and MISMATCH flags ===")
+    items = [sold(f"c{i}", 600_000 + 10_000 * i, miles=0.05 * (i + 1)) for i in range(6)]
+    pools = {"c0": True, "c1": False, "c2": True, "c3": False, "c4": False, "c5": False}
+    seniors = {z: False for z in pools}
+
+    def detail(c):
+        return {"resoFacts": {"hasPrivatePool": pools[c["zpid"]], "isSeniorCommunity": seniors[c["zpid"]]}}
+
+    no_pool_subject = dict(SUBJECT)
+    a = fa.analyze_listing(no_pool_subject, items, detail, now_ms=NOW)
+    check("no-pool subject uses only no-pool comps", [c["zpid"] for c in a["comps"]] == ["c1", "c3", "c4", "c5"]
+          and a["comp_flags"] == [], ([c["zpid"] for c in a["comps"]], a["comp_flags"]))
+
+    pool_subject = dict(SUBJECT, pool=True)
+    b = fa.analyze_listing(pool_subject, items, detail, now_ms=NOW)
+    check("pool subject with 2 pool comps fills to 3 and flags POOL MISMATCH",
+          [c["zpid"] for c in b["comps"]] == ["c0", "c1", "c2"] and b["comp_flags"] == ["POOL MISMATCH"],
+          ([c["zpid"] for c in b["comps"]], b["comp_flags"]))
+    check("the fill-in comp is marked as not matching", [c["pool_match"] for c in b["comps"]] == [True, False, True])
+
+    seniors.update({"c0": True, "c1": True})
+    senior_subject = dict(SUBJECT, senior=True, pool=False)
+    c = fa.analyze_listing(senior_subject, items, detail, now_ms=NOW)
+    check("55+ subject: 1 matching 55+ comp, fills to 3, flags 55+ MISMATCH",
+          c["comps_used"] == 3 and "55+ MISMATCH" in c["comp_flags"], (c["comps_used"], c["comp_flags"]))
+    d = fa.analyze_listing(dict(SUBJECT), items, detail, now_ms=NOW)
+    check("non-55+ subject never uses 55+ comps when enough others exist",
+          not any(x["senior"] for x in d["comps"]), [x["zpid"] for x in d["comps"]])
+
+
+def test_csv_columns():
+    print("\n=== Runner table / CSV rows ===")
+    import types
+    for name in ("mcp", "mcp.server", "mcp.server.fastmcp"):
+        sys.modules.setdefault(name, types.ModuleType(name))
+    sys.modules["mcp.server.fastmcp"].FastMCP = type("F", (), {"__init__": lambda s, *a, **k: None,
+                                                               "tool": lambda s, *a, **k: (lambda f: f)})
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+    import importlib
+    rd = importlib.import_module("run_distressed")
+    items = [sold(f"c{i}", 600_000, miles=0.05 * (i + 1)) for i in range(3)]
+    analysis = fa.analyze_listing(SUBJECT, items, no_pool_no_senior, now_ms=NOW)
+    analysis.update({"zillow_url": "https://www.zillow.com/homedetails/1_zpid/", "pool": False, "senior": False,
+                     "year_built": 1985})
+    row, comps = rd._rows("90000", {"address": "1 Subject St", "price": 500_000, "days": 40, "analysis": analysis})
+    need = ["address", "list_price", "arv", "comps_used", "rehab", "mao", "mao_vs_list", "profit_at_mao",
+            "days_on_market", "zillow_url", "pool", "55_plus"]
+    check("listing row has every requested column", all(k in row for k in need) and set(row) == set(rd.LISTING_COLUMNS),
+          sorted(set(need) - set(row)))
+    check("comps rows carry sold price/date, sqft, $/sqft, distance, pool, 55+",
+          len(comps) == 3 and set(comps[0]) == set(rd.COMP_COLUMNS), comps[0] if comps else None)
+
+
+if __name__ == "__main__":
+    test_calculator()
+    test_rehab()
+    test_detection()
+    test_comp_filters()
+    test_comps_arv_mao()
+    test_pool_and_senior_matching()
+    test_csv_columns()
+    print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
+    sys.exit(1 if FAILS else 0)

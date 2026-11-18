@@ -40,15 +40,19 @@ CACHE_TTL = 3600   # 1 hour
 
 _owin_cache = {}  # {cache_key: (epoch_time, data)}
 
-def _call_openweb_ninja_search(zip_code, status="FOR_SALE"):
-    """Search listings by zip code via OpenWeb Ninja.
+def _call_openweb_ninja_search(zip_code, status="FOR_SALE", page=1):
+    """Search listings by zip code via OpenWeb Ninja (41 results per page).
 
     Returns list of listing dicts on success, or dict with "error" key on failure.
     Results cached for 1 hour.
+
+    The API reads `home_status`. This used to send `status`, which the API
+    ignores and falls back to FOR_SALE, so a RECENTLY_SOLD search silently
+    returned active listings (seen 2026-10-16, Romneya Dr comps).
     """
     import requests
 
-    cache_key = f"{zip_code}:{status}"
+    cache_key = f"{zip_code}:{status}" if page == 1 else f"{zip_code}:{status}:p{page}"
     if cache_key in _owin_cache:
         ts, items = _owin_cache[cache_key]
         age = int(time.time() - ts)
@@ -65,7 +69,8 @@ def _call_openweb_ninja_search(zip_code, status="FOR_SALE"):
             start = time.time()
             r = requests.get(
                 "https://api.openwebninja.com/realtime-zillow-data/search",
-                params={"location": zip_code, "status": status},
+                params={"location": zip_code, "home_status": status,
+                        **({"page": page} if page > 1 else {})},
                 headers={"x-api-key": key},
                 timeout=30,
             )
@@ -151,6 +156,101 @@ def _owin_format_listing(item, zip_code):
     }
 
 
+_detail_cache = {}  # {address_lower: (epoch_time, detail_or_None)}
+
+
+def _detail_cached(address):
+    """property-details-address with a 1h cache; comps are shared by every
+    subject in a ZIP, so each comp is looked up at most once per run."""
+    k = address.strip().lower()
+    hit = _detail_cache.get(k)
+    if hit and time.time() - hit[0] < CACHE_TTL:
+        return hit[1]
+    d = _call_openweb_ninja_address(address)
+    if isinstance(d, dict) and "error" in d:
+        return None                      # not cached: a transient error may succeed later
+    _detail_cache[k] = (time.time(), d)
+    time.sleep(0.2)                      # gentle rate-limit, as for listings
+    return d
+
+
+def _sold_last_6_months(zip_code, max_pages=10):
+    """RECENTLY_SOLD results for a ZIP, paging back until sales are older than
+    the comp window (newest first, 41 per page; ~8 pages covers 6 months in a
+    busy ZIP). Errors end the paging and return what was gathered."""
+    from flip_analysis import COMP_MAX_AGE_DAYS
+    cutoff_ms = (time.time() - COMP_MAX_AGE_DAYS * 86400) * 1000
+    out = []
+    for page in range(1, max_pages + 1):
+        items = _call_openweb_ninja_search(zip_code, "RECENTLY_SOLD", page=page)
+        if not isinstance(items, list) or not items:
+            break
+        out.extend(items)
+        dates = [(i.get("dateSold") or (i.get("hdpData") or {}).get("homeInfo", {}).get("dateSold") or 0)
+                 for i in items]
+        if min(dates) < cutoff_ms:
+            break
+    logger.info(f"[sold] zip={zip_code} {len(out)} sold results gathered")
+    return out
+
+
+def _analyze_distressed(item, detail, zip_code):
+    """Comps, ARV, rehab and MAO for one keyword-matched listing (flip_analysis)."""
+    from flip_analysis import analyze_listing, detect_pool, detect_senior
+    hi = item.get("hdpData", {}).get("homeInfo", {})
+    detail = detail or {}
+
+    def num(*vals):
+        for v in vals:
+            try:
+                if v not in (None, ""):
+                    return float(str(v).replace("$", "").replace(",", ""))
+            except ValueError:
+                pass
+        return None
+
+    pool, pool_src = detect_pool(detail)
+    senior, senior_src = detect_senior(detail)
+    subject = {
+        "zpid": str(item.get("zpid") or detail.get("zpid") or ""),
+        "address": f"{item.get('streetAddress', '')}, {item.get('city', '')}, {item.get('state', 'CA')} {zip_code}",
+        "list_price": num(item.get("price"), item.get("unformattedPrice"), hi.get("price")),
+        "sqft": num(item.get("livingArea"), hi.get("livingArea"), detail.get("livingArea")),
+        "beds": num(item.get("bedrooms"), hi.get("bedrooms"), detail.get("bedrooms")),
+        "home_type": (item.get("homeType") or hi.get("homeType") or detail.get("homeType") or "").upper(),
+        "lat": num(item.get("latitude"), hi.get("latitude"), detail.get("latitude")),
+        "lon": num(item.get("longitude"), hi.get("longitude"), detail.get("longitude")),
+        "year_built": int(num(hi.get("yearBuilt"), detail.get("yearBuilt")) or 0) or None,
+        "description": detail.get("description") or "",
+        "pool": pool, "senior": senior,
+    }
+
+    def neighbor_sold():
+        zips = []
+        for z in (detail.get("nearbyZipcodes") or [])[:3]:
+            z = z.get("zipcode") if isinstance(z, dict) else z
+            if z and str(z) != str(zip_code):
+                zips.append(str(z))
+        items = []
+        for z in zips:
+            items.extend(_sold_last_6_months(z))
+        return items
+
+    result = analyze_listing(subject, _sold_last_6_months(zip_code),
+                             fetch_detail=lambda c: _detail_cached(c["address"]),
+                             more_sold_items=neighbor_sold)
+    url = detail.get("hdpUrl") or item.get("detailUrl") or ""
+    if url.startswith("/"):
+        url = "https://www.zillow.com" + url
+    keep = ("address", "sold_price", "sold_date", "sqft", "price_per_sqft", "distance_mi",
+            "pool", "senior", "pool_match", "senior_match", "url")
+    result["comps"] = [{k: c.get(k) for k in keep} for c in result["comps"]]
+    result.update({"zillow_url": url, "pool": pool, "pool_source": pool_src,
+                   "senior": senior, "senior_source": senior_src,
+                   "year_built": subject["year_built"]})
+    return result
+
+
 # ── TOOLS ─────────────────────────────────────────────────────────────
 
 
@@ -183,6 +283,14 @@ def search_distressed(zip_code: str):
     Returns matches sorted by days on market (most stale first).
     Results are cached at the zip-search layer; per-listing descriptions
     are fetched fresh.
+
+    Each listing also carries an "analysis" object (read-only; nothing is
+    submitted): up to 5 SOLD comps (last 6 months, within 0.5 mi, same type,
+    ±20% sqft, ±1 bed, pool and 55+ matched, with POOL / 55+ MISMATCH flags
+    when non-matching comps fill in), ARV = median comp $/sqft × sqft
+    ("LOW CONFIDENCE" under 3 comps), a Light/Medium/Heavy rehab estimate
+    ($30/$55/$90 per sqft, one tier up if built before 1960), and the maximum
+    allowable offer (MAO) for a 10%-of-ARV profit on a 3-month hold.
     """
     logger.info(f"[search_distressed] zip={zip_code}")
 
@@ -245,6 +353,12 @@ def search_distressed(zip_code: str):
             entry = _owin_format_listing(item, zip_code)
             entry["distress_signals"] = signals
             entry["signal_count"] = len(signals)
+            # Read-only analysis: comps, ARV, rehab, MAO. Never submits an offer.
+            try:
+                entry["analysis"] = _analyze_distressed(item, detail if isinstance(detail, dict) else None, zip_code)
+            except Exception as e:
+                logger.error(f"[search_distressed] analysis failed for {entry['address']}: {e}")
+                entry["analysis"] = {"note": f"analysis failed: {type(e).__name__}: {str(e)[:120]}"}
             distressed.append(entry)
 
     distressed.sort(key=lambda x: (x.get("days") or 0), reverse=True)
