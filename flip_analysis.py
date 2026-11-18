@@ -9,6 +9,9 @@ Per-listing flip analysis for search_distressed: sold comps, ARV, rehab, MAO.
             (clear fixer wording) or UNKNOWN (no wording either way). Among
             every comp that passes the filters, REMODELED come first, then
             UNKNOWN, nearest first within each; NOT is never used. Up to 5.
+            Also never used, and shown with the reason: sales by public record
+            only (no MLS listing), lots over 2x the subject's, and $/sqft over
+            1.5x the median of the other comps.
     ARV     median $/sqft of those comps × subject sqft. Fewer than 3 is
             "LOW CONFIDENCE"; none means no ARV and no MAO.
     rehab   Light $30 / Medium $55 / Heavy $90 per sqft from the description,
@@ -31,6 +34,9 @@ COMP_MAX_AGE_DAYS = 183           # 6 months
 COMP_SQFT_TOLERANCE = 0.20
 COMP_BEDS_TOLERANCE = 1
 COMPS_MIN = 3
+LOT_MAX_RATIO = 2.0               # comp lot over 2x the subject's → excluded
+OUTLIER_RATIO = 1.5               # comp $/sqft over 1.5x the other comps' median → excluded
+MLS_LOOKBACK_DAYS = 365           # an MLS listing this long before the sale makes it an MLS sale
 COMPS_MAX = 5
 MAX_COMP_DETAIL_LOOKUPS = 30      # per subject: candidates checked for pool / 55+ / remodel
 
@@ -186,6 +192,48 @@ def is_mobile_home(address, home_type):
             or bool(MOBILE_ADDRESS.search(str(address or ""))))
 
 
+# ── Lot size and sale source ──────────────────────────────────────────
+
+def lot_sqft(value, unit):
+    """Lot size in sqft from Zillow's value + unit ('sqft', 'Square Feet', 'acres', 'Acres')."""
+    v = _num(value)
+    if not v:
+        return None
+    return round(v * 43_560) if str(unit or "").lower().startswith("acre") else round(v)
+
+
+def detail_lot_sqft(detail):
+    lot = lot_sqft(detail.get("lotAreaValue"), detail.get("lotAreaUnits") or detail.get("lotAreaUnit"))
+    if lot:
+        return lot
+    m = re.match(r"\s*([\d,.]+)\s*(acres?|sq\s*ft|sqft|square feet)", str((detail.get("resoFacts") or {}).get("lotSize") or ""), re.I)
+    return lot_sqft(m.group(1), "acres" if m and m.group(2).lower().startswith("acre") else "sqft") if m else None
+
+
+MLS_EVENTS = ("listed for sale", "pending sale", "contingent", "price change", "listing removed")
+
+
+def sold_by_public_record_only(detail, sold_ms):
+    """True when the sale on record was not an MLS sale.
+
+    The Sold event nearest the comp's sale date must come from "Public Record",
+    with no MLS listing event (listed, pending, contingent, price change) in the
+    year before it. Unknown history → False (the comp is kept).
+    """
+    history = [e for e in (detail.get("priceHistory") or []) if isinstance(e, dict)]
+    sold = [e for e in history if str(e.get("event") or "").lower() == "sold" and e.get("time")]
+    if not sold or not sold_ms:
+        return False
+    sale = min(sold, key=lambda e: abs(e["time"] - sold_ms))
+    if abs(sale["time"] - sold_ms) > 45 * 86400 * 1000:
+        return False
+    if "public record" not in str(sale.get("source") or "").lower():
+        return False
+    since = sale["time"] - MLS_LOOKBACK_DAYS * 86400 * 1000
+    return not any(str(e.get("event") or "").lower() in MLS_EVENTS and since <= (e.get("time") or 0) <= sale["time"]
+                   for e in history)
+
+
 # ── Comps ─────────────────────────────────────────────────────────────
 
 def miles_between(lat1, lon1, lat2, lon2):
@@ -228,6 +276,8 @@ def sold_fields(item):
         "beds": _num(item.get("bedrooms") or hi.get("bedrooms")),
         "home_type": (item.get("homeType") or hi.get("homeType") or "").upper(),
         "lat": lat, "lon": lon, "url": url,
+        "lot_sqft": lot_sqft(item.get("lotAreaValue") or hi.get("lotAreaValue"),
+                             item.get("lotAreaUnit") or hi.get("lotAreaUnit")),
     }
 
 
@@ -264,17 +314,22 @@ def comp_candidates(subject, sold_items, now_ms=None):
 def pick_comps(subject, candidates, fetch_detail):
     """Choose up to 5 comps from every candidate that passed comp_candidates.
 
-    Each candidate's details give pool, 55+ and remodel state. NOT (clear
-    fixer) comps are never used. Among the rest, comps matching the subject's
-    pool and 55+ come first: REMODELED, then UNKNOWN, nearest first within
-    each. With fewer than 3 matching comps, the closest non-matching ones
-    (REMODELED, then UNKNOWN) fill in to 3 and the result is flagged
-    "POOL MISMATCH" / "55+ MISMATCH".
+    Each candidate's details give pool, 55+, remodel state, sale source and
+    lot. A candidate is EXCLUDED (kept for display, never in the ARV) when it
+    is a clear fixer, sold by public record only, or sits on a lot over 2x the
+    subject's. Among the rest, comps matching the subject's pool and 55+ come
+    first: REMODELED, then UNKNOWN, nearest first within each; with fewer than
+    3 matching, the closest non-matching ones fill in to 3 and the result is
+    flagged "POOL MISMATCH" / "55+ MISMATCH". Then any chosen comp whose $/sqft
+    is over 1.5x the median of the other chosen comps is excluded as an
+    outlier and the next candidate takes its place, until none are left.
 
     fetch_detail(comp) returns the comp's property-details dict (or None).
-    Returns (comps, flags, skipped_fixers).
+    Returns (comps, flags, excluded) — excluded comps carry "excluded_reason".
     """
     checked = candidates[:MAX_COMP_DETAIL_LOOKUPS]
+    subject_lot = subject.get("lot_sqft")
+    excluded = []
     for c in checked:
         detail = fetch_detail(c) or {}
         c["pool"], c["pool_source"] = detect_pool(detail)
@@ -282,35 +337,68 @@ def pick_comps(subject, candidates, fetch_detail):
         c["remodeled"], c["remodeled_source"], c["remodeled_evidence"] = detect_remodeled(detail)
         c["pool_match"] = c["pool"] == subject["pool"]
         c["senior_match"] = c["senior"] == subject["senior"]
-    skipped = [c for c in checked if c["remodeled"] == NOT_REMODELED]
-    usable = [c for c in checked if c["remodeled"] != NOT_REMODELED]
+        c["lot_sqft"] = c.get("lot_sqft") or detail_lot_sqft(detail)
+        reason = None
+        if c["remodeled"] == NOT_REMODELED:
+            reason = f"Fixer ({c['remodeled_evidence']})"
+        elif sold_by_public_record_only(detail, c.get("sold_ms")):
+            reason = "Sold by public record only (not on the MLS)"
+        elif subject_lot and c["lot_sqft"] and c["lot_sqft"] > LOT_MAX_RATIO * subject_lot:
+            reason = f"Lot {c['lot_sqft']:,} sqft is over {LOT_MAX_RATIO:g}x the subject's {subject_lot:,} sqft"
+        if reason:
+            c["excluded_reason"] = reason
+            excluded.append(c)
 
     def ranked(cs):            # REMODELED before UNKNOWN, then nearest
         return sorted(cs, key=lambda c: (c["remodeled"] != REMODELED, c["distance_mi"]))
 
-    matching = ranked([c for c in usable if c["pool_match"] and c["senior_match"]])
-    others = ranked([c for c in usable if not (c["pool_match"] and c["senior_match"])])
-    comps = matching[:COMPS_MAX]
-    flags = []
-    if len(comps) < COMPS_MIN:
-        fill = others[:COMPS_MIN - len(comps)]
-        comps = comps + fill
-        if any(not c["pool_match"] for c in fill):
-            flags.append("POOL MISMATCH")
-        if any(not c["senior_match"] for c in fill):
-            flags.append("55+ MISMATCH")
-    return comps, flags, skipped
+    usable = [c for c in checked if not c.get("excluded_reason")]
+
+    def choose(pool):
+        matching = ranked([c for c in pool if c["pool_match"] and c["senior_match"]])
+        others = ranked([c for c in pool if not (c["pool_match"] and c["senior_match"])])
+        comps, flags = matching[:COMPS_MAX], []
+        if len(comps) < COMPS_MIN:
+            fill = others[:COMPS_MIN - len(comps)]
+            comps = comps + fill
+            if any(not c["pool_match"] for c in fill):
+                flags.append("POOL MISMATCH")
+            if any(not c["senior_match"] for c in fill):
+                flags.append("55+ MISMATCH")
+        return comps, flags
+
+    comps, flags = choose(usable)
+    while len(comps) >= 2:                       # outliers need someone to compare against
+        worst, worst_ratio, worst_median = None, OUTLIER_RATIO, None
+        for c in comps:
+            median_others = statistics.median(o["price_per_sqft"] for o in comps if o is not c)
+            ratio = c["price_per_sqft"] / median_others if median_others else 0
+            if ratio > worst_ratio:
+                worst, worst_ratio, worst_median = c, ratio, median_others
+        if worst is None:
+            break
+        worst["excluded_reason"] = (f"${worst['price_per_sqft']:,.0f}/sqft is over {OUTLIER_RATIO:g}x the other "
+                                    f"comps' median ${worst_median:,.0f}/sqft (outlier)")
+        excluded.append(worst)
+        usable = [c for c in usable if c is not worst]
+        comps, flags = choose(usable)
+    return comps, flags, excluded
 
 
-def arv_basis(comps, skipped):
+def arv_basis(comps, excluded):
     """Plain-language note on what the ARV rests on."""
     if not comps:
         return ""
     r = sum(1 for c in comps if c["remodeled"] == REMODELED)
     note = f"{len(comps)} comps: {r} remodeled, {len(comps) - r} unknown"
-    if skipped:
-        note += (f"; {len(skipped)} fixer(s) excluded ("
-                 + ", ".join(c["address"].split(",")[0] for c in skipped) + ")")
+    if excluded:
+        kinds = {}
+        for c in excluded:
+            k = ("fixer" if c["excluded_reason"].startswith("Fixer") else
+                 "public record" if "public record" in c["excluded_reason"] else
+                 "big lot" if c["excluded_reason"].startswith("Lot ") else "outlier")
+            kinds[k] = kinds.get(k, 0) + 1
+        note += f"; {len(excluded)} excluded (" + ", ".join(f"{n} {k}" for k, n in kinds.items()) + ")"
     return note
 
 
@@ -348,7 +436,7 @@ def analyze_listing(subject, sold_items, fetch_detail, more_sold_items=None, now
               called only when the subject's ZIP yields fewer than 3 candidates.
     """
     out = {"comps": [], "comp_flags": [], "arv": None, "comps_used": 0,
-           "remodeled_comps": 0, "unknown_comps": 0, "skipped_fixers": [], "arv_basis": "",
+           "remodeled_comps": 0, "unknown_comps": 0, "skipped_fixers": [], "excluded_comps": [], "arv_basis": "",
            "mobile_home": False,
            "confidence": None, "rehab": None, "mao": None, "profit_at_mao": None,
            "mao_vs_list": None, "mao_vs_list_pct": None, "note": None,
@@ -367,12 +455,14 @@ def analyze_listing(subject, sold_items, fetch_detail, more_sold_items=None, now
         out["neighbor_zips_searched"] = True
         candidates = comp_candidates(subject, list(sold_items) + list(more_sold_items()), now_ms)
 
-    comps, flags, skipped = pick_comps(subject, candidates, fetch_detail)
+    comps, flags, excluded = pick_comps(subject, candidates, fetch_detail)
     out["comps"], out["comp_flags"], out["comps_used"] = comps, flags, len(comps)
-    out["arv_basis"] = arv_basis(comps, skipped)
+    out["excluded_comps"] = excluded
+    out["arv_basis"] = arv_basis(comps, excluded)
     out["remodeled_comps"] = sum(1 for c in comps if c["remodeled"] == REMODELED)
     out["unknown_comps"] = sum(1 for c in comps if c["remodeled"] == UNKNOWN)
-    out["skipped_fixers"] = [{"address": c["address"], "evidence": c["remodeled_evidence"]} for c in skipped]
+    out["skipped_fixers"] = [{"address": c["address"], "evidence": c["remodeled_evidence"]}
+                             for c in excluded if c["excluded_reason"].startswith("Fixer")]
     out["confidence"] = "LOW CONFIDENCE" if len(comps) < COMPS_MIN else "OK"
     out["arv"] = compute_arv(subject["sqft"], comps)
     if out["arv"] is None:

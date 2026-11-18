@@ -239,9 +239,8 @@ def test_remodeled():
           a["skipped_fixers"])
     # $/sqft: c3 440, c6 480, c7 493.3, c1 413.3, c2 426.7 → median 440 × 1,500
     check("ARV = median of those 5 = $660,000", a["arv"] == 660_000 and a["confidence"] == "OK", a["arv"])
-    check("basis note counts remodeled / unknown / fixers",
-          a["arv_basis"] == "5 comps: 3 remodeled, 2 unknown; 2 fixer(s) excluded (c0 Comp St, c5 Comp St)",
-          a["arv_basis"])
+    check("basis note counts remodeled / unknown / exclusions",
+          a["arv_basis"] == "5 comps: 3 remodeled, 2 unknown; 2 excluded (2 fixer)", a["arv_basis"])
 
     only_two = {"c0": "Fixer", "c1": "Remodeled", "c2": "TLC", "c3": ""}
     items2 = [sold(z, 600_000, miles=0.05 * (i + 1)) for i, z in enumerate(only_two)]
@@ -269,6 +268,68 @@ def test_mobile_homes():
     park = dict(sold("p1", 400_000), streetAddress="77 Main St Space 9")
     got = [c["zpid"] for c in fa.comp_candidates(SUBJECT, [park, sold("h1", 600_000)], NOW)]
     check("a 'Space 9' sale typed SINGLE_FAMILY is never a comp", got == ["h1"], got)
+
+
+def test_bad_comp_exclusions():
+    print("\n=== Public-record, big-lot and outlier comps are excluded ===")
+    check("lot 0.87 acres → 37,897 sqft", fa.lot_sqft(0.87, "Acres") == 37_897, fa.lot_sqft(0.87, "Acres"))
+    check("lot '8,400 sqft' read from resoFacts",
+          fa.detail_lot_sqft({"resoFacts": {"lotSize": "8,400 sqft"}}) == 8_400)
+    t = NOW - 30 * DAY
+    pub = {"priceHistory": [{"event": "Sold", "time": t, "source": "Public Record"}]}
+    mls = {"priceHistory": [{"event": "Sold", "time": t, "source": "CRMLS"},
+                            {"event": "Listed for sale", "time": t - 40 * DAY, "source": "CRMLS"}]}
+    listed_then_recorded = {"priceHistory": [{"event": "Sold", "time": t, "source": "Public Record"},
+                                             {"event": "Listed for sale", "time": t - 90 * DAY, "source": "CRMLS"}]}
+    check("Sold by Public Record, no listing → public record only", fa.sold_by_public_record_only(pub, t))
+    check("Sold via CRMLS → MLS sale", not fa.sold_by_public_record_only(mls, t))
+    check("recorded by Public Record but listed on the MLS 3 months before → MLS sale",
+          not fa.sold_by_public_record_only(listed_then_recorded, t))
+    check("no price history → kept", not fa.sold_by_public_record_only({}, t))
+
+    # 350 N Park Ave, Rialto: 792 sqft on ~7,000 sqft. Its only comp was 530 W
+    # Rialto Ave — 900 sqft, $1.5M, 0.87 acre, sold by public record.
+    park = dict(SUBJECT, sqft=792, beds=2, lot_sqft=7_000, list_price=360_000, description="as is")
+    land = dict(sold("land", 1_500_000, sqft=900, beds=3, miles=0.41, days_ago=93), lotAreaValue=0.87, lotAreaUnit="acres")
+    houses = [dict(sold(f"h{i}", 300_000 + 15_000 * i, sqft=800, beds=2, miles=0.1 * (i + 1)),
+                   lotAreaValue=7_200, lotAreaUnit="sqft") for i in range(3)]
+
+    def detail(c):
+        d = {"resoFacts": {"hasPrivatePool": False, "isSeniorCommunity": False}, "description": "Clean"}
+        if c["zpid"] == "land":
+            d["priceHistory"] = [{"event": "Sold", "time": c["sold_ms"], "source": "Public Record"}]
+        return d
+    a = fa.analyze_listing(park, [land] + houses, detail, now_ms=NOW)
+    ex = {c["zpid"]: c["excluded_reason"] for c in a["excluded_comps"]}
+    check("the $1.5M land sale is excluded as public record only",
+          ex.get("land", "").startswith("Sold by public record only"), ex)
+    check("ARV comes from the 3 houses only, not $1.32M", [c["zpid"] for c in a["comps"]] == ["h0", "h1", "h2"]
+          and a["arv"] == round(fa.statistics.median([375, 393.75, 412.5]) * 792), (a["arv"], [c["zpid"] for c in a["comps"]]))
+
+    big = dict(sold("big", 600_000), lotAreaValue=20_000, lotAreaUnit="sqft")
+    a2 = fa.analyze_listing(dict(SUBJECT, lot_sqft=7_000), [big, sold("s1", 600_000), sold("s2", 610_000),
+                                                             sold("s3", 620_000)], no_pool_no_senior, now_ms=NOW)
+    check("lot 20,000 sqft vs subject 7,000 (over 2x) → excluded with the reason",
+          [c["zpid"] for c in a2["excluded_comps"]] == ["big"]
+          and a2["excluded_comps"][0]["excluded_reason"].startswith("Lot 20,000 sqft is over 2x"),
+          [(c["zpid"], c["excluded_reason"]) for c in a2["excluded_comps"]])
+    check("lot rule skipped when the subject's lot is unknown",
+          fa.analyze_listing(SUBJECT, [big], no_pool_no_senior, now_ms=NOW)["excluded_comps"] == [])
+
+    # Outlier: $700/sqft against others at ~$400 → excluded, next candidate fills in.
+    pool = [sold("o1", 600_000, miles=0.05), sold("o2", 615_000, miles=0.1), sold("hi", 1_050_000, miles=0.15),
+            sold("o3", 630_000, miles=0.2), sold("o4", 645_000, miles=0.25), sold("o5", 660_000, miles=0.3)]
+    a3 = fa.analyze_listing(SUBJECT, pool, no_pool_no_senior, now_ms=NOW)
+    check("$700/sqft vs others' median ~$420 → excluded as outlier",
+          [c["zpid"] for c in a3["excluded_comps"]] == ["hi"] and "outlier" in a3["excluded_comps"][0]["excluded_reason"],
+          [(c["zpid"], c.get("excluded_reason")) for c in a3["excluded_comps"]])
+    check("the next candidate takes its place (still 5 comps)",
+          [c["zpid"] for c in a3["comps"]] == ["o1", "o2", "o3", "o4", "o5"], [c["zpid"] for c in a3["comps"]])
+    check("1.5x exactly is not an outlier",
+          fa.analyze_listing(SUBJECT, [sold("a", 600_000), sold("b", 600_000), sold("c", 900_000)],
+                             no_pool_no_senior, now_ms=NOW)["excluded_comps"] == [])
+    check("excluded comps never reach the ARV", all(c not in a3["comps"] for c in a3["excluded_comps"]))
+    check("basis note counts each kind", "1 excluded (1 outlier)" in a3["arv_basis"], a3["arv_basis"])
 
 
 def test_csv_columns():
@@ -306,6 +367,7 @@ if __name__ == "__main__":
     test_pool_and_senior_matching()
     test_remodeled()
     test_mobile_homes()
+    test_bad_comp_exclusions()
     test_csv_columns()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.exit(1 if FAILS else 0)

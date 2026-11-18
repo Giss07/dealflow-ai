@@ -95,6 +95,10 @@
   .pill { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 999px; margin-left: 4px; }
   .pill.REMODELED { background: var(--green-bg); color: #86efac; }
   .pill.UNKNOWN { background: var(--gray-bg); color: #cbd5e1; }
+  .excl-h { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted);
+            font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  .comp.excluded { opacity: .6; }
+  .comp .why { color: #fdba74; font-size: 12px; margin-top: 3px; }
   .close { width: 100%; margin-top: 14px; padding: 12px; border-radius: 10px; border: 0; background: var(--gray-bg);
            color: var(--text); font-size: 15px; font-weight: 600; cursor: pointer; }
 
@@ -193,7 +197,7 @@ function cardHtml(c, i) {
       ${note ? `<div class="note">${esc(note)}</div>` : ''}
       <div class="buttons">
         ${c.zillow_url ? `<a href="${esc(c.zillow_url)}" target="_blank" rel="noopener">View on Zillow</a>` : ''}
-        <button type="button" onclick="openComps(${i})" ${c.comps.length ? '' : 'disabled'}>See comps (${c.comps.length})</button>
+        <button type="button" onclick="openComps(${i})" ${c.comps.length || (c.excluded_comps || []).length ? '' : 'disabled'}>See comps (${c.comps.length})</button>
         <a href="${csv}">Download for agent</a>
       </div>
     </article>`;
@@ -279,8 +283,18 @@ $('search-form').addEventListener('submit', async ev => {
 function openComps(i) {
   const c = cards[i];
   $('sheet-title').textContent = c.street;
-  const fixers = c.skipped_fixers.length ? ` · ${c.skipped_fixers.length} fixer sale${c.skipped_fixers.length > 1 ? 's' : ''} left out` : '';
-  $('sheet-sub').textContent = `ARV ${money(c.arv)} from ${c.comps.length} sold comp${c.comps.length === 1 ? '' : 's'}${fixers}`;
+  const ex = c.excluded_comps || [];
+  const left = ex.length ? ` · ${ex.length} not used` : '';
+  $('sheet-sub').textContent = `ARV ${money(c.arv)} from ${c.comps.length} sold comp${c.comps.length === 1 ? '' : 's'}${left}`;
+  const exHtml = ex.length ? `<div class="excl-h">Not used in ARV</div>` + ex.map(x => `
+    <div class="comp excluded">
+      <div>
+        <div class="a">${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(String(x.address).split(',')[0])}</a>` : esc(x.address)}</div>
+        <div class="m">Sold ${esc(x.sold_date)} · ${Math.round(x.sqft).toLocaleString('en-US')} sqft · ${(+x.distance_mi).toFixed(2)} mi</div>
+        <div class="why">${esc(x.reason)}</div>
+      </div>
+      <div class="r"><b>${money(x.sold_price)}</b><div class="m">${money(x.price_per_sqft)}/sqft</div></div>
+    </div>`).join('') : '';
   $('sheet-list').innerHTML = c.comps.map(x => `
     <div class="comp">
       <div>
@@ -289,7 +303,7 @@ function openComps(i) {
         <div class="m">Sold ${esc(x.sold_date)} · ${Math.round(x.sqft).toLocaleString('en-US')} sqft · ${(+x.distance_mi).toFixed(2)} mi</div>
       </div>
       <div class="r"><b>${money(x.sold_price)}</b><div class="m">${money(x.price_per_sqft)}/sqft</div></div>
-    </div>`).join('');
+    </div>`).join('') + exHtml;
   $('sheet-bg').classList.add('open');
 }
 function closeComps() { $('sheet-bg').classList.remove('open'); }

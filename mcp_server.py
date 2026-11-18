@@ -205,7 +205,7 @@ def _sold_last_6_months(zip_code, max_pages=10):
 
 def _analyze_distressed(item, detail, zip_code):
     """Comps, ARV, rehab and MAO for one keyword-matched listing (flip_analysis)."""
-    from flip_analysis import analyze_listing, detect_pool, detect_senior, neighbor_zip_codes
+    from flip_analysis import analyze_listing, detect_pool, detect_senior, neighbor_zip_codes, detail_lot_sqft, lot_sqft
     hi = item.get("hdpData", {}).get("homeInfo", {})
     detail = detail or {}
 
@@ -232,6 +232,8 @@ def _analyze_distressed(item, detail, zip_code):
         "year_built": int(num(hi.get("yearBuilt"), detail.get("yearBuilt")) or 0) or None,
         "description": detail.get("description") or "",
         "pool": pool, "senior": senior,
+        "lot_sqft": detail_lot_sqft(detail) or lot_sqft(item.get("lotAreaValue") or hi.get("lotAreaValue"),
+                                                        item.get("lotAreaUnit") or hi.get("lotAreaUnit")),
     }
 
     def neighbor_sold():
@@ -249,6 +251,9 @@ def _analyze_distressed(item, detail, zip_code):
     keep = ("address", "sold_price", "sold_date", "sqft", "price_per_sqft", "distance_mi",
             "pool", "senior", "pool_match", "senior_match", "remodeled", "remodeled_evidence", "url")
     result["comps"] = [{k: c.get(k) for k in keep} for c in result["comps"]]
+    result["excluded_comps"] = [{**{k: c.get(k) for k in keep}, "lot_sqft": c.get("lot_sqft"),
+                                 "reason": c.get("excluded_reason")} for c in result.get("excluded_comps") or []]
+    result["subject_lot_sqft"] = subject["lot_sqft"]
     result.update({"zillow_url": url, "pool": pool, "pool_source": pool_src,
                    "senior": senior, "senior_source": senior_src,
                    "year_built": subject["year_built"], "home_type": subject["home_type"]})
@@ -293,7 +298,9 @@ def search_distressed(zip_code: str):
     ±20% sqft, ±1 bed, pool and 55+ matched, with POOL / 55+ MISMATCH flags
     when non-matching comps fill in; each REMODELED / NOT (clear fixer) /
     UNKNOWN, REMODELED preferred, then UNKNOWN, NOT never used), ARV =
-    median comp $/sqft × sqft ("LOW CONFIDENCE" under 3 comps), a
+    median comp $/sqft × sqft ("LOW CONFIDENCE" under 3 comps; public-record-only
+    sales, lots over 2x the subject's and $/sqft outliers over 1.5x the other
+    comps' median are excluded and listed with the reason), a
     Light/Medium/Heavy rehab estimate
     ($30/$55/$90 per sqft, one tier up if built before 1960), and the maximum
     allowable offer (MAO) for a 10%-of-ARV profit on a 3-month hold.

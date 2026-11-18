@@ -19,7 +19,7 @@ LISTING_COLUMNS = [
 COMP_COLUMNS = [
     "subject_address", "comp_address", "sold_price", "sold_date", "sqft",
     "price_per_sqft", "distance_mi", "pool", "55_plus", "remodeled", "remodeled_evidence",
-    "matches_subject", "zillow_url",
+    "matches_subject", "used_in_arv", "excluded_reason", "zillow_url",
 ]
 
 
@@ -63,6 +63,17 @@ def rows_for(zip_code, listing):
             "remodeled": c.get("remodeled") or "UNKNOWN",
             "remodeled_evidence": c.get("remodeled_evidence") or "",
             "matches_subject": "yes" if not mism else "MISMATCH: " + ", ".join(mism),
+            "used_in_arv": "yes", "excluded_reason": "",
+            "zillow_url": c.get("url") or "",
+        })
+    for c in a.get("excluded_comps") or []:            # shown to the agent, never in the ARV
+        comps.append({
+            "subject_address": listing.get("address"), "comp_address": c.get("address"),
+            "sold_price": c.get("sold_price"), "sold_date": c.get("sold_date"), "sqft": c.get("sqft"),
+            "price_per_sqft": round(c.get("price_per_sqft") or 0), "distance_mi": round(c.get("distance_mi") or 0, 2),
+            "pool": yn(c.get("pool")), "55_plus": yn(c.get("senior")),
+            "remodeled": c.get("remodeled") or "UNKNOWN", "remodeled_evidence": c.get("remodeled_evidence") or "",
+            "matches_subject": "", "used_in_arv": "no", "excluded_reason": c.get("reason") or "",
             "zillow_url": c.get("url") or "",
         })
     return row, comps
@@ -128,6 +139,12 @@ def card(zip_code, listing):
                    "remodeled": c.get("remodeled") or "UNKNOWN", "url": c.get("url")}
                   for c in a.get("comps") or []],
         "skipped_fixers": a.get("skipped_fixers") or [],
+        "excluded_comps": [{"address": c.get("address"), "sold_price": c.get("sold_price"),
+                            "sold_date": c.get("sold_date"), "sqft": c.get("sqft"),
+                            "price_per_sqft": c.get("price_per_sqft"), "distance_mi": c.get("distance_mi"),
+                            "remodeled": c.get("remodeled") or "UNKNOWN", "reason": c.get("reason"),
+                            "url": c.get("url")}
+                           for c in a.get("excluded_comps") or []],
     }
 
 
