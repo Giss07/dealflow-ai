@@ -22,6 +22,9 @@ app = Flask(__name__, template_folder="dashboard", static_folder="dashboard/stat
 app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(32).hex())
 app.permanent_session_lifetime = timedelta(days=7)
 
+from distressed_page import bp as distressed_bp  # Distressed Deals page (/distressed)
+app.register_blueprint(distressed_bp)
+
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "dealflow2026")
 
 # Rate limiting for login

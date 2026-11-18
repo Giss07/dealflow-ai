@@ -292,6 +292,25 @@ class ScanJob(Base):
     expires_at = Column(DateTime)     # Max runtime (created + 2hr)
 
 
+class DistressedSearch(Base):
+    """One Distressed Deals page search (search_distressed over 1+ ZIPs).
+
+    A search takes minutes, longer than the web request timeout, so the page
+    starts it in a background thread and polls this row. Read-only: it stores
+    listings and comps, never offers.
+    """
+    __tablename__ = "distressed_searches"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    zips = Column(String(200))               # "92703,92704"
+    status = Column(String(20), default="running")   # running, completed, failed
+    zips_done = Column(Integer, default=0)
+    result = Column(Text)                    # JSON: {zip: search_distressed output}
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime)
+
+
 def scan_job_to_dict(job):
     return {
         "id": job.id,

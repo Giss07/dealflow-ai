@@ -22,9 +22,18 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-from mcp.server.fastmcp import FastMCP
-
-mcp = FastMCP("DealFlow AI")
+try:
+    from mcp.server.fastmcp import FastMCP
+    mcp = FastMCP("DealFlow AI")
+except ImportError:
+    # The web app imports this module for search_distressed (Distressed Deals
+    # page) and does not need the MCP framework. Without it, @mcp.tool() is a
+    # plain pass-through and the functions are ordinary callables; only running
+    # this file as the MCP server (__main__) requires the package.
+    class _NoMCP:
+        def tool(self, *a, **k):
+            return lambda fn: fn
+    mcp = _NoMCP()
 
 
 # ── OPENWEB NINJA ─────────────────────────────────────────────────────
@@ -242,7 +251,7 @@ def _analyze_distressed(item, detail, zip_code):
     result["comps"] = [{k: c.get(k) for k in keep} for c in result["comps"]]
     result.update({"zillow_url": url, "pool": pool, "pool_source": pool_src,
                    "senior": senior, "senior_source": senior_src,
-                   "year_built": subject["year_built"]})
+                   "year_built": subject["year_built"], "home_type": subject["home_type"]})
     return result
 
 

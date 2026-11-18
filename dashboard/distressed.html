@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<title>Distressed Deals — DealFlow</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --line: #334155; --text: #e2e8f0; --muted: #94a3b8;
+    --green: #22c55e; --green-bg: #14532d; --yellow: #facc15; --yellow-bg: #713f12;
+    --gray-bg: #334155; --blue: #3b82f6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg);
+         color: var(--text); padding: 16px; padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+  a { color: inherit; }
+  .wrap { max-width: 1200px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  header h1 { font-size: 22px; }
+  .back { color: var(--muted); text-decoration: none; font-size: 14px; white-space: nowrap; }
+
+  .search { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px;
+            display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .search input { flex: 1 1 220px; min-width: 0; font-size: 17px; padding: 12px 14px; border-radius: 10px;
+                  border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .search button { flex: 0 0 auto; font-size: 17px; font-weight: 600; padding: 12px 22px; border: 0;
+                   border-radius: 10px; background: var(--blue); color: #fff; cursor: pointer; }
+  .search button:disabled { opacity: .5; cursor: default; }
+  .hint { color: var(--muted); font-size: 13px; margin: 0 2px 18px; }
+  .status { color: var(--muted); font-size: 14px; margin-bottom: 14px; display: flex; gap: 10px;
+            align-items: center; flex-wrap: wrap; }
+  .status a { color: #93c5fd; }
+  .error { color: #fca5a5; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px;
+          display: flex; flex-direction: column; gap: 12px; }
+  .card.good { border-color: #166534; }
+  .addr { font-size: 17px; font-weight: 600; line-height: 1.25; }
+  .city { color: var(--muted); font-size: 14px; margin-top: 2px; }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tag { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 4px 8px; border-radius: 999px; }
+  .tag.good { background: var(--green-bg); color: #86efac; }
+  .tag.gray { background: var(--gray-bg); color: #cbd5e1; }
+  .tag.low, .tag.offer { background: var(--yellow-bg); color: var(--yellow); }
+  .card.offer { border-color: #854d0e; }
+  .below.offer { color: var(--yellow); }
+
+  details.unpriced { margin-top: 22px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+  details.unpriced summary { cursor: pointer; padding: 14px 16px; font-weight: 600; color: var(--muted);
+                             list-style: none; display: flex; justify-content: space-between; }
+  details.unpriced summary::-webkit-details-marker { display: none; }
+  details.unpriced summary::after { content: '▸'; }
+  details.unpriced[open] summary::after { content: '▾'; }
+  .urow { display: grid; grid-template-columns: minmax(0, 2fr) auto auto minmax(0, 2fr) auto; gap: 12px;
+          align-items: center; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 13px; }
+  .urow .ua { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .urow .un { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .urow .ur { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .urow a { color: #93c5fd; white-space: nowrap; }
+
+  .prices { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .price { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .price.list { color: var(--muted); font-weight: 600; font-size: 20px; }
+  .arrow { color: var(--muted); font-size: 20px; }
+  .lbl { color: var(--muted); font-size: 12px; display: block; }
+  .below { font-size: 15px; font-weight: 600; }
+  .below.good { color: var(--green); }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .stat { background: var(--bg); border-radius: 10px; padding: 8px; min-width: 0; }
+  .stat b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis; }
+  .note { color: var(--muted); font-size: 13px; }
+  .buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+  .buttons a, .buttons button { flex: 1 1 0; min-width: 96px; text-align: center; font-size: 14px; font-weight: 600;
+            padding: 11px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg);
+            color: var(--text); text-decoration: none; cursor: pointer; }
+  .buttons a:hover, .buttons button:hover { border-color: var(--muted); }
+  .empty { color: var(--muted); text-align: center; padding: 40px 10px; }
+
+  .sheet-bg { position: fixed; inset: 0; background: rgba(2, 6, 23, .7); display: none; align-items: center;
+              justify-content: center; padding: 16px; z-index: 10; }
+  .sheet-bg.open { display: flex; }
+  .sheet { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; width: 100%;
+           max-width: 560px; max-height: 85vh; overflow: auto; padding: 18px; }
+  .sheet h2 { font-size: 17px; margin-bottom: 2px; }
+  .sheet .sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+  .comp { display: flex; justify-content: space-between; gap: 10px; padding: 11px 0; border-top: 1px solid var(--line); }
+  .comp .a { font-size: 14px; font-weight: 600; }
+  .comp .m { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .comp .r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .comp .r b { font-size: 15px; }
+  .pill { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 999px; margin-left: 4px; }
+  .pill.REMODELED { background: var(--green-bg); color: #86efac; }
+  .pill.UNKNOWN { background: var(--gray-bg); color: #cbd5e1; }
+  .close { width: 100%; margin-top: 14px; padding: 12px; border-radius: 10px; border: 0; background: var(--gray-bg);
+           color: var(--text); font-size: 15px; font-weight: 600; cursor: pointer; }
+
+  @media (max-width: 600px) {
+    body { padding: 12px; }
+    header h1 { font-size: 19px; }
+    .grid { grid-template-columns: 1fr; }
+    .price { font-size: 24px; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .urow { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; }
+    .urow .ur { grid-column: 1; white-space: normal; }
+    .urow .un.dom { grid-column: 2; grid-row: 2; text-align: right; color: var(--muted); }
+    .urow a { grid-column: 2; grid-row: 3; text-align: right; }
+    .urow .un.uprice { grid-column: 2; grid-row: 1; text-align: right; }
+    .sheet-bg { align-items: flex-end; padding: 0; }
+    .sheet { border-radius: 16px 16px 0 0; max-height: 88vh;
+             padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Distressed Deals</h1>
+    <a class="back" href="/">← Dashboard</a>
+  </header>
+
+  <form class="search" id="search-form">
+    <input id="zips" inputmode="numeric" autocomplete="off" placeholder="ZIP codes, e.g. 92703 92410" aria-label="ZIP codes">
+    <button id="go" type="submit">Search</button>
+  </form>
+  <p class="hint">Up to 5 ZIPs. Takes a few minutes per ZIP (about $0.40 each). Read-only — nothing is submitted.</p>
+
+  <div class="status" id="status"></div>
+  <div class="grid" id="cards"></div>
+  <div id="unpriced"></div>
+</div>
+
+<div class="sheet-bg" id="sheet-bg" onclick="if (event.target === this) closeComps()">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <h2 id="sheet-title"></h2>
+    <div class="sub" id="sheet-sub"></div>
+    <div id="sheet-list"></div>
+    <button class="close" onclick="closeComps()">Close</button>
+  </div>
+</div>
+
+<script>
+let searchId = null, cards = [], pollTimer = null, deepLinkDone = false;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = v => (typeof v === 'number' && isFinite(v)) ? '$' + Math.round(v).toLocaleString('en-US') : '—';
+const short = v => (typeof v === 'number' && isFinite(v))
+  ? (Math.abs(v) >= 1e6 ? '$' + (v / 1e6).toFixed(2) + 'M' : '$' + Math.round(v / 1000) + 'k') : '—';
+
+function belowText(c) {
+  if (c.pct_below_list == null) return '';
+  const p = Math.abs(c.pct_below_list * 100).toFixed(1);
+  return c.pct_below_list > 0 ? `${p}% below list` : `${p}% above list`;
+}
+
+function cardHtml(c, i) {
+  const tags = [];
+  const DEAL = {good: ['good', 'GOOD DEAL'], offer: ['offer', 'MAKE AN OFFER'], long: ['gray', 'LONG SHOT']};
+  if (c.deal_tag) tags.push(`<span class="tag ${DEAL[c.deal_tag][0]}">${DEAL[c.deal_tag][1]}</span>`);
+  if (c.multi_family) tags.push('<span class="tag gray">MULTI-FAMILY – NOT COMPED</span>');
+  if (c.low_confidence) tags.push('<span class="tag low">LOW CONFIDENCE</span>');
+  c.comp_flags.forEach(f => tags.push(`<span class="tag low">${esc(f)}</span>`));
+  const csv = `/api/distressed/search/${searchId}/csv?zip=${encodeURIComponent(c.zip)}&address=${encodeURIComponent(c.address)}`;
+  const note = c.mao == null ? (c.multi_family
+      ? 'Multi-family: house sales can’t price it, so no ARV or max offer.'
+      : (c.note || 'No max offer.')) : '';
+  return `
+    <article class="card${c.deal_tag === 'good' ? ' good' : c.deal_tag === 'offer' ? ' offer' : ''}">
+      <div>
+        <div class="addr">${esc(c.street)}</div>
+        <div class="city">${esc(c.city)}</div>
+      </div>
+      ${tags.length ? `<div class="tags">${tags.join('')}</div>` : ''}
+      <div>
+        <div class="prices">
+          <div><span class="lbl">List</span><span class="price list">${money(c.list_price)}</span></div>
+          <span class="arrow">→</span>
+          <div><span class="lbl">Max offer</span><span class="price">${money(c.mao)}</span></div>
+        </div>
+        ${c.mao != null ? `<div class="below${c.deal_tag === 'good' ? ' good' : c.deal_tag === 'offer' ? ' offer' : ''}">${belowText(c)}</div>` : ''}
+      </div>
+      <div class="stats">
+        <div class="stat"><span class="lbl">ARV</span><b>${short(c.arv)}</b></div>
+        <div class="stat"><span class="lbl">Rehab${c.rehab_tier ? ' · ' + esc(c.rehab_tier) : ''}</span><b>${short(c.rehab)}</b></div>
+        <div class="stat"><span class="lbl">Profit @ max</span><b>${short(c.profit_at_mao)}</b></div>
+        <div class="stat"><span class="lbl">On market</span><b>${c.days_on_market ?? '—'} d</b></div>
+      </div>
+      ${note ? `<div class="note">${esc(note)}</div>` : ''}
+      <div class="buttons">
+        ${c.zillow_url ? `<a href="${esc(c.zillow_url)}" target="_blank" rel="noopener">View on Zillow</a>` : ''}
+        <button type="button" onclick="openComps(${i})" ${c.comps.length ? '' : 'disabled'}>See comps (${c.comps.length})</button>
+        <a href="${csv}">Download for agent</a>
+      </div>
+    </article>`;
+}
+
+function unpricedRow(c) {
+  return `
+    <div class="urow">
+      <div class="ua" title="${esc(c.address)}">${esc(c.street)}<span class="ur">, ${esc(c.city)}</span></div>
+      <div class="un uprice">${money(c.list_price)}</div>
+      <div class="un dom">${c.days_on_market ?? '—'} d</div>
+      <div class="ur" title="${esc(c.unpriced_reason)}">${esc(c.unpriced_reason)}</div>
+      ${c.zillow_url ? `<a href="${esc(c.zillow_url)}" target="_blank" rel="noopener">Zillow ↗</a>` : '<span></span>'}
+    </div>`;
+}
+
+function render(data) {
+  cards = data.cards || [];
+  const running = data.status === 'running';
+  const done = data.zips_done, total = data.zips.length;
+  let status = running
+    ? `Searching ${data.zips.join(', ')} — ${done} of ${total} ZIP${total > 1 ? 's' : ''} done. This takes a few minutes per ZIP.`
+    : data.status === 'failed'
+      ? `<span class="error">Search stopped: ${esc(data.error || 'unknown error')}</span>`
+      : `${cards.length} distressed propert${cards.length === 1 ? 'y' : 'ies'} in ${data.zips.join(', ')}.`;
+  Object.entries(data.zip_errors || {}).forEach(([z, e]) => status += ` <span class="error">${z}: ${esc(e)}</span>`);
+  if (!running && cards.length) status += ` <a href="/api/distressed/search/${data.id}/csv">Download all (CSV)</a>`;
+  $('status').innerHTML = status;
+  $('go').disabled = running;
+  // Priced deals as big cards (indices into `cards` keep "See comps" working);
+  // the ones with no max offer collapse into one-line rows at the bottom.
+  const priced = cards.map((c, i) => [c, i]).filter(([c]) => c.mao != null);
+  const unpriced = cards.filter(c => c.mao == null);
+  $('cards').innerHTML = priced.length ? priced.map(([c, i]) => cardHtml(c, i)).join('')
+    : (running || unpriced.length ? '' : '<div class="empty">No distressed listings found.</div>');
+  $('unpriced').innerHTML = unpriced.length ? `
+    <details class="unpriced">
+      <summary>Couldn’t price (${unpriced.length})</summary>
+      ${unpriced.map(unpricedRow).join('')}
+    </details>` : '';
+  if (!deepLinkDone && cards.length) {          // #comps=N opens that card's comps (shareable link)
+    const m = location.hash.match(/comps=(\d+)/);
+    if (m && cards[+m[1]]) { openComps(+m[1]); deepLinkDone = true; }
+  }
+}
+
+async function poll() {
+  clearTimeout(pollTimer);
+  if (searchId == null) return;
+  try {
+    const r = await fetch('/api/distressed/search/' + searchId);
+    if (r.status === 401) { location.href = '/login'; return; }
+    const data = await r.json();
+    if (data.error && !data.status) throw new Error(data.error);
+    render(data);
+    if (data.status === 'running') pollTimer = setTimeout(poll, 5000);
+  } catch (e) {
+    $('status').innerHTML = `<span class="error">Couldn’t load results: ${esc(e.message)}. Retrying…</span>`;
+    pollTimer = setTimeout(poll, 10000);
+  }
+}
+
+$('search-form').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  $('go').disabled = true;
+  try {
+    const r = await fetch('/api/distressed/search', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({zips: $('zips').value})
+    });
+    const data = await r.json();
+    if (!r.ok && !data.id) throw new Error(data.error || 'Search failed');
+    if (r.status === 409) $('status').textContent = 'A search is already running — showing it.';
+    searchId = data.id;
+    $('cards').innerHTML = '';
+    poll();
+  } catch (e) {
+    $('status').innerHTML = `<span class="error">${esc(e.message)}</span>`;
+    $('go').disabled = false;
+  }
+});
+
+function openComps(i) {
+  const c = cards[i];
+  $('sheet-title').textContent = c.street;
+  const fixers = c.skipped_fixers.length ? ` · ${c.skipped_fixers.length} fixer sale${c.skipped_fixers.length > 1 ? 's' : ''} left out` : '';
+  $('sheet-sub').textContent = `ARV ${money(c.arv)} from ${c.comps.length} sold comp${c.comps.length === 1 ? '' : 's'}${fixers}`;
+  $('sheet-list').innerHTML = c.comps.map(x => `
+    <div class="comp">
+      <div>
+        <div class="a">${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(String(x.address).split(',')[0])}</a>` : esc(x.address)}
+          <span class="pill ${esc(x.remodeled)}">${x.remodeled === 'REMODELED' ? 'REMODELED' : 'UNKNOWN'}</span></div>
+        <div class="m">Sold ${esc(x.sold_date)} · ${Math.round(x.sqft).toLocaleString('en-US')} sqft · ${(+x.distance_mi).toFixed(2)} mi</div>
+      </div>
+      <div class="r"><b>${money(x.sold_price)}</b><div class="m">${money(x.price_per_sqft)}/sqft</div></div>
+    </div>`).join('');
+  $('sheet-bg').classList.add('open');
+}
+function closeComps() { $('sheet-bg').classList.remove('open'); }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeComps(); });
+
+(async () => {                                   // reopen the latest search on load
+  try {
+    const r = await fetch('/api/distressed/search/latest');
+    if (r.status === 401) { location.href = '/login'; return; }
+    const { id } = await r.json();
+    if (id != null) { searchId = id; poll(); }
+  } catch (e) { /* first visit: nothing to show */ }
+})();
+</script>
+</body>
+</html>
