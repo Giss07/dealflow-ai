@@ -68,7 +68,7 @@
   .lbl { color: var(--muted); font-size: 12px; display: block; }
   .below { font-size: 15px; font-weight: 600; }
   .below.good { color: var(--green); }
-  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .stat { background: var(--bg); border-radius: 10px; padding: 8px; min-width: 0; }
   .stat b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap;
             overflow: hidden; text-overflow: ellipsis; }
@@ -211,17 +211,18 @@ function clearAllEdits() {
 // Effective numbers for a card: the owner's edits, re-run through the flip calculator.
 function view(c) {
   const e = edits[c.address] || {};
-  const arv = e.arv ?? c.arv, rehab = e.rehab ?? c.rehab;
-  const edited = e.arv != null || e.rehab != null;
+  const arv = e.arv ?? c.arv, rehab = e.rehab ?? c.rehab, fee = e.fee ?? FlipCalc.DEFAULTS.wholesale_fee;
+  const edited = e.arv != null || e.rehab != null || e.fee != null;
   let mao = c.mao, profit = c.profit_at_mao;
   if (edited && c.mao != null && arv != null && rehab != null) {
-    const r = FlipCalc.maxAllowableOffer(arv, rehab); mao = r.mao; profit = r.profit;
+    const r = FlipCalc.maxAllowableOffer(arv, rehab, fee); mao = r.mao; profit = r.profit;
   }
   const pct = (mao != null && c.list_price) ? (c.list_price - mao) / c.list_price : null;
   const check = (mao != null && arv && c.list_price && arv > 1.5 * c.list_price) ? 'ARV LOOKS TOO HIGH – CHECK COMPS'
               : (c.low_confidence && mao != null) ? 'CHECK COMPS' : null;
   const deal = check || pct == null ? null : pct <= 0.15 ? 'good' : pct <= 0.30 ? 'offer' : 'long';
-  return { arv, rehab, mao, profit, pct, check, deal, arvEdited: e.arv != null, rehabEdited: e.rehab != null };
+  return { arv, rehab, fee, mao, profit, pct, check, deal, arvEdited: e.arv != null, rehabEdited: e.rehab != null,
+           feeEdited: e.fee != null };
 }
 
 function startEdit(i, field, el) {
@@ -235,9 +236,10 @@ function startEdit(i, field, el) {
   const commit = keep => {
     if (done) return; done = true;
     const n = Math.round(Number(input.value));
-    if (keep && isFinite(n) && n >= 0 && n !== Math.round(c[field] ?? -1)) {
+    const original = field === 'fee' ? FlipCalc.DEFAULTS.wholesale_fee : c[field];
+    if (keep && isFinite(n) && n >= 0 && n !== Math.round(original ?? -1)) {
       edits[c.address] = { ...(edits[c.address] || {}), [field]: n };
-    } else if (keep && n === Math.round(c[field] ?? -1) && edits[c.address]) {
+    } else if (keep && n === Math.round(original ?? -1) && edits[c.address]) {
       delete edits[c.address][field];
     }
     saveEdits(); rerenderCard(i);
@@ -290,14 +292,14 @@ function cardHtml(c, i) {
         <div class="prices">
           <div><span class="lbl">List</span><span class="price list">${money(c.list_price)}</span></div>
           <span class="arrow">→</span>
-          <div><span class="lbl">Max offer${v.arvEdited || v.rehabEdited ? ' (updated)' : ''}</span><span class="price">${money(v.mao)}</span></div>
+          <div><span class="lbl">Max offer${v.arvEdited || v.rehabEdited || v.feeEdited ? ' (updated)' : ''}</span><span class="price">${money(v.mao)}</span></div>
         </div>
         ${v.mao != null ? `<div class="below${tone}">${below}</div>` : '<div class="below">No offer reaches 10% profit at these numbers</div>'}
-        <div class="arvcalc">Includes ${money(FlipCalc.DEFAULTS.wholesale_fee)} wholesale fee</div>
       </div>
       <div class="stats">
         ${editable('arv', 'ARV', v.arv, v.arvEdited)}
         ${editable('rehab', 'Rehab' + (c.rehab_tier ? ' · ' + esc(c.rehab_tier) : ''), v.rehab, v.rehabEdited)}
+        ${v.mao != null || v.feeEdited ? editable('fee', 'Wholesale fee', v.fee, v.feeEdited) : ''}
         <div class="stat"><span class="lbl">Profit @ max</span><b>${short(v.profit)}</b></div>
         <div class="stat"><span class="lbl">On market</span><b>${c.days_on_market ?? '—'} d</b></div>
       </div>
@@ -427,9 +429,10 @@ function openConfirm(i) {
   $('confirm-sub').textContent = c.address;
   $('offer').value = v.mao != null ? Math.round(v.mao) : '';
   $('confirm-rows').innerHTML = `
-    <span>Max offer</span><span>${money(v.mao)}${v.arvEdited || v.rehabEdited ? ' (updated)' : ''}</span>
+    <span>Max offer</span><span>${money(v.mao)}${v.arvEdited || v.rehabEdited || v.feeEdited ? ' (updated)' : ''}</span>
     <span>ARV</span><span>${money(v.arv)}${v.arvEdited ? ` (edited from ${money(c.arv)})` : ''}</span>
-    <span>Rehab</span><span>${money(v.rehab)}${v.rehabEdited ? ` (edited from ${money(c.rehab)})` : ''}</span>`;
+    <span>Rehab</span><span>${money(v.rehab)}${v.rehabEdited ? ` (edited from ${money(c.rehab)})` : ''}</span>
+    <span>Wholesale fee</span><span>${money(v.fee)}${v.feeEdited ? ` (edited from ${money(FlipCalc.DEFAULTS.wholesale_fee)})` : ''}</span>`;
   $('confirm-err').textContent = '';
   $('confirm-ok').disabled = false;
   $('confirm-bg').classList.add('open');
@@ -446,7 +449,8 @@ async function confirmAdd() {
     const r = await fetch('/api/distressed/tracker', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({search_id: searchId, zip: c.zip, address: c.address, offer,
-                            arv: v.arvEdited ? v.arv : null, rehab: v.rehabEdited ? v.rehab : null})
+                            arv: v.arvEdited ? v.arv : null, rehab: v.rehabEdited ? v.rehab : null,
+                            fee: v.feeEdited ? v.fee : null})
     });
     if (r.status === 401) { location.href = '/login'; return; }
     const d = await r.json();

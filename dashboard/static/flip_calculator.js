@@ -20,10 +20,12 @@
     buyers_agent_pct: 0.02, target_profit_pct: 0.10,
   };
 
-  function flipCosts(purchase, arv, repairs) {
+  // fee: optional wholesale fee for this deal (defaults to DEFAULTS.wholesale_fee).
+  function flipCosts(purchase, arv, repairs, fee) {
     const c = DEFAULTS, months = c.hold_months;
+    const wholesale = (fee == null) ? c.wholesale_fee : fee;
     const buyingClosing = purchase * c.buy_closing_pct;
-    const acquisition = purchase + buyingClosing + c.reinstatement + c.wholesale_fee;
+    const acquisition = purchase + buyingClosing + c.reinstatement + wholesale;
     const renovation = repairs + c.monthly_maintenance * months;
     const loan = purchase + buyingClosing + repairs;          // wholesale fee is not financed
     const interest = loan * c.interest_rate * months / 12;
@@ -37,14 +39,14 @@
   }
 
   // Returns {mao, profit} or {mao: null, profit: null} when no price reaches the target.
-  function maxAllowableOffer(arv, repairs) {
+  function maxAllowableOffer(arv, repairs, fee) {
     const target = arv * DEFAULTS.target_profit_pct;
-    const p0 = flipCosts(0, arv, repairs).profit;
-    const p1 = flipCosts(1, arv, repairs).profit;
+    const p0 = flipCosts(0, arv, repairs, fee).profit;
+    const p1 = flipCosts(1, arv, repairs, fee).profit;
     const slope = p0 - p1;
     if (slope <= 0 || p0 < target) return { mao: null, profit: null };
     const mao = Math.floor(((p0 - target) / slope) / 100) * 100;
-    return { mao, profit: flipCosts(mao, arv, repairs).profit };
+    return { mao, profit: flipCosts(mao, arv, repairs, fee).profit };
   }
 
   const api = { DEFAULTS, flipCosts, maxAllowableOffer };

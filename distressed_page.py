@@ -222,6 +222,7 @@ def add_to_tracker():
         offer = _money_or_none(body.get("offer"), "Offer")
         arv_in = _money_or_none(body.get("arv"), "ARV")
         rehab_in = _money_or_none(body.get("rehab"), "Rehab", upper=5_000_000)
+        fee_in = _money_or_none(body.get("fee"), "Wholesale fee", upper=1_000_000)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     if not offer:
@@ -239,9 +240,10 @@ def add_to_tracker():
         return jsonify({"error": "This property has no max offer, so it can't go to the tracker from here"}), 400
     arv = arv_in if arv_in is not None else round(card["arv"])
     rehab = rehab_in if rehab_in is not None else round(card["rehab"] or 0)
-    mao, _ = max_allowable_offer(arv, rehab)
+    fee = {"wholesale_fee": fee_in} if fee_in is not None else {}
+    mao, _ = max_allowable_offer(arv, rehab, **fee)
     if mao is None:
-        return jsonify({"error": "No offer reaches a 10% profit at that ARV and rehab"}), 400
+        return jsonify({"error": "No offer reaches a 10% profit at that ARV, rehab and wholesale fee"}), 400
     try:
         result = tracker_sheet.add_property(card["address"], card["zillow_url"], arv, offer, rehab,
                                             tracker_comps(card))

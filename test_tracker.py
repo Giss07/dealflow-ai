@@ -180,6 +180,10 @@ def test_endpoint():
     post(offer=470_000, rehab=60_000, arv=650_000)
     check("edited ARV / rehab go to D / F, the typed offer to E", calls[-1][2:5] == (650_000, 470_000, 60_000), calls[-1][2:5])
     check("no notes are sent anywhere", len(calls[-1]) == 6 and not any("Distressed" in str(x) for x in calls[-1]))
+    check("an edited wholesale fee is accepted", post(offer=480_000, fee=10_000).status_code == 200)
+    check("a fee so high no offer works → 400 that says so",
+          post(offer=1, fee=900_000).status_code == 400 and "wholesale fee" in post(offer=1, fee=900_000).get_json()["error"])
+    check("nonsense fee → 400", post(offer=480_000, fee="abc").status_code == 400 and post(offer=480_000, fee=-1).status_code == 400)
     check("no offer → 400", post(offer=None).status_code == 400)
     check("nonsense numbers → 400", post(offer=500_000, arv="abc").status_code == 400
           and post(offer=-5).status_code == 400)
@@ -193,6 +197,8 @@ def test_endpoint():
     check("page: Add to Tracker, In tracker, Already in tracker; no 'Download for agent'",
           all(t in page for t in ("Add to Tracker", "✓ In tracker", "Already in tracker", "Download all (CSV)"))
           and "Download for agent" not in page)
+    check("page: the wholesale fee is an editable number and goes to the server",
+          "editable('fee', 'Wholesale fee'" in page and "fee: v.feeEdited ? v.fee : null" in page)
     check("page loads the JS calculator", '<script src="/static/flip_calculator.js">' in page
           and client.get("/static/flip_calculator.js").status_code == 200)
 
@@ -202,13 +208,15 @@ def test_js_matches_python():
     rnd = random.Random(7)
     cases = [(665_000, 45_000), (712_270, 40_000), (712_270, 54_000), (100_000, 200_000), (648_000, 60_000)]
     cases += [(rnd.randrange(80_000, 2_500_000), rnd.randrange(0, 300_000)) for _ in range(3000)]
+    fee_cases = [(rnd.randrange(80_000, 2_500_000), rnd.randrange(0, 300_000), rnd.choice([0, 5_000, 10_000, 15_000, 25_000, rnd.randrange(0, 60_000)]))
+                 for _ in range(2000)] + [(648_000, 60_000, 10_000)]
     js = subprocess.run(["node", "-e", f"""
         const f = require({json.dumps(os.path.join(HERE, 'dashboard/static/flip_calculator.js'))});
-        const cases = {json.dumps(cases)};
-        console.log(JSON.stringify(cases.map(([a, r]) => {{ const m = f.maxAllowableOffer(a, r);
-            return [m.mao, m.profit == null ? null : Math.round(m.profit * 100) / 100]; }})));"""],
+        const out = c => c.map(([a, r, fee]) => {{ const m = f.maxAllowableOffer(a, r, fee);
+            return [m.mao, m.profit == null ? null : Math.round(m.profit * 100) / 100]; }});
+        console.log(JSON.stringify([out({json.dumps(cases)}.map(x => [x[0], x[1]])), out({json.dumps(fee_cases)})]));"""],
         capture_output=True, text=True, timeout=60)
-    got = json.loads(js.stdout)
+    got, got_fee = json.loads(js.stdout)
     bad = []
     for (arv, rehab), (jm, jp) in zip(cases, got):
         pm, at = max_allowable_offer(arv, rehab)
@@ -220,6 +228,11 @@ def test_js_matches_python():
           got[0][0] == 484_100 == max_allowable_offer(665_000, 45_000)[0], got[0])
     check("row 183 case through JS: ARV $648,000, rehab $60,000 → $455,600", got[4][0] == 455_600, got[4])
     check("1485 N Fillmore, old ARV / rehab $40,000: JS = Python", got[1][0] == max_allowable_offer(712_270, 40_000)[0], got[1])
+    bad_fee = [(a, r, fee, max_allowable_offer(a, r, wholesale_fee=fee)[0], jm)
+               for (a, r, fee), (jm, _) in zip(fee_cases, got_fee) if max_allowable_offer(a, r, wholesale_fee=fee)[0] != jm]
+    check(f"per-card fee: same max offer on {len(fee_cases)} cases", not bad_fee, bad_fee[:3])
+    check("ARV $648,000 / rehab $60,000 / fee $10,000: JS = Python",
+          got_fee[-1][0] == max_allowable_offer(648_000, 60_000, wholesale_fee=10_000)[0], got_fee[-1])
 
 
 if __name__ == "__main__":
