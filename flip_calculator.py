@@ -2,6 +2,7 @@
 Flip profit calculator — the owner's 3-month-hold spreadsheet, line for line.
 
     BUYING     closing / title 1% of purchase; reinstatement / misc $0
+               wholesale fee $15,000 (WHOLESALE_FEE), paid at closing — NOT financed
     RENOVATION repairs = rehab estimate; monthly maintenance $0
     HOLDING    loan = 100% of (purchase + buying closing + repairs)
                interest 12%/yr on the loan for the hold; points 0%
@@ -22,11 +23,16 @@ assumptions (5% selling, ARV-based closing) and backs score_deal.
 """
 
 import math
+import os
 
 DEFAULTS = {
     "hold_months": 3,
     "buy_closing_pct": 0.01,        # of purchase
     "reinstatement": 0.0,
+    # Fixed wholesale / assignment fee on every deal, paid at closing out of
+    # pocket: part of BUYING, never added to the loan. Railway variable
+    # WHOLESALE_FEE changes it (default $15,000; 2026-11-18).
+    "wholesale_fee": float(os.getenv("WHOLESALE_FEE", "15000")),
     "monthly_maintenance": 0.0,
     "interest_rate": 0.12,          # per year, on the loan
     "points_pct": 0.0,              # of the loan
@@ -53,11 +59,11 @@ def flip_costs(purchase, arv, repairs, annual_property_tax=None, **overrides):
     months = c["hold_months"]
 
     buying_closing = purchase * c["buy_closing_pct"]
-    acquisition = purchase + buying_closing + c["reinstatement"]
+    acquisition = purchase + buying_closing + c["reinstatement"] + c["wholesale_fee"]
 
     renovation = repairs + c["monthly_maintenance"] * months
 
-    loan = purchase + buying_closing + repairs
+    loan = purchase + buying_closing + repairs          # the wholesale fee is not financed
     interest = loan * c["interest_rate"] * months / 12
     points = loan * c["points_pct"]
     yearly_tax = (annual_property_tax if annual_property_tax is not None
@@ -76,7 +82,7 @@ def flip_costs(purchase, arv, repairs, annual_property_tax=None, **overrides):
     total = acquisition + renovation + holding + selling
     return {
         "purchase": purchase, "arv": arv,
-        "buying_closing": buying_closing, "acquisition": acquisition,
+        "buying_closing": buying_closing, "wholesale_fee": c["wholesale_fee"], "acquisition": acquisition,
         "repairs": renovation,
         "loan": loan, "interest": interest, "points": points, "taxes": taxes,
         "insurance": insurance, "utilities": utilities, "holding": holding,

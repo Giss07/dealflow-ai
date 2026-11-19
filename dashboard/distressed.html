@@ -184,6 +184,7 @@
 </div>
 
 <script src="/static/flip_calculator.js"></script>
+<script>FlipCalc.DEFAULTS.wholesale_fee = {{ wholesale_fee }};   // the server's WHOLESALE_FEE</script>
 <script>
 let searchId = null, cards = [], pollTimer = null, deepLinkDone = false;
 
@@ -292,6 +293,7 @@ function cardHtml(c, i) {
           <div><span class="lbl">Max offer${v.arvEdited || v.rehabEdited ? ' (updated)' : ''}</span><span class="price">${money(v.mao)}</span></div>
         </div>
         ${v.mao != null ? `<div class="below${tone}">${below}</div>` : '<div class="below">No offer reaches 10% profit at these numbers</div>'}
+        <div class="arvcalc">Includes ${money(FlipCalc.DEFAULTS.wholesale_fee)} wholesale fee</div>
       </div>
       <div class="stats">
         ${editable('arv', 'ARV', v.arv, v.arvEdited)}

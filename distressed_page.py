@@ -7,8 +7,9 @@ and the page polls the DistressedSearch row. Results are saved after each ZIP,
 so cards appear as ZIPs finish, from whichever gunicorn worker answers.
 
 Nothing here submits an offer. "Add to Tracker" appends one row to the offer
-tracker sheet (tracker_sheet.py) for the agent to submit; that is the page's
-only write outside its own search table.
+tracker sheet (tracker_sheet.py) for the agent to submit — values in A–I and
+the three comps in O–Q, no Notes — the page's only write outside its own
+search table.
 """
 
 import json
@@ -123,7 +124,8 @@ def _find_listing(row, zip_code, address):
 
 @bp.route("/distressed")
 def page():
-    return render_template("distressed.html")
+    from flip_calculator import DEFAULTS
+    return render_template("distressed.html", wholesale_fee=int(DEFAULTS["wholesale_fee"]))
 
 
 @bp.route("/api/distressed/search", methods=["POST"])
@@ -194,16 +196,18 @@ def _money_or_none(v, name, upper=50_000_000):
     return round(n)
 
 
-def tracker_notes(card, arv, rehab, mao):
-    """'From Distressed Deals – 3 comps, light rehab, max offer $528,100' plus
-    what the owner edited on the page."""
-    notes = (f"From Distressed Deals – {len(card['comps'])} comps, "
-             f"{card['rehab_tier'] or 'unknown'} rehab, max offer ${mao:,.0f}")
-    if card["rehab"] is not None and rehab != round(card["rehab"]):
-        notes += f"; Rehab edited from ${card['rehab']:,.0f} to ${rehab:,.0f}"
-    if card["arv"] is not None and arv != round(card["arv"]):
-        notes += f"; ARV edited from ${card['arv']:,.0f} to ${arv:,.0f}"
-    return notes
+def tracker_comps(card):
+    """[(address, zillow_url)] for O, P, Q: the median comp the ARV was built on
+    (Anchor Comp), then the other comps, closest first — three at most."""
+    comps = [c for c in card["comps"] if c.get("address")]
+    if not comps:
+        return []
+    anchor = next((c for c in comps if c["address"] == card.get("arv_median_comp")), None)
+    if anchor is None:                     # older saved search: the middle sold price
+        ranked = sorted(comps, key=lambda c: c.get("sold_price") or 0)
+        anchor = ranked[(len(ranked) - 1) // 2]
+    rest = sorted((c for c in comps if c is not anchor), key=lambda c: c.get("distance_mi") or 0)
+    return [(c["address"], c.get("url") or "") for c in [anchor] + rest[:2]]
 
 
 @bp.route("/api/distressed/tracker", methods=["POST"])
@@ -240,7 +244,7 @@ def add_to_tracker():
         return jsonify({"error": "No offer reaches a 10% profit at that ARV and rehab"}), 400
     try:
         result = tracker_sheet.add_property(card["address"], card["zillow_url"], arv, offer, rehab,
-                                            tracker_notes(card, arv, rehab, mao))
+                                            tracker_comps(card))
     except Exception as e:
         logger.error(f"[distressed] add to tracker failed for {card['address']}: {e}", exc_info=True)
         return jsonify({"error": f"Couldn't write to the tracker sheet: {type(e).__name__}"}), 502

@@ -109,7 +109,15 @@ def card(zip_code, listing):
     address = listing.get("address") or ""
     mobile = bool(a.get("mobile_home")) or is_mobile_home(address, a.get("home_type") or listing.get("type"))
     mao = None if mobile else a.get("mao")
-    pct = a.get("mao_vs_list_pct") if mao is not None else None
+    profit = a.get("profit_at_mao")
+    arv0, rehab0 = a.get("arv"), (a.get("rehab") or {}).get("amount")
+    if mao is not None and arv0 and rehab0 is not None:
+        # Re-run today's calculator (wholesale fee included) so a saved search —
+        # and any later change to WHOLESALE_FEE — shows current numbers.
+        from flip_calculator import max_allowable_offer
+        mao, at = max_allowable_offer(arv0, rehab0)
+        profit = round(at["profit"]) if at else None
+    pct = ((mao - listing["price"]) / listing["price"]) if (mao is not None and listing.get("price")) else None
     pct_below = -pct if pct is not None else None
     multi = (a.get("home_type") or "").upper() in MULTI_FAMILY_TYPES
     low_conf = a.get("confidence") == "LOW CONFIDENCE" and not multi and not mobile
@@ -123,7 +131,7 @@ def card(zip_code, listing):
         "zip": zip_code, "address": address, "street": street, "city": rest.rsplit(",", 1)[0] if rest else "",
         "list_price": list_price, "mao": mao, "pct_below_list": pct_below,
         "arv": a.get("arv"), "rehab": r.get("amount"), "rehab_tier": r.get("tier"),
-        "profit_at_mao": a.get("profit_at_mao"), "days_on_market": listing.get("days"),
+        "profit_at_mao": profit, "days_on_market": listing.get("days"),
         "deal_tag": None if check else deal_tag(pct_below),
         "check": check,
         "unpriced_reason": None if mao is not None else (
@@ -135,6 +143,7 @@ def card(zip_code, listing):
         "multi_family": multi, "mobile_home": mobile,
         "comp_flags": a.get("comp_flags") or [], "arv_basis": a.get("arv_basis") or "",
         "arv_explain": a.get("arv_explain") or "",
+        "arv_median_comp": (a.get("arv_calc") or {}).get("median_comp"),
         "note": a.get("note") or "", "zillow_url": a.get("zillow_url") or "",
         "comps": [{"address": c.get("address"), "sold_price": c.get("sold_price"),
                    "sold_date": c.get("sold_date"), "sqft": c.get("sqft"),

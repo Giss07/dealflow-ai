@@ -122,10 +122,44 @@ def _serial(d):
     return (d - date(1899, 12, 30)).days
 
 
-def add_property(address, zillow_url, arv, offer, rehab, notes, today=None):
+COMP_COLS = (14, 15, 16)          # O Anchor Comp, P Comp #2, Q Comp #3 (the owner's headers)
+
+
+def comp_cell_text(address):
+    """Street only, like the owner's manual comp cells ("1438 S Church Avenue")."""
+    return str(address or "").replace("\n", ", ").split(",")[0].strip()
+
+
+def _cell(sheet_id, row, col, value=None, link=None):
+    """One updateCells request. value None + no link clears the cell's value."""
+    v = {}
+    if isinstance(value, (int, float)):
+        v["userEnteredValue"] = {"numberValue": value}
+    elif value is not None:
+        v["userEnteredValue"] = {"stringValue": value}
+    fields = "userEnteredValue"
+    if link:
+        v["userEnteredFormat"] = {"textFormat": {"link": {"uri": link}}}
+        fields += ",userEnteredFormat.textFormat.link"
+    return {"updateCells": {"rows": [{"values": [v]}], "fields": fields,
+                            "range": {"sheetId": sheet_id, "startRowIndex": row - 1, "endRowIndex": row,
+                                      "startColumnIndex": col, "endColumnIndex": col + 1}}}
+
+
+def _comp_cells(sheet_id, row, comps):
+    """O/P/Q: [(address, zillow_url), ...] → up to 3 linked street-only cells."""
+    return [_cell(sheet_id, row, col, comp_cell_text(addr), link=url or None)
+            for col, (addr, url) in zip(COMP_COLS, comps[:3])]
+
+
+def add_property(address, zillow_url, arv, offer, rehab, comps=(), today=None):
     """Append one row for the agent. Returns {'status': 'added', 'row': n} or,
     when the property is already in the tracker or an archive tab,
-    {'status': 'exists', ...find_property()...}."""
+    {'status': 'exists', ...find_property()...}.
+
+    comps: [(address, zillow_url)] in O, P, Q order — Anchor Comp first.
+    Notes (N) and Sent Date / Status (J, K) are never written: J carries the
+    agent's per-row protections, and a new row's J and K start empty."""
     with _write_lock:
         existing = find_property(address, force=True)        # never trust a stale cache for writes
         if existing:
@@ -146,32 +180,36 @@ def add_property(address, zillow_url, arv, offer, rehab, notes, today=None):
         for paste in ("PASTE_FORMAT", "PASTE_DATA_VALIDATION"):
             requests.append({"copyPaste": {"source": src, "destination": dst, "pasteType": paste}})
 
-        def cell(col, value=None, link=None):
-            v = {}
-            if isinstance(value, (int, float)):
-                v["userEnteredValue"] = {"numberValue": value}
-            elif value is not None:
-                v["userEnteredValue"] = {"stringValue": value}
-            fields = "userEnteredValue"
-            if link:
-                v["userEnteredFormat"] = {"textFormat": {"link": {"uri": link}}}
-                fields += ",userEnteredFormat.textFormat.link"
-            return {"updateCells": {"rows": [{"values": [v]}], "fields": fields,
-                                    "range": {"sheetId": sheet_id, "startRowIndex": target - 1, "endRowIndex": target,
-                                              "startColumnIndex": col, "endColumnIndex": col + 1}}}
-
         today = today or date.today()
         requests += [
-            cell(0, _serial(today)), cell(1, LEAD_SOURCE), cell(2, address, link=zillow_url or None),
-            cell(3, round(arv)), cell(4, round(offer)), cell(5, round(rehab)),
-            cell(6, CLOSING), cell(7, INSPECTION), cell(8, EMD),
-            cell(9), cell(10),                       # Sent Date, Status: blank for the agent
-            cell(13, notes),
-        ]
-        # J and K were just given the previous row's formats; make sure they are empty.
-        requests[-3]["updateCells"]["fields"] = requests[-2]["updateCells"]["fields"] = "userEnteredValue"
+            _cell(sheet_id, target, 0, _serial(today)), _cell(sheet_id, target, 1, LEAD_SOURCE),
+            _cell(sheet_id, target, 2, address, link=zillow_url or None),
+            _cell(sheet_id, target, 3, round(arv)), _cell(sheet_id, target, 4, round(offer)),
+            _cell(sheet_id, target, 5, round(rehab)),
+            _cell(sheet_id, target, 6, CLOSING), _cell(sheet_id, target, 7, INSPECTION), _cell(sheet_id, target, 8, EMD),
+        ] + _comp_cells(sheet_id, target, list(comps))
         _check(s.post(f"{base}:batchUpdate", json={"requests": requests}))
         with _index_lock:
             _index["rows"] = None                    # next read sees the new row
         logger.info(f"[tracker] added row {target}: {address}")
         return {"status": "added", "row": target, "tab": title}
+
+
+def update_property_row(row, expect_address, arv, offer, rehab, comps, clear_notes=False):
+    """Rewrite D/E/F and O/P/Q of an existing tracker row (and optionally clear
+    N), after checking column C still holds `expect_address`. Nothing else in
+    the row is touched."""
+    with _write_lock:
+        s, base = _session()
+        tab = _tabs(s, base)[0]
+        sheet_id, title = tab["sheetId"], tab["title"]
+        current = (_check(s.get(f"{base}/values/'{title}'!C{row}")).get("values") or [[""]])[0][0]
+        if not same_property(current, expect_address):
+            raise RuntimeError(f"row {row} holds {current!r}, not {expect_address!r} — nothing written")
+        requests = [_cell(sheet_id, row, 3, round(arv)), _cell(sheet_id, row, 4, round(offer)),
+                    _cell(sheet_id, row, 5, round(rehab))] + _comp_cells(sheet_id, row, list(comps))
+        if clear_notes:
+            requests.append(_cell(sheet_id, row, 13))
+        _check(s.post(f"{base}:batchUpdate", json={"requests": requests}))
+        logger.info(f"[tracker] updated row {row}: {expect_address}")
+        return {"status": "updated", "row": row, "tab": title}

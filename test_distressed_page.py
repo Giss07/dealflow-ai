@@ -37,7 +37,7 @@ def listing(address, price, mao=None, arv=None, home_type="SINGLE_FAMILY", confi
         "analysis": {
             "arv": arv, "mao": mao, "mao_vs_list": (mao - price) if mao is not None else None,
             "mao_vs_list_pct": pct, "profit_at_mao": 70_000 if mao else None,
-            "rehab": {"tier": "medium", "per_sqft": 55, "amount": 77_000, "reason": "medium: fixer"},
+            "rehab": {"tier": "medium", "per_sqft": 55, "amount": None, "reason": "medium: fixer"},  # None: keep fixture MAOs
             "confidence": confidence, "comp_flags": [], "comps_used": comps, "home_type": home_type,
             "arv_basis": f"{comps} comps: 1 remodeled, {comps - 1} unknown" if comps else "",
             "remodeled_comps": 1, "unknown_comps": max(comps - 1, 0), "skipped_fixers": [],
@@ -179,6 +179,18 @@ def test_search_flow():
     check("latest points at this search", client.get("/api/distressed/search/latest").get_json()["id"] == sid)
 
 
+def test_fee_recompute():
+    print("\n=== Cards use today's calculator (wholesale fee) ===")
+    import distressed_report as rp
+    from flip_calculator import max_allowable_offer
+    lst = listing("1485 N Fillmore Ave, Rialto, CA 92376", 600_000, mao=528_100, arv=648_000)
+    lst["analysis"]["rehab"]["amount"] = 60_000
+    c = rp.card("92376", lst)
+    check("a saved search's max offer is recomputed with the fee: $455,600", c["mao"] == 455_600
+          and c["mao"] == max_allowable_offer(648_000, 60_000)[0], c["mao"])
+    check("page tells the JS calculator the fee", b"FlipCalc.DEFAULTS.wholesale_fee = 15000" in client.get("/distressed").data)
+
+
 def test_zip_error():
     print("\n=== A failing ZIP ===")
     release.set()
@@ -217,6 +229,7 @@ def test_no_offer_routes():
 if __name__ == "__main__":
     test_page_and_validation()
     test_search_flow()
+    test_fee_recompute()
     test_zip_error()
     test_import_failure_marks_failed()
     test_no_offer_routes()

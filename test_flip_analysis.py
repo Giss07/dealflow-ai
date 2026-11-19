@@ -33,7 +33,8 @@ def test_calculator():
     print("\n=== Calculator: the owner's tests ===")
     ARV, REPAIRS, PURCHASE = 665_000, 45_000, 490_000
 
-    b = flip_costs(PURCHASE, ARV, REPAIRS)            # property tax 1.2% of purchase
+    NOFEE = {"wholesale_fee": 0}                       # the owner's tests predate the wholesale fee
+    b = flip_costs(PURCHASE, ARV, REPAIRS, **NOFEE)   # property tax 1.2% of purchase
     print("  -- property tax 1.2% of purchase (the rule the search uses)")
     check("acquisition $494,900", round(b["acquisition"]) == 494_900, round(b["acquisition"]))
     check("holding $18,147", round(b["holding"]) == 18_147, round(b["holding"]))
@@ -41,24 +42,35 @@ def test_calculator():
     check("selling $31,600", round(b["selling"]) == 31_600, round(b["selling"]))
     check("total costs $589,647", round(b["total_costs"]) == 589_647, round(b["total_costs"]))
     check("profit $75,353", round(b["profit"]) == 75_353, round(b["profit"]))
-    mao, at = max_allowable_offer(ARV, REPAIRS)
+    mao, at = max_allowable_offer(ARV, REPAIRS, **NOFEE)
     check("MAO at 10% of ARV = $498,400", mao == 498_400, mao)
     check("profit at MAO $66,505 (≥ $66,500)", round(at["profit"]) == 66_505 and at["profit"] >= 66_500,
           round(at["profit"]))
     check("$100 more would miss the 10% target",
-          flip_costs(mao + 100, ARV, REPAIRS)["profit"] < 66_500)
+          flip_costs(mao + 100, ARV, REPAIRS, **NOFEE)["profit"] < 66_500)
 
-    o = flip_costs(PURCHASE, ARV, REPAIRS, annual_property_tax=904)
+    o = flip_costs(PURCHASE, ARV, REPAIRS, annual_property_tax=904, **NOFEE)
     print("  -- original spreadsheet test, fixed annual tax $904")
     check("acquisition $494,900", round(o["acquisition"]) == 494_900, round(o["acquisition"]))
     check("holding $16,903", round(o["holding"]) == 16_903, round(o["holding"]))
     check("selling $31,600", round(o["selling"]) == 31_600, round(o["selling"]))
     check("total costs $588,403", round(o["total_costs"]) == 588_403, round(o["total_costs"]))
     check("profit $76,597", round(o["profit"]) == 76_597, round(o["profit"]))
-    mao904, at904 = max_allowable_offer(ARV, REPAIRS, annual_property_tax=904)
+    mao904, at904 = max_allowable_offer(ARV, REPAIRS, annual_property_tax=904, **NOFEE)
     check("MAO about $499,600 (profit ≥ $66,500)", mao904 == 499_600 and at904["profit"] >= 66_500,
           f"{mao904}, profit {round(at904['profit'])}")
 
+    print("  -- wholesale fee $15,000 (BUYING, paid at closing, not financed)")
+    f = flip_costs(PURCHASE, ARV, REPAIRS)
+    check("fee is in acquisition: $494,900 + $15,000 = $509,900", round(f["acquisition"]) == 509_900, round(f["acquisition"]))
+    check("fee is not financed: loan and interest unchanged", round(f["loan"]) == round(b["loan"]) and round(f["interest"]) == round(b["interest"]))
+    check("profit drops by exactly the fee: $75,353 − $15,000 = $60,353", round(f["profit"]) == 60_353, round(f["profit"]))
+    m60, at60 = max_allowable_offer(648_000, 60_000)
+    check("row 183 test: ARV $648,000, rehab $60,000 → max offer $455,600", m60 == 455_600, (m60, round(at60["profit"])))
+    check("…still clearing 10% of ARV ($64,800)", at60["profit"] >= 64_800, round(at60["profit"]))
+    check("the fee is a setting (override → different max offer)",
+          max_allowable_offer(648_000, 60_000, wholesale_fee=0)[0] == 469_800
+          and max_allowable_offer(648_000, 60_000, wholesale_fee=20_000)[0] < 455_600)
     check("no MAO when even $0 cannot reach the target",
           max_allowable_offer(100_000, 200_000) == (None, None))
 

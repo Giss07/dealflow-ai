@@ -101,9 +101,11 @@ def test_add_row():
     print("\n=== The new row ===")
     fake = FakeSheets(TRACKER)
     use(fake)
-    r = ts.add_property("1485 N Fillmore Ave, Rialto, CA 92376", "https://www.zillow.com/homedetails/x/", 712_270,
-                        540_000, 40_000, "From Distressed Deals – 3 comps, light rehab, max offer $540,300",
-                        today=date(2026, 11, 18))
+    comps = [("1648 N Althea Ave, Rialto, CA 92376", "https://www.zillow.com/homedetails/althea/"),
+             ("19449 Lurelane St, Rialto, CA 92376", "https://www.zillow.com/homedetails/lurelane/"),
+             ("1730 N Vista Ave, Rialto, CA 92376", "https://www.zillow.com/homedetails/vista/")]
+    r = ts.add_property("1485 N Fillmore Ave, Rialto, CA 92376", "https://www.zillow.com/homedetails/x/", 648_000,
+                        455_600, 60_000, comps, today=date(2026, 11, 18))
     check("added after the last address (row 5 here), not inserted", r == {"status": "added", "row": 5,
                                                                           "tab": "Properties_Offer_Tracker_Template"}, r)
     reqs = fake.batches[0]
@@ -120,22 +122,26 @@ def test_add_row():
     check("C: full address, linked to Zillow",
           val(2) == {"stringValue": "1485 N Fillmore Ave, Rialto, CA 92376"}
           and cells[2]["rows"][0]["values"][0]["userEnteredFormat"]["textFormat"]["link"]["uri"] == "https://www.zillow.com/homedetails/x/")
-    check("D ARV, E offer, F rehab", (val(3), val(4), val(5)) == ({"numberValue": 712270}, {"numberValue": 540000},
-                                                                   {"numberValue": 40000}))
+    check("D ARV, E offer, F rehab", (val(3), val(4), val(5)) == ({"numberValue": 648000}, {"numberValue": 455600},
+                                                                   {"numberValue": 60000}))
     check("G '10 Days ', H '3 Days ', I 1%", (val(6), val(7), val(8)) == ({"stringValue": "10 Days "},
                                                                           {"stringValue": "3 Days "}, {"numberValue": 0.01}))
-    check("J Sent Date and K Status left blank", val(9) == {} and val(10) == {})
-    check("N: notes", val(13) == {"stringValue": "From Distressed Deals – 3 comps, light rehab, max offer $540,300"})
-    check("nothing else written (L, M, O+ untouched)", set(cells) == {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13}, sorted(cells))
+    link = lambda c: cells[c]["rows"][0]["values"][0]["userEnteredFormat"]["textFormat"]["link"]["uri"]
+    check("O Anchor Comp / P Comp #2 / Q Comp #3: street only, linked to Zillow",
+          [val(c) for c in (14, 15, 16)] == [{"stringValue": "1648 N Althea Ave"}, {"stringValue": "19449 Lurelane St"},
+                                             {"stringValue": "1730 N Vista Ave"}]
+          and [link(c) for c in (14, 15, 16)] == [u for _, u in comps], [val(c) for c in (14, 15, 16)])
+    check("Notes (N), Sent Date (J) and Status (K) never written", not {9, 10, 13} & set(cells), sorted(cells))
+    check("only A–I and O–Q written", set(cells) == {0, 1, 2, 3, 4, 5, 6, 7, 8, 14, 15, 16}, sorted(cells))
 
     fake2 = FakeSheets(TRACKER)
     use(fake2)
-    r2 = ts.add_property("1517 S Klein Ave, Reedley, CA 93654", "", 1, 1, 1, "x")
+    r2 = ts.add_property("1517 S Klein Ave, Reedley, CA 93654", "", 1, 1, 1, [])
     check("already in the tracker → nothing written", r2["status"] == "exists" and r2["where"] == "tracker"
           and r2["row"] == 4 and fake2.batches == [], r2)
     fake3 = FakeSheets(TRACKER, stp=["3060 Linder\nHemet, CA 92545"])
     use(fake3)
-    r3 = ts.add_property("3060 Linder, Hemet, CA 92545", "", 1, 1, 1, "x")
+    r3 = ts.add_property("3060 Linder, Hemet, CA 92545", "", 1, 1, 1, [])
     check("in Archive_STP → 'archive', nothing written", r3["status"] == "exists" and r3["where"] == "archive"
           and fake3.batches == [], r3)
 
@@ -145,11 +151,16 @@ def test_endpoint():
     import app as webapp
     from database import DistressedSearch, get_session
     listing = {"address": "1485 N Fillmore Ave, Rialto, CA 92376", "price": 600_000, "days": 9,
-               "analysis": {"arv": 712_270, "mao": 528_100, "mao_vs_list_pct": -0.12, "profit_at_mao": 71_331,
+               "analysis": {"arv": 648_000, "mao": 461_000, "mao_vs_list_pct": -0.23, "profit_at_mao": 64_800,
                             "rehab": {"tier": "light", "per_sqft": 30, "amount": 54_000}, "confidence": "OK",
                             "comp_flags": [], "comps_used": 3, "home_type": "SINGLE_FAMILY",
                             "zillow_url": "https://www.zillow.com/homedetails/1485/",
-                            "comps": [{"address": f"c{i}", "price_per_sqft": 400, "remodeled": "REMODELED"} for i in range(3)]}}
+                            "arv_calc": {"median_comp": "1648 N Althea Ave, Rialto, CA 92376"},
+                            "comps": [{"address": a, "sold_price": p, "distance_mi": d, "url": f"https://z/{n}",
+                                       "price_per_sqft": 400, "remodeled": "REMODELED"}
+                                      for n, (a, p, d) in enumerate([("19449 Lurelane St, Rialto, CA 92376", 635_000, 0.38),
+                                                                     ("1730 N Vista Ave, Rialto, CA 92376", 648_000, 0.47),
+                                                                     ("1648 N Althea Ave, Rialto, CA 92376", 645_000, 0.25)])]}}
     db = get_session()
     row = DistressedSearch(zips="92376", status="completed", zips_done=1,
                            result=json.dumps({"92376": {"status": "ok", "listings": [listing]}}))
@@ -160,20 +171,15 @@ def test_endpoint():
     client = webapp.app.test_client()
     post = lambda **b: client.post("/api/distressed/tracker", json={"search_id": sid, "zip": "92376",
                                                                     "address": listing["address"], **b})
-    r = post(offer=528_100)
-    check("unedited: adds with the search's ARV and rehab", r.status_code == 200 and calls[-1][2:5] == (712_270, 528_100, 54_000),
+    r = post(offer=455_600)
+    check("unedited: adds with the search's ARV and rehab", r.status_code == 200 and calls[-1][2:5] == (648_000, 455_600, 54_000),
           calls[-1][2:5] if calls else r.get_json())
-    check("notes: comps, tier, max offer", calls[-1][5] == "From Distressed Deals – 3 comps, light rehab, max offer $528,100",
-          calls[-1][5])
-    exp_mao, _ = max_allowable_offer(712_270, 40_000)
-    r = post(offer=540_000, rehab=40_000)
-    check("rehab edited to $40,000 → F = 40,000, E = the typed offer", calls[-1][2:5] == (712_270, 540_000, 40_000))
-    check("notes say the rehab was edited and give the updated max offer",
-          calls[-1][5] == f"From Distressed Deals – 3 comps, light rehab, max offer ${exp_mao:,}; Rehab edited from $54,000 to $40,000",
-          calls[-1][5])
-    r = post(offer=500_000, arv=690_000, rehab=40_000)
-    check("ARV edit is noted too", calls[-1][5].endswith("; Rehab edited from $54,000 to $40,000; ARV edited from $712,270 to $690,000"),
-          calls[-1][5])
+    check("comps: Anchor = the median comp, then the other two closest first",
+          [a.split(",")[0] for a, _ in calls[-1][5]] == ["1648 N Althea Ave", "19449 Lurelane St", "1730 N Vista Ave"]
+          and [u for _, u in calls[-1][5]] == ["https://z/2", "https://z/0", "https://z/1"], calls[-1][5])
+    post(offer=470_000, rehab=60_000, arv=650_000)
+    check("edited ARV / rehab go to D / F, the typed offer to E", calls[-1][2:5] == (650_000, 470_000, 60_000), calls[-1][2:5])
+    check("no notes are sent anywhere", len(calls[-1]) == 6 and not any("Distressed" in str(x) for x in calls[-1]))
     check("no offer → 400", post(offer=None).status_code == 400)
     check("nonsense numbers → 400", post(offer=500_000, arv="abc").status_code == 400
           and post(offer=-5).status_code == 400)
@@ -194,7 +200,7 @@ def test_endpoint():
 def test_js_matches_python():
     print("\n=== JavaScript calculator = Python calculator ===")
     rnd = random.Random(7)
-    cases = [(665_000, 45_000), (712_270, 40_000), (712_270, 54_000), (100_000, 200_000)]
+    cases = [(665_000, 45_000), (712_270, 40_000), (712_270, 54_000), (100_000, 200_000), (648_000, 60_000)]
     cases += [(rnd.randrange(80_000, 2_500_000), rnd.randrange(0, 300_000)) for _ in range(3000)]
     js = subprocess.run(["node", "-e", f"""
         const f = require({json.dumps(os.path.join(HERE, 'dashboard/static/flip_calculator.js'))});
@@ -210,8 +216,10 @@ def test_js_matches_python():
         if pm != jm or (pp is not None and abs(pp - jp) > 0.01) or (pp is None) != (jp is None):
             bad.append((arv, rehab, pm, jm, pp, jp))
     check(f"same MAO and profit on {len(cases)} cases", not bad, bad[:3])
-    check("owner's test through JS: MAO $498,400", got[0][0] == 498_400)
-    check("1485 N Fillmore, rehab $40,000: JS = Python", got[1][0] == max_allowable_offer(712_270, 40_000)[0], got[1])
+    check("owner's test through JS, now with the $15,000 fee: MAO $484,100 (= Python)",
+          got[0][0] == 484_100 == max_allowable_offer(665_000, 45_000)[0], got[0])
+    check("row 183 case through JS: ARV $648,000, rehab $60,000 → $455,600", got[4][0] == 455_600, got[4])
+    check("1485 N Fillmore, old ARV / rehab $40,000: JS = Python", got[1][0] == max_allowable_offer(712_270, 40_000)[0], got[1])
 
 
 if __name__ == "__main__":
