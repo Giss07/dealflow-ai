@@ -254,7 +254,7 @@ function view(c) {
   const pickEdited = compsEdited(c);
   // ARV: a typed number wins; then the owner's checked comps through the same rule; then the search's.
   const pickCalc = (pickEdited && e.arv == null)
-    ? FlipCalc.arvFromComps(c.sqft, pickOf(c).map(a => compBy(c, a)).filter(Boolean)) : null;
+    ? FlipCalc.arvFromComps(c.sqft, pickOf(c).map(a => compBy(c, a)).filter(Boolean), pickOf(c)[0]) : null;
   const arv = e.arv ?? (pickCalc ? pickCalc.arv : c.arv);
   const rehab = e.rehab ?? c.rehab, fee = e.fee ?? FlipCalc.DEFAULTS.wholesale_fee;
   const edited = e.arv != null || e.rehab != null || e.fee != null || pickEdited;

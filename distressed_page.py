@@ -267,7 +267,7 @@ def add_to_tracker():
     elif chosen:
         from flip_analysis import arv_calculation
         pool = {c["address"]: c for c in card["comps"] + card["excluded_comps"]}
-        calc = arv_calculation(card.get("sqft"), [pool[a] for a in chosen])
+        calc = arv_calculation(card.get("sqft"), [pool[a] for a in chosen], anchor=chosen[0])
         if not calc:
             return jsonify({"error": "Can't work out an ARV from those comps"}), 400
         arv = calc["arv"]

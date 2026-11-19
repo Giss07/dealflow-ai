@@ -242,15 +242,22 @@ def test_js_arv_matches_python():
     sets.append((1_800, [{"address": "L", "sold_price": 635_000, "sqft": 1_566, "listed_ppsf": 405},
                          {"address": "V", "sold_price": 648_000, "sqft": 1_748, "listed_ppsf": 371},
                          {"address": "A", "sold_price": 645_000, "sqft": 1_630, "listed_ppsf": 396}]))
+    for _ in range(800):                                  # ties for the median, with and without an anchor
+        price = rnd.randrange(300_000, 900_000, 1_000)
+        comps = [{"address": f"t{k}", "sold_price": price if k < 3 else rnd.randrange(100_000, 1_200_000, 1_000),
+                  "sqft": rnd.randrange(800, 2_500), "listed_ppsf": rnd.choice([None, rnd.randrange(200, 700)])} for k in range(rnd.randint(3, 5))]
+        sets.append((rnd.randrange(800, 2_500), comps, rnd.choice([None, "t0", "t1", "t2", "t4", "nope"])))
+    sets = [x if len(x) == 3 else (x[0], x[1], None) for x in sets]
     js = subprocess.run(["node", "-e", f"""
         const f = require({json.dumps(os.path.join(HERE, 'dashboard/static/flip_calculator.js'))});
-        console.log(JSON.stringify({json.dumps(sets)}.map(([sq, cs]) => {{ const r = f.arvFromComps(sq, cs); return [r.arv, r.explain]; }})));"""],
+        console.log(JSON.stringify({json.dumps(sets)}.map(([sq, cs, an]) => {{ const r = f.arvFromComps(sq, cs, an); return [r.arv, r.explain]; }})));"""],
         capture_output=True, text=True, timeout=60)
     got = json.loads(js.stdout)
-    bad = [(sq, py["arv"], g[0]) for (sq, cs), g in zip(sets, got)
-           for py in [arv_calculation(sq, cs)] if py["arv"] != g[0] or py["explain"] != g[1]]
-    check(f"same ARV and explanation on {len(sets)} random comp sets", not bad, bad[:3])
-    check("Fillmore through JS: $648,000", got[-1][0] == 648_000, got[-1])
+    bad = [(sq, an, py["explain"], g[1]) for (sq, cs, an), g in zip(sets, got)
+           for py in [arv_calculation(sq, cs, anchor=an)] if py["arv"] != g[0] or py["explain"] != g[1]]
+    check(f"same ARV and explanation on {len(sets)} random comp sets (800 with median ties and anchors)", not bad, bad[:3])
+    fi = next(k for k, (sq, cs, an) in enumerate(sets) if sq == 1_800 and [c["address"] for c in cs] == ["L", "V", "A"])
+    check("Fillmore through JS: $648,000, median named", got[fi][0] == 648_000 and got[fi][1].startswith("Median $645,000 (A)"), got[fi])
 
 
 def test_js_matches_python():

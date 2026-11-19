@@ -54,10 +54,18 @@
   // middle) + (subject sqft − its sqft) × its Zillow $/sqft (listed_ppsf, or
   // sold price ÷ sqft), half-up to $100, held between the lowest and highest
   // comp sold price. comps: [{address, sold_price, sqft, listed_ppsf}].
-  function arvFromComps(subjectSqft, comps) {
+  // anchor: the Anchor Comp's address; it breaks a tie for the median sold price
+  // (otherwise the tied comp closest in sqft to the subject wins).
+  function arvFromComps(subjectSqft, comps, anchor) {
     if (!comps || !comps.length || !subjectSqft) return null;
     const ranked = [...comps].sort((a, b) => a.sold_price - b.sold_price);
-    const mid = ranked[Math.floor((ranked.length - 1) / 2)];
+    let mid = ranked[Math.floor((ranked.length - 1) / 2)];
+    const tied = ranked.filter(c => c.sold_price === mid.sold_price);
+    if (tied.length > 1) {
+      const byAnchor = tied.filter(c => anchor && c.address === anchor);
+      mid = byAnchor.length ? byAnchor[0]
+          : tied.reduce((best, c) => Math.abs(c.sqft - subjectSqft) < Math.abs(best.sqft - subjectSqft) ? c : best);
+    }
     const ppsf = mid.listed_ppsf || pyRound(mid.sold_price / mid.sqft);
     const diff = pyRound(subjectSqft - mid.sqft);
     const raw0 = diff * ppsf;
@@ -67,7 +75,8 @@
     const cap = raw > high ? 'highest' : raw < low ? 'lowest' : null;
     const arv = cap === 'highest' ? high : cap === 'lowest' ? low : raw;
     const fmt = n => '$' + Math.round(n).toLocaleString('en-US');
-    let explain = `Median ${fmt(mid.sold_price)} ${sizeAdj >= 0 ? '+' : '−'} size adj ${fmt(Math.abs(sizeAdj))} ` +
+    const name = String(mid.address || '').split(',')[0].trim();
+    let explain = `Median ${fmt(mid.sold_price)}${name ? ` (${name})` : ''} ${sizeAdj >= 0 ? '+' : '−'} size adj ${fmt(Math.abs(sizeAdj))} ` +
                   `(${Math.abs(diff).toLocaleString('en-US')} sqft × ${fmt(ppsf)}) = ${fmt(raw)}`;
     if (cap) explain += ` → capped at ${cap} comp ${fmt(arv)}`;
     return { arv: Math.round(arv), median_comp: mid.address, size_adj: sizeAdj, raw: Math.round(raw), cap, explain };

@@ -415,23 +415,30 @@ def arv_basis(comps, excluded):
     return note
 
 
-def arv_calculation(subject_sqft, comps):
+def arv_calculation(subject_sqft, comps, anchor=None):
     """The owner's rule (2026-11-18, third revision that day):
 
       median comp   = the comp with the middle sold price (with an even count,
-                      the one just below the middle — the conservative pick)
+                      the one just below the middle — the conservative pick).
+                      When several comps share that price: the Anchor Comp
+                      (`anchor`, an address) if it is one of them, otherwise
+                      the one closest in sqft to the subject.
       size adj      = (subject sqft − median comp sqft) × the median comp's
                       $/sqft as Zillow shows it, rounded to the nearest $100
       ARV           = median comp sold price + size adj, held between the
                       lowest and highest comp sold price
 
-    1485 N Fillmore Ave: Median $645,000 + size adj $67,300 (170 sqft × $396)
-    = $712,300 → capped at highest comp $648,000.
+    1485 N Fillmore Ave: Median $645,000 (1648 N Althea Ave) + size adj $67,300
+    (170 sqft × $396) = $712,300 → capped at highest comp $648,000.
     """
     if not comps or not subject_sqft:
         return None
     ranked = sorted(comps, key=lambda c: c["sold_price"])
     mid = ranked[(len(ranked) - 1) // 2]
+    tied = [c for c in ranked if c["sold_price"] == mid["sold_price"]]
+    if len(tied) > 1:
+        by_anchor = [c for c in tied if anchor and c.get("address") == anchor]
+        mid = by_anchor[0] if by_anchor else min(tied, key=lambda c: abs(c["sqft"] - subject_sqft))
     ppsf = mid.get("listed_ppsf") or round(mid["sold_price"] / mid["sqft"])
     diff = round(subject_sqft - mid["sqft"])
     # Half-up to the nearest $100 ($16,250 → $16,300); Python's round() would go to even ($16,200).
@@ -441,7 +448,8 @@ def arv_calculation(subject_sqft, comps):
     cap = "highest" if raw > high else "lowest" if raw < low else None
     arv = high if cap == "highest" else low if cap == "lowest" else raw
     sign = "+" if size_adj >= 0 else "−"
-    explain = (f"Median ${mid['sold_price']:,.0f} {sign} size adj ${abs(size_adj):,.0f} "
+    name = str(mid.get("address") or "").split(",")[0].strip()
+    explain = (f"Median ${mid['sold_price']:,.0f}{f' ({name})' if name else ''} {sign} size adj ${abs(size_adj):,.0f} "
                f"({abs(diff):,} sqft × ${ppsf:,.0f}) = ${raw:,.0f}")
     if cap:
         explain += f" → capped at {cap} comp ${arv:,.0f}"

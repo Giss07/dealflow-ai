@@ -361,14 +361,14 @@ def test_arv_formula():
     check("1485 N Fillmore Ave: $712,300 → capped at highest comp → ARV $648,000",
           (c["raw"], c["cap"], c["arv"]) == (712_300, "highest", 648_000), c)
     check("the math, as the card and See comps show it",
-          c["explain"] == "Median $645,000 + size adj $67,300 (170 sqft × $396) = $712,300 → capped at highest comp $648,000",
+          c["explain"] == "Median $645,000 (1648 N Althea Ave) + size adj $67,300 (170 sqft × $396) = $712,300 → capped at highest comp $648,000",
           c["explain"])
     mao, _ = max_allowable_offer(c["arv"], 54_000)
     check("…and its max offer with the $54,000 auto rehab", mao == max_allowable_offer(648_000, 54_000)[0], mao)
     smaller = fa.arv_calculation(1_600, fillmore)
     check("smaller subject subtracts: $645,000 − (30 sqft × $396 = $11,900) = $633,100 → floored at lowest $635,000",
           (smaller["size_adj"], smaller["raw"], smaller["cap"], smaller["arv"]) == (-11_900, 633_100, "lowest", 635_000)
-          and smaller["explain"].startswith("Median $645,000 − size adj $11,900 (30 sqft × $396)"), smaller["explain"])
+          and smaller["explain"].startswith("Median $645,000 (1648 N Althea Ave) − size adj $11,900 (30 sqft × $396)"), smaller["explain"])
     inside = fa.arv_calculation(1_637, fillmore)
     check("inside the range → no cap: $645,000 + (7 × $396 = $2,800) = $647,800",
           (inside["arv"], inside["cap"]) == (647_800, None) and "capped" not in inside["explain"], inside["explain"])
@@ -383,6 +383,19 @@ def test_arv_formula():
           fa.sale_price_per_sqft({"priceHistory": [{"event": "Sold", "time": t, "pricePerSquareFoot": 396}]}, t) == 396
           and fa.sale_price_per_sqft({}, t) is None)
     low2 = fa.analyze_listing(SUBJECT, [sold("a", 600_000), sold("b", 620_000)], no_pool_no_senior, now_ms=NOW)
+    # Ties for the median sold price: the anchor if tied, else the closest in sqft.
+    tie = [comp(600_000, 1_400, 430, "Low St"), comp(635_000, 1_496, 424, "1041 N Sunset Cir"),
+           comp(635_000, 1_649, 385, "937 N Quince Ave"), comp(700_000, 1_700, 412, "High St")]
+    t1 = fa.arv_calculation(1_547, tie)
+    check("tie, no anchor → the tied comp closest in sqft (Sunset Cir, 51 sqft off vs Quince 102)",
+          t1["median_comp"] == "1041 N Sunset Cir" and t1["explain"].startswith("Median $635,000 (1041 N Sunset Cir)"), t1["explain"])
+    t2 = fa.arv_calculation(1_547, tie, anchor="937 N Quince Ave")
+    check("tie, anchor is one of them → the anchor (Quince Ave)",
+          t2["median_comp"] == "937 N Quince Ave" and t2["explain"].startswith("Median $635,000 (937 N Quince Ave) − size adj"), t2["explain"])
+    t3 = fa.arv_calculation(1_547, tie, anchor="High St")
+    check("tie, anchor not one of them → closest in sqft again", t3["median_comp"] == "1041 N Sunset Cir", t3["median_comp"])
+    check("no tie → the anchor does not change the median",
+          fa.arv_calculation(1_800, fillmore, anchor="1730 N Vista Ave")["median_comp"] == "1648 N Althea Ave")
     check("2 comps on a listing → LOW CONFIDENCE", low2["confidence"] == "LOW CONFIDENCE" and low2["arv"] == 600_000,
           (low2["arv"], low2["confidence"]))
 
