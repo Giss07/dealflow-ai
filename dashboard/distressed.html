@@ -121,6 +121,13 @@
             font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
   .comp.excluded { opacity: .6; }
   .comp .why { color: #fdba74; font-size: 12px; margin-top: 3px; }
+  .comp .pick { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+  .comp input[type=checkbox] { width: 20px; height: 20px; margin-top: 1px; flex: 0 0 auto; accent-color: var(--blue); }
+  .anchor { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line);
+            background: var(--bg); color: #cbd5e1; cursor: pointer; margin-left: 4px; }
+  .anchor.on { background: #713f12; border-color: #854d0e; color: var(--yellow); cursor: default; }
+  .comp.picked { opacity: 1; }
+  .pickmsg { color: #fdba74; font-size: 13px; min-height: 18px; margin: 4px 0 2px; }
   .close { width: 100%; margin-top: 14px; padding: 12px; border-radius: 10px; border: 0; background: var(--gray-bg);
            color: var(--text); font-size: 15px; font-weight: 600; cursor: pointer; }
 
@@ -178,6 +185,7 @@
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
     <h2 id="sheet-title"></h2>
     <div class="sub" id="sheet-sub"></div>
+    <div class="pickmsg" id="pickmsg"></div>
     <div id="sheet-list"></div>
     <button class="close" onclick="closeComps()">Close</button>
   </div>
@@ -208,21 +216,47 @@ function clearAllEdits() {
   edits = {};
 }
 
+// ── Comp picks: which comps go to the tracker (anchor first), max 3 ──
+const allComps = c => [...c.comps, ...(c.excluded_comps || [])];
+const compBy = (c, a) => allComps(c).find(x => x.address === a);
+const defaultPick = c => c.tracker_comps || [];
+const pickOf = c => (edits[c.address] || {}).picked || defaultPick(c);
+const sameList = (a, b) => a.length === b.length && a.every((x, k) => x === b[k]);
+const compsEdited = c => { const p = (edits[c.address] || {}).picked; return !!p && !sameList(p, defaultPick(c)); };
+// O, P, Q order — anchor first, then the others closest first (as the server writes them).
+function trackerOrder(c) {
+  const [anchor, ...rest] = pickOf(c);
+  if (!anchor) return [];
+  return [anchor, ...rest.sort((x, y) => ((compBy(c, x) || {}).distance_mi || 0) - ((compBy(c, y) || {}).distance_mi || 0))];
+}
+function setPick(c, picked) {
+  const e = { ...(edits[c.address] || {}) };
+  if (sameList(picked, defaultPick(c))) delete e.picked; else e.picked = picked;
+  if (Object.keys(e).length) edits[c.address] = e; else delete edits[c.address];
+  saveEdits();
+}
+
 // Effective numbers for a card: the owner's edits, re-run through the flip calculator.
 function view(c) {
   const e = edits[c.address] || {};
-  const arv = e.arv ?? c.arv, rehab = e.rehab ?? c.rehab, fee = e.fee ?? FlipCalc.DEFAULTS.wholesale_fee;
-  const edited = e.arv != null || e.rehab != null || e.fee != null;
+  const pickEdited = compsEdited(c);
+  // ARV: a typed number wins; then the owner's checked comps through the same rule; then the search's.
+  const pickCalc = (pickEdited && e.arv == null)
+    ? FlipCalc.arvFromComps(c.sqft, pickOf(c).map(a => compBy(c, a)).filter(Boolean)) : null;
+  const arv = e.arv ?? (pickCalc ? pickCalc.arv : c.arv);
+  const rehab = e.rehab ?? c.rehab, fee = e.fee ?? FlipCalc.DEFAULTS.wholesale_fee;
+  const edited = e.arv != null || e.rehab != null || e.fee != null || pickEdited;
   let mao = c.mao, profit = c.profit_at_mao;
   if (edited && c.mao != null && arv != null && rehab != null) {
     const r = FlipCalc.maxAllowableOffer(arv, rehab, fee); mao = r.mao; profit = r.profit;
   }
   const pct = (mao != null && c.list_price) ? (c.list_price - mao) / c.list_price : null;
+  const lowConf = pickEdited ? pickOf(c).length < 3 : c.low_confidence;
   const check = (mao != null && arv && c.list_price && arv > 1.5 * c.list_price) ? 'ARV LOOKS TOO HIGH – CHECK COMPS'
-              : (c.low_confidence && mao != null) ? 'CHECK COMPS' : null;
+              : (lowConf && mao != null) ? 'CHECK COMPS' : null;
   const deal = check || pct == null ? null : pct <= 0.15 ? 'good' : pct <= 0.30 ? 'offer' : 'long';
   return { arv, rehab, fee, mao, profit, pct, check, deal, arvEdited: e.arv != null, rehabEdited: e.rehab != null,
-           feeEdited: e.fee != null };
+           feeEdited: e.fee != null, pickEdited, arvExplain: pickCalc ? pickCalc.explain : c.arv_explain };
 }
 
 function startEdit(i, field, el) {
@@ -292,7 +326,7 @@ function cardHtml(c, i) {
         <div class="prices">
           <div><span class="lbl">List</span><span class="price list">${money(c.list_price)}</span></div>
           <span class="arrow">→</span>
-          <div><span class="lbl">Max offer${v.arvEdited || v.rehabEdited || v.feeEdited ? ' (updated)' : ''}</span><span class="price">${money(v.mao)}</span></div>
+          <div><span class="lbl">Max offer${v.arvEdited || v.rehabEdited || v.feeEdited || v.pickEdited ? ' (updated)' : ''}</span><span class="price">${money(v.mao)}</span></div>
         </div>
         ${v.mao != null ? `<div class="below${tone}">${below}</div>` : '<div class="below">No offer reaches 10% profit at these numbers</div>'}
       </div>
@@ -303,7 +337,7 @@ function cardHtml(c, i) {
         <div class="stat"><span class="lbl">Profit @ max</span><b>${short(v.profit)}</b></div>
         <div class="stat"><span class="lbl">On market</span><b>${c.days_on_market ?? '—'} d</b></div>
       </div>
-      ${c.arv_explain ? `<div class="arvcalc">ARV: ${esc(c.arv_explain)}${v.arvEdited ? ` · <b>you set ${money(v.arv)}</b>` : ''}</div>` : ''}
+      ${v.arvExplain ? `<div class="arvcalc">${v.pickEdited ? '<span class="pill edited">comps edited</span><button class="reset" onclick="resetPick(' + i + ')">reset</button> ' : ''}ARV: ${esc(v.arvExplain)}${v.arvEdited ? ` · <b>you set ${money(v.arv)}</b>` : ''}</div>` : ''}
       <div class="buttons">
         ${c.zillow_url ? `<a href="${esc(c.zillow_url)}" target="_blank" rel="noopener">View on Zillow</a>` : ''}
         <button type="button" onclick="openComps(${i})" ${c.comps.length || (c.excluded_comps || []).length ? '' : 'disabled'}>See comps (${c.comps.length})</button>
@@ -392,33 +426,61 @@ $('search-form').addEventListener('submit', async ev => {
   }
 });
 
-function openComps(i) {
-  const c = cards[i];
-  $('sheet-title').textContent = c.street;
+let compsIdx = null;
+function openComps(i) { compsIdx = i; $('pickmsg').textContent = ''; renderComps(); $('sheet-bg').classList.add('open'); }
+
+function renderComps() {
+  const i = compsIdx, c = cards[i], v = view(c), picked = pickOf(c);
   const ex = c.excluded_comps || [];
-  const left = ex.length ? ` · ${ex.length} not used` : '';
-  $('sheet-sub').textContent = `ARV ${money(c.arv)} from ${c.comps.length} sold comp${c.comps.length === 1 ? '' : 's'}${left}`
-    + (c.arv_explain ? `\n${c.arv_explain}` : '');
-  const exHtml = ex.length ? `<div class="excl-h">Not used in ARV</div>` + ex.map(x => `
-    <div class="comp excluded">
-      <div>
-        <div class="a">${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(String(x.address).split(',')[0])}</a>` : esc(x.address)}</div>
-        <div class="m">Sold ${esc(x.sold_date)} · ${Math.round(x.sqft).toLocaleString('en-US')} sqft · ${(+x.distance_mi).toFixed(2)} mi</div>
-        <div class="why">${esc(x.reason)}</div>
-      </div>
+  $('sheet-title').textContent = c.street;
+  $('sheet-sub').innerHTML = `ARV ${money(v.arv)} · ${esc(v.arvExplain || '')}`
+    + `<br>Tick up to 3 comps for the tracker; ★ = Anchor Comp (column O).`
+    + (v.pickEdited ? ` <span class="pill edited">comps edited</span><button class="reset" onclick="resetPick(${i})">reset</button>` : '');
+  const row = (x, isExcluded) => {
+    const on = picked.includes(x.address), anchor = picked[0] === x.address;
+    const why = isExcluded ? `<div class="why">${esc(x.reason)}</div>`
+              : (x.in_arv === false ? '<div class="why">Not in ARV — only the best 3 comps are averaged</div>' : '');
+    return `
+    <div class="comp${isExcluded ? ' excluded' : ''}${on ? ' picked' : ''}">
+      <label class="pick">
+        <input type="checkbox" ${on ? 'checked' : ''} onchange="togglePick(${JSON.stringify(x.address).replace(/"/g, '&quot;')}, this)">
+        <div>
+          <div class="a">${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(String(x.address).split(',')[0])}</a>` : esc(x.address)}
+            ${isExcluded ? '' : `<span class="pill ${esc(x.remodeled)}">${x.remodeled === 'REMODELED' ? 'REMODELED' : 'UNKNOWN'}</span>`}
+            ${on ? (anchor ? '<span class="anchor on">★ Anchor</span>'
+                           : `<button type="button" class="anchor" onclick="event.preventDefault(); makeAnchor(${JSON.stringify(x.address).replace(/"/g, '&quot;')})">Make anchor</button>`) : ''}</div>
+          <div class="m">Sold ${esc(x.sold_date)} · ${Math.round(x.sqft).toLocaleString('en-US')} sqft · ${(+x.distance_mi).toFixed(2)} mi</div>
+          ${why}
+        </div>
+      </label>
       <div class="r"><b>${money(x.sold_price)}</b><div class="m">${money(x.price_per_sqft)}/sqft</div></div>
-    </div>`).join('') : '';
-  $('sheet-list').innerHTML = c.comps.map(x => `
-    <div class="comp${x.in_arv === false ? ' excluded' : ''}">
-      <div>
-        <div class="a">${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(String(x.address).split(',')[0])}</a>` : esc(x.address)}
-          <span class="pill ${esc(x.remodeled)}">${x.remodeled === 'REMODELED' ? 'REMODELED' : 'UNKNOWN'}</span></div>
-        <div class="m">Sold ${esc(x.sold_date)} · ${Math.round(x.sqft).toLocaleString('en-US')} sqft · ${(+x.distance_mi).toFixed(2)} mi</div>
-        ${x.in_arv === false ? '<div class="why">Not in ARV — only the best 3 comps are averaged</div>' : ''}
-      </div>
-      <div class="r"><b>${money(x.sold_price)}</b><div class="m">${money(x.price_per_sqft)}/sqft</div></div>
-    </div>`).join('') + exHtml;
-  $('sheet-bg').classList.add('open');
+    </div>`;
+  };
+  $('sheet-list').innerHTML = c.comps.map(x => row(x, false)).join('')
+    + (ex.length ? '<div class="excl-h">Not used in ARV</div>' + ex.map(x => row(x, true)).join('') : '');
+}
+
+function togglePick(address, box) {
+  const c = cards[compsIdx];
+  let picked = [...pickOf(c)];
+  if (box.checked) {
+    if (picked.length >= 3) { box.checked = false; $('pickmsg').textContent = 'Max 3 comps.'; return; }
+    picked.push(address);
+  } else {
+    picked = picked.filter(a => a !== address);       // unticking the anchor makes the next one the anchor
+  }
+  $('pickmsg').textContent = '';
+  setPick(c, picked); renderComps(); rerenderCard(compsIdx);
+}
+function makeAnchor(address) {
+  const c = cards[compsIdx];
+  setPick(c, [address, ...pickOf(c).filter(a => a !== address)]); renderComps(); rerenderCard(compsIdx);
+}
+function resetPick(i) {
+  const c = cards[i];
+  setPick(c, defaultPick(c));
+  if (compsIdx === i && $('sheet-bg').classList.contains('open')) renderComps();
+  rerenderCard(i);
 }
 function closeComps() { $('sheet-bg').classList.remove('open'); }
 
@@ -429,10 +491,11 @@ function openConfirm(i) {
   $('confirm-sub').textContent = c.address;
   $('offer').value = v.mao != null ? Math.round(v.mao) : '';
   $('confirm-rows').innerHTML = `
-    <span>Max offer</span><span>${money(v.mao)}${v.arvEdited || v.rehabEdited || v.feeEdited ? ' (updated)' : ''}</span>
-    <span>ARV</span><span>${money(v.arv)}${v.arvEdited ? ` (edited from ${money(c.arv)})` : ''}</span>
+    <span>Max offer</span><span>${money(v.mao)}${v.arvEdited || v.rehabEdited || v.feeEdited || v.pickEdited ? ' (updated)' : ''}</span>
+    <span>ARV</span><span>${money(v.arv)}${v.arvEdited ? ` (edited from ${money(c.arv)})` : v.pickEdited ? ' (from your comps)' : ''}</span>
     <span>Rehab</span><span>${money(v.rehab)}${v.rehabEdited ? ` (edited from ${money(c.rehab)})` : ''}</span>
-    <span>Wholesale fee</span><span>${money(v.fee)}${v.feeEdited ? ` (edited from ${money(FlipCalc.DEFAULTS.wholesale_fee)})` : ''}</span>`;
+    <span>Wholesale fee</span><span>${money(v.fee)}${v.feeEdited ? ` (edited from ${money(FlipCalc.DEFAULTS.wholesale_fee)})` : ''}</span>
+    <span>Comps${v.pickEdited ? ' (edited)' : ''}</span><span>${trackerOrder(c).map((a, k) => (k === 0 ? '★ ' : '') + esc(String(a).split(',')[0])).join('<br>') || '—'}</span>`;
   $('confirm-err').textContent = '';
   $('confirm-ok').disabled = false;
   $('confirm-bg').classList.add('open');
@@ -450,7 +513,8 @@ async function confirmAdd() {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({search_id: searchId, zip: c.zip, address: c.address, offer,
                             arv: v.arvEdited ? v.arv : null, rehab: v.rehabEdited ? v.rehab : null,
-                            fee: v.feeEdited ? v.fee : null})
+                            fee: v.feeEdited ? v.fee : null,
+                            comps: v.pickEdited ? pickOf(c) : null})
     });
     if (r.status === 401) { location.href = '/login'; return; }
     const d = await r.json();

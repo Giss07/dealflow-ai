@@ -127,7 +127,7 @@ def card(zip_code, listing):
     check = ("ARV LOOKS TOO HIGH – CHECK COMPS" if arv_too_high
              else "CHECK COMPS" if (low_conf and mao is not None) else None)
     street, _, rest = address.partition(", ")
-    return {
+    out = {
         "zip": zip_code, "address": address, "street": street, "city": rest.rsplit(",", 1)[0] if rest else "",
         "list_price": list_price, "mao": mao, "pct_below_list": pct_below,
         "arv": a.get("arv"), "rehab": r.get("amount"), "rehab_tier": r.get("tier"),
@@ -149,16 +149,34 @@ def card(zip_code, listing):
                    "sold_date": c.get("sold_date"), "sqft": c.get("sqft"),
                    "price_per_sqft": c.get("price_per_sqft"), "distance_mi": c.get("distance_mi"),
                    "remodeled": c.get("remodeled") or "UNKNOWN", "url": c.get("url"),
-                   "in_arv": c.get("in_arv", True)}
+                   "in_arv": c.get("in_arv", True), "listed_ppsf": c.get("listed_ppsf")}
                   for c in a.get("comps") or []],
         "skipped_fixers": a.get("skipped_fixers") or [],
         "excluded_comps": [{"address": c.get("address"), "sold_price": c.get("sold_price"),
                             "sold_date": c.get("sold_date"), "sqft": c.get("sqft"),
                             "price_per_sqft": c.get("price_per_sqft"), "distance_mi": c.get("distance_mi"),
                             "remodeled": c.get("remodeled") or "UNKNOWN", "reason": c.get("reason"),
-                            "url": c.get("url")}
+                            "url": c.get("url"), "listed_ppsf": c.get("listed_ppsf")}
                            for c in a.get("excluded_comps") or []],
+        "sqft": listing.get("sqft"),
     }
+    out["tracker_comps"] = default_tracker_comps(out)
+    return out
+
+
+def default_tracker_comps(card):
+    """Addresses of the 3 comps Add to Tracker writes by default, in O, P, Q
+    order: the median comp the ARV was built on (Anchor Comp), then the other
+    comps, closest first."""
+    comps = [c for c in card["comps"] if c.get("address")]
+    if not comps:
+        return []
+    anchor = next((c for c in comps if c["address"] == card.get("arv_median_comp")), None)
+    if anchor is None:                     # older saved search: the middle sold price
+        ranked = sorted(comps, key=lambda c: c.get("sold_price") or 0)
+        anchor = ranked[(len(ranked) - 1) // 2]
+    rest = sorted((c for c in comps if c is not anchor), key=lambda c: c.get("distance_mi") or 0)
+    return [c["address"] for c in [anchor] + rest[:2]]
 
 
 def sort_cards(cards):

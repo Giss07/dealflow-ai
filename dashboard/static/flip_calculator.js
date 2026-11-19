@@ -49,7 +49,38 @@
     return { mao, profit: flipCosts(mao, arv, repairs, fee).profit };
   }
 
-  const api = { DEFAULTS, flipCosts, maxAllowableOffer };
+  // The owner's ARV rule — a port of flip_analysis.arv_calculation:
+  // median comp (middle sold price; with an even count the one just below the
+  // middle) + (subject sqft − its sqft) × its Zillow $/sqft (listed_ppsf, or
+  // sold price ÷ sqft), half-up to $100, held between the lowest and highest
+  // comp sold price. comps: [{address, sold_price, sqft, listed_ppsf}].
+  function arvFromComps(subjectSqft, comps) {
+    if (!comps || !comps.length || !subjectSqft) return null;
+    const ranked = [...comps].sort((a, b) => a.sold_price - b.sold_price);
+    const mid = ranked[Math.floor((ranked.length - 1) / 2)];
+    const ppsf = mid.listed_ppsf || pyRound(mid.sold_price / mid.sqft);
+    const diff = pyRound(subjectSqft - mid.sqft);
+    const raw0 = diff * ppsf;
+    const sizeAdj = Math.sign(raw0) * Math.floor(Math.abs(raw0) / 100 + 0.5) * 100;
+    const raw = mid.sold_price + sizeAdj;
+    const low = ranked[0].sold_price, high = ranked[ranked.length - 1].sold_price;
+    const cap = raw > high ? 'highest' : raw < low ? 'lowest' : null;
+    const arv = cap === 'highest' ? high : cap === 'lowest' ? low : raw;
+    const fmt = n => '$' + Math.round(n).toLocaleString('en-US');
+    let explain = `Median ${fmt(mid.sold_price)} ${sizeAdj >= 0 ? '+' : '−'} size adj ${fmt(Math.abs(sizeAdj))} ` +
+                  `(${Math.abs(diff).toLocaleString('en-US')} sqft × ${fmt(ppsf)}) = ${fmt(raw)}`;
+    if (cap) explain += ` → capped at ${cap} comp ${fmt(arv)}`;
+    return { arv: Math.round(arv), median_comp: mid.address, size_adj: sizeAdj, raw: Math.round(raw), cap, explain };
+  }
+  // Python's round(): halves go to the even neighbour (round(2.5) == 2).
+  function pyRound(x) {
+    const f = Math.floor(x), d = x - f;
+    if (d > 0.5) return f + 1;
+    if (d < 0.5) return f;
+    return f % 2 === 0 ? f : f + 1;
+  }
+
+  const api = { DEFAULTS, flipCosts, maxAllowableOffer, arvFromComps };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.FlipCalc = api;
 })(typeof window !== 'undefined' ? window : globalThis);

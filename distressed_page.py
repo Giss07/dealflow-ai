@@ -196,18 +196,36 @@ def _money_or_none(v, name, upper=50_000_000):
     return round(n)
 
 
-def tracker_comps(card):
-    """[(address, zillow_url)] for O, P, Q: the median comp the ARV was built on
-    (Anchor Comp), then the other comps, closest first — three at most."""
-    comps = [c for c in card["comps"] if c.get("address")]
-    if not comps:
-        return []
-    anchor = next((c for c in comps if c["address"] == card.get("arv_median_comp")), None)
-    if anchor is None:                     # older saved search: the middle sold price
-        ranked = sorted(comps, key=lambda c: c.get("sold_price") or 0)
-        anchor = ranked[(len(ranked) - 1) // 2]
-    rest = sorted((c for c in comps if c is not anchor), key=lambda c: c.get("distance_mi") or 0)
-    return [(c["address"], c.get("url") or "") for c in [anchor] + rest[:2]]
+def tracker_comps(card, chosen=None):
+    """[(address, zillow_url)] for O, P, Q.
+
+    chosen: the owner's checked comps from "See comps", anchor first — any of
+    the card's comps or its not-used-in-ARV comps, at most 3. Without it, the
+    default pick (median comp as anchor, then the closest). Addresses are
+    matched against the saved search, and links come from there too."""
+    pool = {c["address"]: c for c in card["comps"] + card.get("excluded_comps", []) if c.get("address")}
+    if chosen is None:
+        chosen = report.default_tracker_comps(card)
+    picked = [pool[a] for a in chosen]
+    anchor, rest = picked[:1], sorted(picked[1:], key=lambda c: c.get("distance_mi") or 0)
+    return [(c["address"], c.get("url") or "") for c in anchor + rest]
+
+
+def _chosen_comps(card, body_comps):
+    """Validate the page's comp choice → list of addresses, anchor first, or None."""
+    if body_comps in (None, []):
+        return None
+    if not isinstance(body_comps, list) or not all(isinstance(a, str) for a in body_comps):
+        raise ValueError("comps must be a list of addresses")
+    if len(body_comps) > 3:
+        raise ValueError("Max 3 comps")
+    if len(set(body_comps)) != len(body_comps):
+        raise ValueError("A comp is listed twice")
+    known = {c["address"] for c in card["comps"] + card.get("excluded_comps", [])}
+    unknown = [a for a in body_comps if a not in known]
+    if unknown:
+        raise ValueError(f"Not a comp of this property: {unknown[0]}")
+    return body_comps
 
 
 @bp.route("/api/distressed/tracker", methods=["POST"])
@@ -238,7 +256,23 @@ def add_to_tracker():
     card = report.card(str(body.get("zip")), lst)
     if card["mao"] is None:
         return jsonify({"error": "This property has no max offer, so it can't go to the tracker from here"}), 400
-    arv = arv_in if arv_in is not None else round(card["arv"])
+    try:
+        chosen = _chosen_comps(card, body.get("comps"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    # ARV: a typed ARV wins; otherwise the owner's checked comps, run through the
+    # same rule as the search; otherwise the search's ARV.
+    if arv_in is not None:
+        arv = arv_in
+    elif chosen:
+        from flip_analysis import arv_calculation
+        pool = {c["address"]: c for c in card["comps"] + card["excluded_comps"]}
+        calc = arv_calculation(card.get("sqft"), [pool[a] for a in chosen])
+        if not calc:
+            return jsonify({"error": "Can't work out an ARV from those comps"}), 400
+        arv = calc["arv"]
+    else:
+        arv = round(card["arv"])
     rehab = rehab_in if rehab_in is not None else round(card["rehab"] or 0)
     fee = {"wholesale_fee": fee_in} if fee_in is not None else {}
     mao, _ = max_allowable_offer(arv, rehab, **fee)
@@ -246,7 +280,7 @@ def add_to_tracker():
         return jsonify({"error": "No offer reaches a 10% profit at that ARV, rehab and wholesale fee"}), 400
     try:
         result = tracker_sheet.add_property(card["address"], card["zillow_url"], arv, offer, rehab,
-                                            tracker_comps(card))
+                                            tracker_comps(card, chosen))
     except Exception as e:
         logger.error(f"[distressed] add to tracker failed for {card['address']}: {e}", exc_info=True)
         return jsonify({"error": f"Couldn't write to the tracker sheet: {type(e).__name__}"}), 502

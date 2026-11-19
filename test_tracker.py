@@ -150,17 +150,17 @@ def test_endpoint():
     print("\n=== POST /api/distressed/tracker ===")
     import app as webapp
     from database import DistressedSearch, get_session
-    listing = {"address": "1485 N Fillmore Ave, Rialto, CA 92376", "price": 600_000, "days": 9,
+    listing = {"address": "1485 N Fillmore Ave, Rialto, CA 92376", "price": 600_000, "days": 9, "sqft": 1_800,
                "analysis": {"arv": 648_000, "mao": 461_000, "mao_vs_list_pct": -0.23, "profit_at_mao": 64_800,
                             "rehab": {"tier": "light", "per_sqft": 30, "amount": 54_000}, "confidence": "OK",
                             "comp_flags": [], "comps_used": 3, "home_type": "SINGLE_FAMILY",
                             "zillow_url": "https://www.zillow.com/homedetails/1485/",
                             "arv_calc": {"median_comp": "1648 N Althea Ave, Rialto, CA 92376"},
                             "comps": [{"address": a, "sold_price": p, "distance_mi": d, "url": f"https://z/{n}",
-                                       "price_per_sqft": 400, "remodeled": "REMODELED"}
-                                      for n, (a, p, d) in enumerate([("19449 Lurelane St, Rialto, CA 92376", 635_000, 0.38),
-                                                                     ("1730 N Vista Ave, Rialto, CA 92376", 648_000, 0.47),
-                                                                     ("1648 N Althea Ave, Rialto, CA 92376", 645_000, 0.25)])]}}
+                                       "price_per_sqft": 400, "remodeled": "REMODELED", "sqft": q, "listed_ppsf": z}
+                                      for n, (a, p, d, q, z) in enumerate([("19449 Lurelane St, Rialto, CA 92376", 635_000, 0.38, 1566, 405),
+                                                                     ("1730 N Vista Ave, Rialto, CA 92376", 648_000, 0.47, 1748, 371),
+                                                                     ("1648 N Althea Ave, Rialto, CA 92376", 645_000, 0.25, 1630, 396)])]}}
     db = get_session()
     row = DistressedSearch(zips="92376", status="completed", zips_done=1,
                            result=json.dumps({"92376": {"status": "ok", "listings": [listing]}}))
@@ -181,6 +181,20 @@ def test_endpoint():
     check("edited ARV / rehab go to D / F, the typed offer to E", calls[-1][2:5] == (650_000, 470_000, 60_000), calls[-1][2:5])
     check("no notes are sent anywhere", len(calls[-1]) == 6 and not any("Distressed" in str(x) for x in calls[-1]))
     check("an edited wholesale fee is accepted", post(offer=480_000, fee=10_000).status_code == 200)
+    from flip_analysis import arv_calculation
+    picked = ["1730 N Vista Ave, Rialto, CA 92376", "1648 N Althea Ave, Rialto, CA 92376"]
+    r = post(offer=450_000, comps=picked)
+    exp = arv_calculation(1_800, [c for c in listing["analysis"]["comps"] if c["address"] in picked])["arv"]
+    check("checked comps: Vista is the anchor (O), Althea next; links from the saved search",
+          r.status_code == 200 and calls[-1][5] == [("1730 N Vista Ave, Rialto, CA 92376", "https://z/1"),
+                                                    ("1648 N Althea Ave, Rialto, CA 92376", "https://z/2")], calls[-1][5])
+    check("ARV recomputed on the server from the checked comps", calls[-1][2] == exp, (calls[-1][2], exp))
+    post(offer=450_000, comps=picked, arv=700_000)
+    check("…but a typed ARV still wins", calls[-1][2] == 700_000, calls[-1][2])
+    four = [c["address"] for c in listing["analysis"]["comps"]] + ["x"]
+    check("more than 3 comps → 400 'Max 3 comps'", post(offer=1, comps=four).get_json()["error"] == "Max 3 comps")
+    check("a comp that isn't this property's → 400", post(offer=1, comps=["9 Other St"]).status_code == 400)
+    check("the same comp twice → 400", post(offer=1, comps=[picked[0], picked[0]]).status_code == 400)
     check("a fee so high no offer works → 400 that says so",
           post(offer=1, fee=900_000).status_code == 400 and "wholesale fee" in post(offer=1, fee=900_000).get_json()["error"])
     check("nonsense fee → 400", post(offer=480_000, fee="abc").status_code == 400 and post(offer=480_000, fee=-1).status_code == 400)
@@ -197,10 +211,35 @@ def test_endpoint():
     check("page: Add to Tracker, In tracker, Already in tracker; no 'Download for agent'",
           all(t in page for t in ("Add to Tracker", "✓ In tracker", "Already in tracker", "Download all (CSV)"))
           and "Download for agent" not in page)
+    check("page: comp checkboxes, anchor, 'Max 3 comps.', and the pick goes to the server",
+          all(t in page for t in ("togglePick(", "Make anchor", "Max 3 comps.", "comps: v.pickEdited ? pickOf(c) : null")))
     check("page: the wholesale fee is an editable number and goes to the server",
           "editable('fee', 'Wholesale fee'" in page and "fee: v.feeEdited ? v.fee : null" in page)
     check("page loads the JS calculator", '<script src="/static/flip_calculator.js">' in page
           and client.get("/static/flip_calculator.js").status_code == 200)
+
+
+def test_js_arv_matches_python():
+    print("\n=== JavaScript ARV rule = Python ARV rule ===")
+    from flip_analysis import arv_calculation
+    rnd = random.Random(11)
+    sets = []
+    for _ in range(1500):
+        comps = [{"address": f"c{k}", "sold_price": rnd.randrange(150_000, 1_500_000, 500), "sqft": rnd.randrange(600, 3_500),
+                  "listed_ppsf": rnd.choice([None, rnd.randrange(150, 900)])} for k in range(rnd.randint(1, 5))]
+        sets.append((rnd.choice([rnd.randrange(600, 3_600), 1_500.5]), comps))
+    sets.append((1_800, [{"address": "L", "sold_price": 635_000, "sqft": 1_566, "listed_ppsf": 405},
+                         {"address": "V", "sold_price": 648_000, "sqft": 1_748, "listed_ppsf": 371},
+                         {"address": "A", "sold_price": 645_000, "sqft": 1_630, "listed_ppsf": 396}]))
+    js = subprocess.run(["node", "-e", f"""
+        const f = require({json.dumps(os.path.join(HERE, 'dashboard/static/flip_calculator.js'))});
+        console.log(JSON.stringify({json.dumps(sets)}.map(([sq, cs]) => {{ const r = f.arvFromComps(sq, cs); return [r.arv, r.explain]; }})));"""],
+        capture_output=True, text=True, timeout=60)
+    got = json.loads(js.stdout)
+    bad = [(sq, py["arv"], g[0]) for (sq, cs), g in zip(sets, got)
+           for py in [arv_calculation(sq, cs)] if py["arv"] != g[0] or py["explain"] != g[1]]
+    check(f"same ARV and explanation on {len(sets)} random comp sets", not bad, bad[:3])
+    check("Fillmore through JS: $648,000", got[-1][0] == 648_000, got[-1])
 
 
 def test_js_matches_python():
@@ -240,6 +279,7 @@ if __name__ == "__main__":
     test_add_row()
     test_endpoint()
     test_js_matches_python()
+    test_js_arv_matches_python()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.stdout.flush()
     os._exit(1 if FAILS else 0)
