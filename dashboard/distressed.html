@@ -119,11 +119,14 @@
   .pill.UNKNOWN { background: var(--gray-bg); color: #cbd5e1; }
   .excl-h { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted);
             font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
-  .comp.excluded { opacity: .6; }
+  .comp.excluded .a, .comp.excluded .m, .comp.excluded .r { opacity: .6; }   /* text only: the checkbox stays live */
+  .comp.excluded.picked .a, .comp.excluded.picked .m, .comp.excluded.picked .r { opacity: 1; }
+  .warn { display: inline-block; margin-top: 4px; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+          background: #7c2d12; color: #fdba74; }
   .comp .why { color: #fdba74; font-size: 12px; margin-top: 3px; }
   .comp .pick { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
   .comp input[type=checkbox] { width: 20px; height: 20px; margin-top: 1px; flex: 0 0 auto; accent-color: var(--blue); }
-  .anchor { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line);
+  .anchor { display: inline-block; white-space: nowrap; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line);
             background: var(--bg); color: #cbd5e1; cursor: pointer; margin-left: 4px; }
   .anchor.on { background: #713f12; border-color: #854d0e; color: var(--yellow); cursor: default; }
   .comp.picked { opacity: 1; }
@@ -214,6 +217,15 @@ function saveEdits() {
 function clearAllEdits() {
   try { Object.keys(localStorage).filter(k => k.startsWith('dd-edits-')).forEach(k => localStorage.removeItem(k)); } catch (e) {}
   edits = {};
+}
+
+// Short label for why the search left a comp out ("Excluded: public record only").
+function excludedLabel(reason) {
+  const r = String(reason || '');
+  return 'Excluded: ' + (r.startsWith('Fixer') ? 'fixer'
+    : /public record/i.test(r) ? 'public record only'
+    : r.startsWith('Lot ') ? 'lot over 2× the subject'
+    : /outlier/i.test(r) ? '$/sqft outlier' : 'not used in ARV');
 }
 
 // ── Comp picks: which comps go to the tracker (anchor first), max 3 ──
@@ -438,7 +450,7 @@ function renderComps() {
     + (v.pickEdited ? ` <span class="pill edited">comps edited</span><button class="reset" onclick="resetPick(${i})">reset</button>` : '');
   const row = (x, isExcluded) => {
     const on = picked.includes(x.address), anchor = picked[0] === x.address;
-    const why = isExcluded ? `<div class="why">${esc(x.reason)}</div>`
+    const why = isExcluded ? `<span class="warn">${esc(excludedLabel(x.reason))}</span><div class="why">${esc(x.reason)}</div>`
               : (x.in_arv === false ? '<div class="why">Not in ARV — only the best 3 comps are averaged</div>' : '');
     return `
     <div class="comp${isExcluded ? ' excluded' : ''}${on ? ' picked' : ''}">
@@ -495,7 +507,10 @@ function openConfirm(i) {
     <span>ARV</span><span>${money(v.arv)}${v.arvEdited ? ` (edited from ${money(c.arv)})` : v.pickEdited ? ' (from your comps)' : ''}</span>
     <span>Rehab</span><span>${money(v.rehab)}${v.rehabEdited ? ` (edited from ${money(c.rehab)})` : ''}</span>
     <span>Wholesale fee</span><span>${money(v.fee)}${v.feeEdited ? ` (edited from ${money(FlipCalc.DEFAULTS.wholesale_fee)})` : ''}</span>
-    <span>Comps${v.pickEdited ? ' (edited)' : ''}</span><span>${trackerOrder(c).map((a, k) => (k === 0 ? '★ ' : '') + esc(String(a).split(',')[0])).join('<br>') || '—'}</span>`;
+    <span>Comps${v.pickEdited ? ' (edited)' : ''}</span><span>${trackerOrder(c).map((a, k) => {
+      const x = compBy(c, a), ex = (c.excluded_comps || []).includes(x);
+      return (k === 0 ? '★ ' : '') + esc(String(a).split(',')[0]) + (ex ? ` <span class="warn">${esc(excludedLabel(x.reason))}</span>` : '');
+    }).join('<br>') || '—'}</span>`;
   $('confirm-err').textContent = '';
   $('confirm-ok').disabled = false;
   $('confirm-bg').classList.add('open');

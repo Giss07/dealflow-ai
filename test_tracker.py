@@ -195,6 +195,14 @@ def test_endpoint():
     check("more than 3 comps → 400 'Max 3 comps'", post(offer=1, comps=four).get_json()["error"] == "Max 3 comps")
     check("a comp that isn't this property's → 400", post(offer=1, comps=["9 Other St"]).status_code == 400)
     check("the same comp twice → 400", post(offer=1, comps=[picked[0], picked[0]]).status_code == 400)
+    listing["analysis"]["excluded_comps"] = [{"address": "530 W Rialto Ave, Rialto, CA 92376", "sold_price": 1_500_000,
+                                              "sqft": 900, "distance_mi": 0.41, "url": "https://z/land", "listed_ppsf": None,
+                                              "reason": "Sold by public record only (not on the MLS)"}]
+    db = get_session(); row = db.get(DistressedSearch, sid)
+    row.result = json.dumps({"92376": {"status": "ok", "listings": [listing]}}); db.commit(); db.close()
+    r = post(offer=450_000, comps=["1648 N Althea Ave, Rialto, CA 92376", "530 W Rialto Ave, Rialto, CA 92376"])
+    check("an excluded ('Not used in ARV') comp can be picked and is written with its link",
+          r.status_code == 200 and ("530 W Rialto Ave, Rialto, CA 92376", "https://z/land") in calls[-1][5], calls[-1][5])
     check("a fee so high no offer works → 400 that says so",
           post(offer=1, fee=900_000).status_code == 400 and "wholesale fee" in post(offer=1, fee=900_000).get_json()["error"])
     check("nonsense fee → 400", post(offer=480_000, fee="abc").status_code == 400 and post(offer=480_000, fee=-1).status_code == 400)
@@ -213,6 +221,9 @@ def test_endpoint():
           and "Download for agent" not in page)
     check("page: comp checkboxes, anchor, 'Max 3 comps.', and the pick goes to the server",
           all(t in page for t in ("togglePick(", "Make anchor", "Max 3 comps.", "comps: v.pickEdited ? pickOf(c) : null")))
+    check("page: excluded comps keep a live checkbox (only their text is dimmed) and get a warning",
+          ".comp.excluded .a, .comp.excluded .m, .comp.excluded .r { opacity: .6; }" in page
+          and ".comp.excluded { opacity" not in page and "public record only" in page and "excludedLabel(" in page)
     check("page: the wholesale fee is an editable number and goes to the server",
           "editable('fee', 'Wholesale fee'" in page and "fee: v.feeEdited ? v.fee : null" in page)
     check("page loads the JS calculator", '<script src="/static/flip_calculator.js">' in page
