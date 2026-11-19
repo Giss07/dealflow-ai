@@ -311,6 +311,29 @@ class DistressedSearch(Base):
     completed_at = Column(DateTime)
 
 
+class PropertyDecision(Base):
+    """The owner's decision on a Distressed Deals property, kept across searches.
+
+    One row per property (address_key = normalized street + ZIP, as
+    tracker_sheet.address_key builds it). decision:
+      passed — hidden from the main list; comes back when the list price drops
+               below list_price (the price when it was passed)
+      sent   — added to the tracker from the page
+      active — the owner pressed Undo: show it in the main list even if the
+               tracker sheet already has it
+    """
+    __tablename__ = "property_decisions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    address_key = Column(String(255), unique=True, index=True)
+    address = Column(String(255))
+    decision = Column(String(20))
+    reason = Column(String(100))
+    list_price = Column(Float)
+    tracker_row = Column(Integer)
+    decided_at = Column(DateTime, default=datetime.utcnow)
+
+
 def scan_job_to_dict(job):
     return {
         "id": job.id,

@@ -60,6 +60,16 @@
   .urow .un { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .urow .ur { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .urow a { color: #93c5fd; white-space: nowrap; }
+  .urow.done { grid-template-columns: minmax(0, 2fr) auto minmax(0, 1.5fr) auto auto; }
+  .undo { color: #93c5fd; font-size: 13px; background: none; border: 0; padding: 0; cursor: pointer;
+          text-decoration: underline; white-space: nowrap; }
+  .tag.drop { background: #1e3a8a; color: #bfdbfe; }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .pass { flex: 0 0 auto; font-size: 13px; font-weight: 600; padding: 6px 12px; border-radius: 999px;
+          border: 1px solid var(--line); background: var(--bg); color: var(--muted); cursor: pointer; }
+  .pass:hover { border-color: var(--muted); color: var(--text); }
+  .confirm select { width: 100%; font-size: 17px; padding: 10px 12px; border-radius: 10px;
+                    border: 1px solid var(--line); background: var(--bg); color: var(--text); }
 
   .prices { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
   .price { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -145,6 +155,12 @@
     .urow .un.dom { grid-column: 2; grid-row: 2; text-align: right; color: var(--muted); }
     .urow a { grid-column: 2; grid-row: 3; text-align: right; }
     .urow .un.uprice { grid-column: 2; grid-row: 1; text-align: right; }
+    .urow.done { grid-template-columns: minmax(0, 1fr) auto auto; }
+    .urow.done .ua { grid-column: 1; grid-row: 1; }
+    .urow.done .un.uprice { grid-column: 2 / 4; grid-row: 1; }
+    .urow.done .ur { grid-column: 1; grid-row: 2; }
+    .urow.done a { grid-column: 2; grid-row: 2; }
+    .urow.done .undo { grid-column: 3; grid-row: 2; text-align: right; }
     .sheet-bg { align-items: flex-end; padding: 0; }
     .sheet { border-radius: 16px 16px 0 0; max-height: 88vh;
              padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
@@ -166,7 +182,33 @@
 
   <div class="status" id="status"></div>
   <div class="grid" id="cards"></div>
-  <div id="unpriced"></div>
+  <div id="bottom">
+    <div id="unpriced"></div>
+    <div id="sent"></div>
+    <div id="passed"></div>
+  </div>
+</div>
+
+<div class="sheet-bg" id="pass-bg" onclick="if (event.target === this) closePass()">
+  <div class="sheet confirm" role="dialog" aria-modal="true" aria-labelledby="pass-title">
+    <h2 id="pass-title">Pass on this property</h2>
+    <div class="sub" id="pass-sub"></div>
+    <label for="pass-reason">Reason (optional)</label>
+    <select id="pass-reason">
+      <option value="">No reason</option>
+      <option>Price too high</option>
+      <option>Bad area</option>
+      <option>Too much rehab</option>
+      <option>Bad comps</option>
+      <option>Other</option>
+    </select>
+    <div class="rows"><span></span><span class="note">It moves to “Passed”, and stays there in later searches unless the list price drops.</span></div>
+    <div class="err" id="pass-err"></div>
+    <div class="acts">
+      <button class="no" type="button" onclick="closePass()">Cancel</button>
+      <button class="ok" type="button" id="pass-ok" onclick="confirmPass()">Pass</button>
+    </div>
+  </div>
 </div>
 
 <div class="sheet-bg" id="confirm-bg" onclick="if (event.target === this) closeConfirm()">
@@ -314,6 +356,7 @@ function trackerButton(c, i) {
 function cardHtml(c, i) {
   const v = view(c);
   const tags = [];
+  if (c.price_drop) tags.push(`<span class="tag drop">PRICE DROPPED ${money(c.price_drop)}</span>`);
   const DEAL = {good: ['good', 'GOOD DEAL'], offer: ['offer', 'MAKE AN OFFER'], long: ['gray', 'LONG SHOT']};
   if (v.check) tags.push(`<span class="tag check">${esc(v.check)}</span>`);
   else if (v.deal) tags.push(`<span class="tag ${DEAL[v.deal][0]}">${DEAL[v.deal][1]}</span>`);
@@ -329,9 +372,12 @@ function cardHtml(c, i) {
   const below = v.pct == null ? '' : v.pct >= 0 ? `${(v.pct * 100).toFixed(1)}% below list` : `${(-v.pct * 100).toFixed(1)}% above list`;
   return `
     <article class="card${tone}" data-i="${i}">
-      <div>
-        <div class="addr">${esc(c.street)}</div>
-        <div class="city">${esc(c.city)}</div>
+      <div class="head">
+        <div>
+          <div class="addr">${esc(c.street)}</div>
+          <div class="city">${esc(c.city)}</div>
+        </div>
+        <button type="button" class="pass" onclick="openPass(${i})">Pass</button>
       </div>
       ${tags.length ? `<div class="tags">${tags.join('')}</div>` : ''}
       <div>
@@ -358,7 +404,21 @@ function cardHtml(c, i) {
     </article>`;
 }
 
-function unpricedRow(c) {
+// One line in "Sent to tracker" / "Passed", with Undo back to the main list.
+function decidedRow(c, i) {
+  const why = c.decision === 'passed' ? (c.pass_reason || 'No reason')
+            : c.tracker_row ? `Row ${c.tracker_row}${c.tracker === 'archive' ? ' (archive)' : ''}` : 'In tracker';
+  return `
+    <div class="urow done">
+      <div class="ua" title="${esc(c.address)}">${esc(c.street)}<span class="ur">, ${esc(c.city)}</span></div>
+      <div class="un uprice">${money(c.list_price)}</div>
+      <div class="ur">${esc(why)}</div>
+      ${c.zillow_url ? `<a href="${esc(c.zillow_url)}" target="_blank" rel="noopener">Zillow ↗</a>` : '<span></span>'}
+      <button type="button" class="undo" onclick="undoDecision(${i})">Undo</button>
+    </div>`;
+}
+
+function unpricedRow(c, i) {
   return `
     <div class="urow">
       <div class="ua" title="${esc(c.address)}">${esc(c.street)}<span class="ur">, ${esc(c.city)}</span></div>
@@ -366,13 +426,15 @@ function unpricedRow(c) {
       <div class="un dom">${c.days_on_market ?? '—'} d</div>
       <div class="ur" title="${esc(c.unpriced_reason)}">${esc(c.unpriced_reason)}</div>
       ${c.zillow_url ? `<a href="${esc(c.zillow_url)}" target="_blank" rel="noopener">Zillow ↗</a>` : '<span></span>'}
+      <button type="button" class="undo" onclick="openPass(${i})">Pass</button>
     </div>`;
 }
 
+let running = false;
 function render(data) {
   cards = data.cards || [];
   loadEdits();
-  const running = data.status === 'running';
+  running = data.status === 'running';
   const done = data.zips_done, total = data.zips.length;
   let status = running
     ? `Searching ${data.zips.join(', ')} — ${done} of ${total} ZIP${total > 1 ? 's' : ''} done. This takes a few minutes per ZIP.`
@@ -384,21 +446,76 @@ function render(data) {
   if (!running && cards.length) status += ` <a href="/api/distressed/search/${data.id}/csv">Download all (CSV)</a>`;
   $('status').innerHTML = status;
   $('go').disabled = running;
-  // Priced deals as big cards (indices into `cards` keep "See comps" working);
-  // the ones with no max offer collapse into one-line rows at the bottom.
-  const priced = cards.map((c, i) => [c, i]).filter(([c]) => c.mao != null);
-  const unpriced = cards.filter(c => c.mao == null);
-  $('cards').innerHTML = priced.length ? priced.map(([c, i]) => cardHtml(c, i)).join('')
-    : (running || unpriced.length ? '' : '<div class="empty">No distressed listings found.</div>');
-  $('unpriced').innerHTML = unpriced.length ? `
-    <details class="unpriced">
-      <summary>Couldn’t price (${unpriced.length})</summary>
-      ${unpriced.map(unpricedRow).join('')}
-    </details>` : '';
+  renderLists();
   if (!deepLinkDone && cards.length) {          // #comps=N opens that card's comps (shareable link)
     const m = location.hash.match(/comps=(\d+)/);
     if (m && cards[+m[1]]) { openComps(+m[1]); deepLinkDone = true; }
   }
+}
+
+// Main list = properties not decided on yet. Priced ones as big cards (indices
+// into `cards` keep "See comps" working); the ones with no max offer, and the
+// sent / passed ones, collapse into one-line rows at the bottom.
+function renderLists() {
+  const all = cards.map((c, i) => [c, i]);
+  const open = all.filter(([c]) => !c.decision);
+  const priced = open.filter(([c]) => c.mao != null), unpriced = open.filter(([c]) => c.mao == null);
+  const sent = all.filter(([c]) => c.decision === 'sent'), passed = all.filter(([c]) => c.decision === 'passed');
+  $('cards').innerHTML = priced.length ? priced.map(([c, i]) => cardHtml(c, i)).join('')
+    : running ? '' : `<div class="empty">${cards.length ? 'Nothing new to decide on.' : 'No distressed listings found.'}</div>`;
+  const section = (el, title, list, rowFn) => {
+    const wasOpen = !!$(el).querySelector('details[open]');
+    $(el).innerHTML = list.length ? `
+    <details class="unpriced"${wasOpen ? ' open' : ''}>
+      <summary>${title} (${list.length})</summary>
+      ${list.map(([c, i]) => rowFn(c, i)).join('')}
+    </details>` : '';
+  };
+  section('unpriced', 'Couldn’t price', unpriced, unpricedRow);
+  section('sent', 'Sent to tracker', sent, decidedRow);
+  section('passed', 'Passed', passed, decidedRow);
+}
+
+async function postDecision(c, action, reason) {
+  const r = await fetch('/api/distressed/decision', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({search_id: searchId, zip: c.zip, address: c.address, action, reason: reason || null})
+  });
+  if (r.status === 401) { location.href = '/login'; return false; }
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || 'Could not save');
+  return true;
+}
+
+let passIdx = null;
+function openPass(i) {
+  passIdx = i;
+  $('pass-sub').textContent = cards[i].address;
+  $('pass-reason').value = '';
+  $('pass-err').textContent = '';
+  $('pass-ok').disabled = false;
+  $('pass-bg').classList.add('open');
+}
+function closePass() { $('pass-bg').classList.remove('open'); passIdx = null; }
+async function confirmPass() {
+  const c = cards[passIdx], reason = $('pass-reason').value;
+  $('pass-ok').disabled = true;
+  try {
+    if (!await postDecision(c, 'pass', reason)) return;
+    Object.assign(c, {decision: 'passed', pass_reason: reason || null, price_drop: null});
+    closePass(); renderLists();
+  } catch (e) {
+    $('pass-err').textContent = e.message;
+    $('pass-ok').disabled = false;
+  }
+}
+async function undoDecision(i) {
+  const c = cards[i];
+  try {
+    if (!await postDecision(c, 'undo')) return;
+    c.decision = null; c.price_drop = null;
+    renderLists();
+  } catch (e) { alert(e.message); }
 }
 
 async function poll() {
@@ -534,15 +651,16 @@ async function confirmAdd() {
     if (r.status === 401) { location.href = '/login'; return; }
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Could not add');
-    if (d.status === 'added') added[c.address] = d.row;
-    else { c.tracker = d.where; c.tracker_row = d.row; }
-    closeConfirm(); rerenderCard(i);
+    if (d.status === 'added') { added[c.address] = d.row; c.tracker = 'tracker'; }
+    else c.tracker = d.where;
+    c.tracker_row = d.row; c.decision = 'sent'; c.price_drop = null;     // moves to "Sent to tracker"
+    closeConfirm(); renderLists();
   } catch (e) {
     $('confirm-err').textContent = e.message;
     $('confirm-ok').disabled = false;
   }
 }
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeComps(); closeConfirm(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeComps(); closeConfirm(); closePass(); } });
 
 (async () => {                                   // reopen the latest search on load
   try {

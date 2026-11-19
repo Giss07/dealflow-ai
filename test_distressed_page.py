@@ -213,6 +213,84 @@ def test_import_failure_marks_failed():
         sys.modules["mcp_server"] = saved
 
 
+def test_decisions():
+    print("\n=== Pass / Sent to tracker / Undo, kept by address ===")
+    import tracker_sheet
+    saved = tracker_sheet.find_property, tracker_sheet.add_property
+    in_sheet = {"7 Edge Ln"}
+    tracker_sheet.find_property = lambda a, force=False: (
+        {"tab": "T", "row": 150, "where": "tracker", "address": a} if a.split(",")[0] in in_sheet else None)
+    near = next(l for l in FIXTURE["92703"] if l["address"].startswith("2 Near St"))
+    try:
+        def search():
+            release.set()
+            sid = client.post("/api/distressed/search", json={"zips": "92703"}).get_json()["id"]
+            d = wait_done(sid)
+            return sid, {c["street"]: c for c in d["cards"]}
+        sid, by = search()
+        check("undecided cards have no decision", by["2 Near St"]["decision"] is None and by["1 Far St"]["decision"] is None)
+        check("a property already in the tracker sheet → Sent to tracker",
+              by["7 Edge Ln"]["decision"] == "sent" and by["7 Edge Ln"]["tracker_row"] == 150)
+        body = {"search_id": sid, "zip": "92703", "address": near["address"]}
+        check("unknown reason → 400",
+              client.post("/api/distressed/decision", json={**body, "action": "pass", "reason": "meh"}).status_code == 400)
+        check("unknown property → 404", client.post("/api/distressed/decision",
+              json={**body, "address": "nope", "action": "pass"}).status_code == 404)
+        r = client.post("/api/distressed/decision", json={**body, "action": "pass", "reason": "Price too high"})
+        check("Pass with a reason → 200", r.status_code == 200, r.get_json())
+        by = {c["street"]: c for c in client.get(f"/api/distressed/search/{sid}").get_json()["cards"]}
+        check("the card is passed, with its reason",
+              by["2 Near St"]["decision"] == "passed" and by["2 Near St"]["pass_reason"] == "Price too high")
+        r = client.post("/api/distressed/decision", json={**body, "address": "1 Far St, Santa Ana, CA 92703", "action": "pass"})
+        check("Pass without a reason → 200", r.status_code == 200)
+
+        sid, by = search()
+        check("a new search keeps passed properties passed",
+              by["2 Near St"]["decision"] == "passed" and by["1 Far St"]["decision"] == "passed"
+              and by["1 Far St"]["pass_reason"] is None)
+        check("a new search keeps tracker properties sent", by["7 Edge Ln"]["decision"] == "sent")
+
+        near["price"] = 650_000                                           # list price drops $50,000
+        far = next(l for l in FIXTURE["92703"] if l["address"].startswith("1 Far St"))
+        far["price"] = 820_000                                            # goes up: stays passed
+        sid, by = search()
+        check("price dropped → back in the main list with the drop",
+              by["2 Near St"]["decision"] is None and by["2 Near St"]["price_drop"] == 50_000, by["2 Near St"]["price_drop"])
+        check("price went up → stays passed", by["1 Far St"]["decision"] == "passed" and by["1 Far St"]["price_drop"] is None)
+        client.post("/api/distressed/decision", json={"search_id": sid, "zip": "92703", "address": near["address"],
+                                                      "action": "pass", "reason": "Bad area"})
+        by = {c["street"]: c for c in client.get(f"/api/distressed/search/{sid}").get_json()["cards"]}
+        check("passing it again at the new price keeps it passed",
+              by["2 Near St"]["decision"] == "passed" and by["2 Near St"]["pass_reason"] == "Bad area")
+
+        for st in ("1 Far St", "7 Edge Ln"):
+            r = client.post("/api/distressed/decision", json={"search_id": sid, "zip": "92703",
+                                                              "address": by[st]["address"], "action": "undo"})
+            check(f"Undo {st} → 200", r.status_code == 200)
+        sid, by = search()
+        check("Undo on a passed property → main list", by["1 Far St"]["decision"] is None)
+        check("Undo on a tracker property → main list, even though the sheet has it",
+              by["7 Edge Ln"]["decision"] is None and by["7 Edge Ln"]["tracker"] == "tracker")
+
+        tracker_sheet.add_property = lambda *a, **k: {"status": "added", "row": 201, "tab": "T"}
+        r = client.post("/api/distressed/tracker", json={"search_id": sid, "zip": "92703",
+                                                         "address": "6 Long Way, Santa Ana, CA 92703", "offer": 500_000})
+        check("Add to Tracker → 200", r.status_code == 200, r.get_json())
+        sid, by = search()
+        check("added from the page → Sent to tracker in later searches", by["6 Long Way"]["decision"] == "sent")
+
+        d = types.SimpleNamespace(decision="passed", reason="Bad comps", list_price=700_000)
+        cs = distressed_page.apply_decisions(
+            [{"address": "2 Near Street, Santa Ana, CA 92703", "zip": "92703", "list_price": 700_000},
+             {"address": "2 Near St, Tustin, CA 92780", "zip": "92780", "list_price": 700_000}],
+            {distressed_page.decision_key("2 Near St, Santa Ana, CA 92703", "92703"): d})
+        check("the same street written differently matches", cs[0]["decision"] == "passed", cs[0])
+        check("the same street in another ZIP doesn't", cs[1]["decision"] is None)
+    finally:
+        tracker_sheet.find_property, tracker_sheet.add_property = saved
+        near["price"], far["price"] = 700_000, 800_000
+
+
 def test_no_offer_routes():
     print("\n=== Read-only ===")
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "distressed_page.py")).read()
@@ -221,7 +299,7 @@ def test_no_offer_routes():
           not any(w in code for w in ("submit_offer", "gspread", "dealflow_updater", "update_cell")))
     rules = [str(r) for r in webapp.app.url_map.iter_rules() if "distressed" in str(r)]
     methods = {m for r in webapp.app.url_map.iter_rules() if "distressed" in str(r) for m in r.methods}
-    check("its only write is starting a search", methods - {"GET", "HEAD", "OPTIONS"} == {"POST"}
+    check("its only writes are POSTs (search first)", methods - {"GET", "HEAD", "OPTIONS"} == {"POST"}
           and [r for r in webapp.app.url_map.iter_rules() if "distressed" in str(r) and "POST" in r.methods][0].rule
           == "/api/distressed/search", rules)
 
@@ -232,6 +310,7 @@ if __name__ == "__main__":
     test_fee_recompute()
     test_zip_error()
     test_import_failure_marks_failed()
+    test_decisions()
     test_no_offer_routes()
     print(f"\n=== {'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)} ===")
     sys.stdout.flush()

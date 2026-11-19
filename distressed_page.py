@@ -9,7 +9,12 @@ so cards appear as ZIPs finish, from whichever gunicorn worker answers.
 Nothing here submits an offer. "Add to Tracker" appends one row to the offer
 tracker sheet (tracker_sheet.py) for the agent to submit — values in A–I and
 the three comps in O–Q, no Notes — the page's only write outside its own
-search table.
+tables.
+
+The owner's decisions (Pass, sent to tracker, Undo) are kept by address in
+property_decisions, so later searches sort the same property the same way: a
+passed property stays in "Passed" until its list price drops below the price
+it was passed at.
 """
 
 import json
@@ -23,7 +28,7 @@ from flask import Blueprint, Response, jsonify, render_template, request
 
 import distressed_report as report
 import tracker_sheet
-from database import DistressedSearch, get_session
+from database import DistressedSearch, PropertyDecision, get_session
 
 logger = logging.getLogger(__name__)
 bp = Blueprint("distressed", __name__)
@@ -114,6 +119,58 @@ def _mark_tracker(cards):
         return f"Couldn't check the tracker sheet: {type(e).__name__}"
 
 
+PASS_REASONS = ("Price too high", "Bad area", "Too much rehab", "Bad comps", "Other")
+
+
+def decision_key(address, zip_code=""):
+    """'street|zip' — the same street normalization the tracker match uses."""
+    street, z, _ = tracker_sheet.address_key(address)
+    return f"{street}|{z or str(zip_code or '')}"
+
+
+def apply_decisions(cards, decisions):
+    """Sort each card into the main list, "sent" or "passed".
+
+    decisions: {decision_key: PropertyDecision}. Sets card["decision"]
+    ('sent' / 'passed' / None for the main list), card["pass_reason"] and,
+    for a passed property whose list price has dropped since, card["price_drop"]
+    (the dollar drop) with the card back in the main list. A property already
+    in the tracker sheet counts as sent unless the owner pressed Undo on it."""
+    for c in cards:
+        d = decisions.get(decision_key(c["address"], c.get("zip")))
+        c["decision"], c["pass_reason"], c["price_drop"] = None, None, None
+        if d is None:
+            if c.get("tracker"):
+                c["decision"] = "sent"
+        elif d.decision == "sent":
+            c["decision"] = "sent"
+        elif d.decision == "passed":
+            c["pass_reason"] = d.reason
+            price = c.get("list_price")
+            if price and d.list_price and price < d.list_price:
+                c["price_drop"] = round(d.list_price - price)
+            else:
+                c["decision"] = "passed"
+    return cards
+
+
+def _decisions(db):
+    return {d.address_key: d for d in db.query(PropertyDecision).all()}
+
+
+def record_decision(db, address, zip_code, decision, reason=None, list_price=None, tracker_row=None):
+    key = decision_key(address, zip_code)
+    d = db.query(PropertyDecision).filter(PropertyDecision.address_key == key).first()
+    if d is None:
+        d = PropertyDecision(address_key=key)
+        db.add(d)
+    d.address, d.decision, d.reason = address, decision, reason
+    d.list_price, d.tracker_row, d.decided_at = list_price, tracker_row, datetime.utcnow()
+    db.commit()
+    logger.info(f"[distressed] {decision}: {address}" + (f" ({reason})" if reason else ""))
+    return d
+
+
 def _find_listing(row, zip_code, address):
     data = json.loads(row.result or "{}").get(zip_code) or {}
     for lst in data.get("listings", []):
@@ -174,6 +231,7 @@ def search_status(search_id):
             return jsonify({"error": "Not found"}), 404
         cards, errors = _cards(row)
         tracker_error = _mark_tracker(cards) if row.status != "running" else None
+        apply_decisions(cards, _decisions(db))
         return jsonify({
             "id": row.id, "status": row.status, "zips": row.zips.split(","),
             "zips_done": row.zips_done or 0, "error": row.error_message,
@@ -284,7 +342,45 @@ def add_to_tracker():
     except Exception as e:
         logger.error(f"[distressed] add to tracker failed for {card['address']}: {e}", exc_info=True)
         return jsonify({"error": f"Couldn't write to the tracker sheet: {type(e).__name__}"}), 502
+    db = get_session()
+    try:
+        record_decision(db, card["address"], card["zip"], "sent", list_price=card.get("list_price"),
+                        tracker_row=result.get("row"))
+    except Exception as e:                       # the row is in the sheet; the card just stays put
+        logger.error(f"[distressed] couldn't save sent decision for {card['address']}: {e}")
+        db.rollback()
+    finally:
+        db.close()
     return jsonify(result)
+
+
+@bp.route("/api/distressed/decision", methods=["POST"])
+def set_decision():
+    """{search_id, zip, address, action: 'pass' | 'undo', reason?}.
+
+    Pass saves the list price from the saved search, so a later drop brings
+    the property back. Undo puts it in the main list, even when it is already
+    in the tracker sheet."""
+    body = request.get_json(silent=True) or {}
+    action, reason = body.get("action"), (body.get("reason") or None)
+    if action not in ("pass", "undo"):
+        return jsonify({"error": "action must be pass or undo"}), 400
+    if reason is not None and reason not in PASS_REASONS:
+        return jsonify({"error": "Unknown reason"}), 400
+    db = get_session()
+    try:
+        row = db.get(DistressedSearch, int(body.get("search_id") or 0))
+        zip_code = str(body.get("zip") or "")
+        lst = _find_listing(row, zip_code, body.get("address") or "") if row else None
+        if not lst:
+            return jsonify({"error": "Property not in this search"}), 404
+        if action == "pass":
+            record_decision(db, lst["address"], zip_code, "passed", reason, lst.get("price"))
+        else:
+            record_decision(db, lst["address"], zip_code, "active")
+        return jsonify({"ok": True})
+    finally:
+        db.close()
 
 
 @bp.route("/api/distressed/search/<int:search_id>/csv")
